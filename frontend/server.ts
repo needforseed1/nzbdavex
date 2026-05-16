@@ -22,7 +22,8 @@ app.use(
         path.startsWith("/nzbs") ||
         path.startsWith("/content") ||
         path.startsWith("/completed-symlinks") ||
-        path.startsWith("/api")
+        path.startsWith("/api") ||
+        path.startsWith("/p/")
       ) {
         return false;
       }
