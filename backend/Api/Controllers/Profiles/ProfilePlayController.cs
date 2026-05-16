@@ -5,6 +5,7 @@ using NzbWebDAV.Api.SabControllers.AddFile;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
@@ -127,7 +128,7 @@ public class ProfilePlayController(
 
     private IActionResult BuildRedirect(Guid davItemId, string extension)
     {
-        var baseUrl = configManager.GetBaseUrl().TrimEnd('/');
+        var baseUrl = HttpContext.GetPublicBaseUrl(configManager.GetBaseUrl());
         var path = $".ids/{davItemId}.{extension}";
         var dlKey = GetWebdavItemRequest.GenerateDownloadKey(configManager.GetStrmKey(), path);
         return Redirect($"{baseUrl}/view/{path}?downloadKey={dlKey}&extension={extension}");

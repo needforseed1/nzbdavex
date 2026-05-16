@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.Controllers.Profiles;
@@ -50,7 +51,7 @@ public class ProfileStreamController(ConfigManager configManager, NzbResolutionC
             }
         })).ConfigureAwait(false);
 
-        var baseUrl = configManager.GetBaseUrl().TrimEnd('/');
+        var baseUrl = HttpContext.GetPublicBaseUrl(configManager.GetBaseUrl());
         var streams = perIndexer
             .SelectMany(x => x)
             .Where(x => !string.IsNullOrWhiteSpace(x.item.NzbUrl))
