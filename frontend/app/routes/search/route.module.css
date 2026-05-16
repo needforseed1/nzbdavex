@@ -1,6 +1,6 @@
 .container {
-    padding: 20px;
-    color: #93a1a1;
+    padding: 32px 24px;
+    color: var(--text-secondary);
     max-width: 1100px;
     margin: 0 auto;
 }
@@ -8,7 +8,7 @@
 .searchBar {
     display: flex;
     gap: 8px;
-    margin-bottom: 20px;
+    margin-bottom: 24px;
 }
 
 .searchBar input {
@@ -19,55 +19,73 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 12px;
-    font-size: 13px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    color: var(--text-muted);
 }
 
 .statusOk {
-    color: #859900;
+    color: var(--success);
 }
 
 .statusFail {
-    color: #dc322f;
+    color: var(--danger-muted);
 }
 
 .statusError {
-    color: #dc322f;
+    color: var(--danger-muted);
     font-style: italic;
 }
 
 .empty {
-    color: #93a1a1;
+    color: var(--text-muted);
     font-style: italic;
-    padding: 20px;
-    background-color: #002b36;
-    border: 1px solid #586e75;
-    border-radius: 8px;
+    padding: 28px 20px;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    text-align: center;
 }
 
 .results {
     list-style: none;
     padding: 0;
     margin: 0;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
 }
 
 .result {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    gap: 14px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background-color 120ms ease;
+}
+
+.result:last-child {
+    border-bottom: none;
+}
+
+.result:hover {
+    background-color: var(--bg-hover);
 }
 
 .title {
     flex: 1;
     overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-weight: 500;
 }
 
 .meta {
     font-size: 12px;
-    color: #586e75;
+    color: var(--text-muted);
     margin-top: 4px;
+    font-weight: 400;
 }
 
 .mountBtn {

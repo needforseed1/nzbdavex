@@ -1,6 +1,6 @@
 .container {
-    color: white;
-    font-family: helvetica;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
     max-width: 100%;
     min-width: 100%;
     min-height: 100%;
@@ -8,12 +8,15 @@
 }
 
 .top-navigation {
-    background-color: var(--top-nav-background-color);
+    background-color: rgba(10, 10, 10, 0.8);
+    border-bottom: 1px solid var(--border-subtle);
     height: var(--top-nav-height);
     position: fixed;
     top: 0;
     width: 100%;
     z-index: 999;
+    backdrop-filter: saturate(180%) blur(12px);
+    -webkit-backdrop-filter: saturate(180%) blur(12px);
 }
 
 .page {
@@ -24,7 +27,8 @@
 }
 
 .left-navigation {
-    background-color: var(--left-nav-background-color);
+    background-color: var(--bg-base);
+    border-right: 1px solid var(--border-subtle);
     max-width: var(--left-nav-width);
     min-width: var(--left-nav-width);
     min-height: calc(100% - var(--top-nav-height));

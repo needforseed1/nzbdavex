@@ -1,20 +1,20 @@
 .container {
     width: 100%;
-    background: hsl(196.8 80% 7%);
-    border-radius: 10px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-lg);
     padding: var(--container-padding);
     padding-bottom: 0;
-    border: 1px solid rgba(255, 255, 255, 0.03);
-    --container-padding: 24px;
+    border: 1px solid var(--border-subtle);
+    --container-padding: 22px;
 }
 
 .header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 24px;
+    margin-bottom: 22px;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 14px;
 }
 
 .footer {
@@ -24,16 +24,20 @@
 
 .title {
     margin: 0;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
 }
 
 .count {
-    color: hsl(180, 7%, 55%);
-    font-size: 0.9em;
+    color: var(--text-muted);
+    font-size: 12px;
     font-weight: 500;
-    background: hsl(196.8, 25%, 14.51%);
-    padding: 6px 12px;
-    border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: var(--bg-surface);
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-subtle);
 }
 
 .tableContainer {
@@ -43,35 +47,40 @@
 
 .table {
     margin: 0;
-    color: hsl(180, 7%, 70%);
+    color: var(--text-secondary);
 
     /* table headers */
     thead th {
-        background-color: hsl(192, 100%, 11%) !important;
-        color: hsl(180, 7%, 85%) !important;
+        background-color: var(--bg-surface) !important;
+        color: var(--text-muted) !important;
         border: none;
-        padding: 16px 0;
-        font-weight: 600;
-        font-size: 0.9em;
-        letter-spacing: 0.5px;
+        padding: 12px 0;
+        font-weight: 500;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
         white-space: nowrap;
         text-align: center;
         width: 100px;
 
         &:first-child {
             text-align: left;
-            padding-left: 0;
+            padding-left: 22px;
             width: 50%;
+        }
+
+        &:last-child {
+            padding-right: 22px;
         }
     }
 
     /* table body */
     tbody td {
-        color: hsl(180, 7%, 70%);
+        color: var(--text-secondary);
         border: none;
         background-color: unset;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        padding: 12px 5px;
+        border-bottom: 1px solid var(--border-subtle);
+        padding: 14px 5px;
         vertical-align: middle;
         text-align: center;
         max-width: 200px;
@@ -79,8 +88,20 @@
 
         &:first-child {
             text-align: left;
-            padding-left: 0;
+            padding-left: 22px;
         }
+
+        &:last-child {
+            padding-right: 22px;
+        }
+    }
+
+    tbody tr {
+        transition: background-color 120ms ease;
+    }
+
+    tbody tr:hover td {
+        background-color: var(--bg-hover);
     }
 
     /* when a row is being removed, set opacity to 20% */
@@ -89,11 +110,11 @@
     }
 
     .uploading {
-        background: rgba(0, 255, 255, 0.05);
+        background: rgba(255, 255, 255, 0.025);
     }
 
     .uploading + :not(.uploading) {
-        border-top: 3px solid hsl(192, 100%, 11%);
+        border-top: 1px solid var(--border-default);
     }
 }
 

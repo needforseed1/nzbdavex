@@ -5,17 +5,19 @@
 .badge {
     display: inline-block;
     line-height: 1;
-    border-radius: .375rem;
-    font-weight: 700;
-    font-size: .75em;
-    padding: .35em .65em;
-    color: #fff;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 11px;
+    padding: 5px 10px;
+    color: var(--text-primary);
     position: relative;
     text-align: center;
     vertical-align: baseline;
-    background-color: #222;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
     overflow: clip;
-    width: 85px;
+    width: 88px;
+    letter-spacing: 0.02em;
 }
 
 .badgeText {
@@ -29,20 +31,20 @@
     left: 0;
     width: 0;
     height: 100%;
-    background-color: rgba(var(--bs-primary-rgb));
+    background-color: rgba(255, 255, 255, 0.18);
     transition: width 500ms ease-in-out, background-color 500ms ease-in-out;
 
     &.gray {
-        background-color: #333;
+        background-color: rgba(255, 255, 255, 0.06);
     }
 }
 
 .healthcheckProgress {
-    background-color: #60aa4a;
+    background-color: rgba(52, 211, 153, 0.22);
 }
 
 .uploadProgress {
-    background-color: hsl(198.69deg 74.6% 44.28%);
+    background-color: rgba(255, 255, 255, 0.16);
 }
 
 @media not (min-width: 900px) {

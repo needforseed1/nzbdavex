@@ -13,24 +13,27 @@
 }
 
 .pageText {
-    color: hsl(180, 7%, 55%);
-    font-size: 0.9em;
+    color: var(--text-muted);
+    font-size: 13px;
     font-weight: 500;
 }
 
 .navLink {
-    padding: 4px 8px;
+    padding: 4px 10px;
     text-decoration: none;
-    color: hsl(192deg 53.8% 38.24%);
+    color: var(--text-primary);
     cursor: pointer;
+    border-radius: 6px;
+    transition: background-color 120ms ease;
 }
 
 .navLink:hover {
-    text-decoration: underline;
+    background-color: var(--bg-hover);
+    text-decoration: none;
 }
 
 .navLinkDisabled {
-    padding: 4px 8px;
-    color: var(--bs-secondary);
+    padding: 4px 10px;
+    color: var(--text-faint);
     cursor: not-allowed;
 }

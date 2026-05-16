@@ -23,14 +23,15 @@
 }
 
 .bordered {
-    border: 1px solid;
-    border-radius: 5px;
-    padding: 0 5px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    padding: 0 8px;
+    background-color: var(--bg-surface);
 }
 
 .selected {
-    color: hsl(180, 7%, 55%);
-    font-size: 0.9em;
+    color: var(--text-secondary);
+    font-size: 13px;
     font-weight: 500;
     padding: 0;
     cursor: pointer;
@@ -41,7 +42,7 @@
 }
 
 .selected:hover {
-    color: hsl(180, 7%, 65%);
+    color: var(--text-primary);
 }
 
 .arrow {
@@ -49,26 +50,28 @@
     height: 0;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 4px solid hsl(180, 7%, 55%);
+    border-top: 4px solid var(--text-muted);
     margin-left: 2px;
 }
 
 .selected:hover .arrow {
-    border-top-color: hsl(180, 7%, 65%);
+    border-top-color: var(--text-primary);
 }
 
 .dropdown {
     position: absolute;
     top: 100%;
     left: 0;
-    background: hsl(196.8 80% 7%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
     margin-top: 4px;
     z-index: 900;
-    min-width: 75px;
+    min-width: 80px;
     max-height: 300px;
     overflow-y: auto;
-    border-radius: 0 5px 5px 5px;
+    border-radius: var(--radius-md);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    padding: 4px;
 }
 
 .dropdown.openAbove {
@@ -79,16 +82,17 @@
 }
 
 .option {
-    color: hsl(180, 7%, 55%);
-    font-size: 0.9em;
+    color: var(--text-secondary);
+    font-size: 13px;
     font-weight: 500;
-    padding: 8px 12px;
+    padding: 7px 10px;
     cursor: pointer;
     user-select: none;
     white-space: nowrap;
+    border-radius: 6px;
 }
 
 .option:hover {
-    background: hsl(196.8, 25%, 14.51%);
-    color: hsl(180, 7%, 65%);
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }

@@ -1,16 +1,13 @@
 .container {
     min-width: 100%;
     min-height: 100%;
-    padding: 30px 35px 20px 35px;
-    color: #93a1a1;
-    font-size: 16px;
+    padding: 32px 32px 24px 32px;
+    color: var(--text-secondary);
+    font-size: 14px;
 }
 
 .tabs {
-    --bs-nav-tabs-link-active-bg: #002b36;
-    --bs-nav-link-color: #93a1a1;
-    --bs-nav-link-hover-color: #93a1a1;
-    margin-bottom: 25px;
+    margin-bottom: 28px;
     overflow-x: auto;
     overflow-y: hidden;
     flex-wrap: unset;

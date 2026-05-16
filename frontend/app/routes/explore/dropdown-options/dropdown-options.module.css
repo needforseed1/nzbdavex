@@ -1,15 +1,16 @@
 .dropdown {
     position: absolute;
     margin: 0;
-    padding: 4px 0;
+    padding: 4px;
     list-style: none;
-    background-color: hsl(196.8 25% 14.51%);
-    border: 1px solid hsl(196 40% 22%);
-    border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     z-index: 1000;
     right: -1px;
     top: 100%;
+    min-width: 160px;
 }
 
 .option {
@@ -24,25 +25,28 @@
 .optionButton {
     display: block;
     width: 100%;
-    padding: 6px 12px;
+    padding: 7px 10px;
     background: none;
     border: none;
     text-align: left;
-    font-size: 1rem;
-    color: #93a1a1;
+    font-size: 13px;
+    color: var(--text-secondary);
     cursor: pointer;
     white-space: nowrap;
+    border-radius: 6px;
+    transition: background-color 120ms ease, color 120ms ease;
 }
 
 .optionButton:hover,
 .optionButton:focus-visible {
-    background-color: hsla(192, 100%, 40%, 0.2);
-    color: white;
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
     outline: none;
 }
 
 
 .optionButton.danger:hover,
 .optionButton.danger:focus-visible {
-    background-color: hsla(0, 100%, 70%, 0.4);
+    background-color: rgba(239, 68, 68, 0.1);
+    color: var(--danger-muted);
 }

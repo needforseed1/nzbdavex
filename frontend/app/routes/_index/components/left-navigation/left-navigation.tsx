@@ -14,11 +14,11 @@ export function LeftNavigation({ version, isFrontendAuthDisabled }: LeftNavigati
         <div className={styles.container}>
             <Item target="/queue">
                 <div className={styles["queue-icon"]} />
-                <div className={styles.title}>Queue & History</div>
+                <div className={styles.title}>Queue</div>
             </Item>
             <Item target="/explore">
                 <div className={styles["explore-icon"]} />
-                <div className={styles.title}>Dav Explore</div>
+                <div className={styles.title}>Files</div>
             </Item>
             <Item target="/health">
                 <div className={styles["health-icon"]} />

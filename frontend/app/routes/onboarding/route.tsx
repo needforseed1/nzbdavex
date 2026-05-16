@@ -48,47 +48,47 @@ export default function Index({ loaderData, actionData }: Route.ComponentProps) 
     }
 
     return (
-        <>
+        <div className={styles["page"]}>
             <Form className={styles["container"]} method="POST">
-                <img className={styles["logo"]} src="/logo.svg"></img>
-                <div className={styles["title"]}>Nzb DAV</div>
+                <div className={styles["brand"]}>
+                    <img className={styles["logo"]} src="/logo.svg" alt="nzbdavex" />
+                    <div className={styles["title"]}>nzbdavex</div>
+                </div>
+                <div className={styles["subtitle"]}>Set up your admin account</div>
                 {pageData.error &&
                     <Alert className={styles["alert"]} variant="danger">
                         {pageData.error}
                     </Alert>
                 }
-                {!pageData.error &&
-                    <Alert className={styles["alert"]} variant="warning">
-                        <p style={{ marginBottom: "5px" }}>Welcome!</p>
-                        Register your admin account.
-                    </Alert>
-                }
-                <BootstrapForm.Control
-                    autoFocus
-                    name="username"
-                    type="text"
-                    placeholder="Username"
-                    value={username}
-                    onChange={e => setUsername(e.currentTarget.value)} />
-                <BootstrapForm.Control
-                    name="password"
-                    type="password"
-                    placeholder="Password"
-                    value={password}
-                    onChange={e => setPassword(e.currentTarget.value)} />
-                <BootstrapForm.Control
-                    type="password"
-                    placeholder="Confirm Password"
-                    value={confirmPassword}
-                    onChange={e => setConfirmPassword(e.currentTarget.value)} />
+                <div className={styles["fields"]}>
+                    <BootstrapForm.Control
+                        autoFocus
+                        name="username"
+                        type="text"
+                        placeholder="Username"
+                        value={username}
+                        onChange={e => setUsername(e.currentTarget.value)} />
+                    <BootstrapForm.Control
+                        name="password"
+                        type="password"
+                        placeholder="Password"
+                        value={password}
+                        onChange={e => setPassword(e.currentTarget.value)} />
+                    <BootstrapForm.Control
+                        type="password"
+                        placeholder="Confirm password"
+                        value={confirmPassword}
+                        onChange={e => setConfirmPassword(e.currentTarget.value)} />
+                </div>
                 <Button
                     type="submit"
                     variant="primary"
                     disabled={submitButtonDisabled}>
                     {submitButtonText}
                 </Button>
+                <div className={styles["footer"]}>First-time setup · this account becomes the administrator</div>
             </Form>
-        </>
+        </div>
     );
 }
 

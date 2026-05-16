@@ -1,29 +1,36 @@
 .container {
     width: 100%;
-    margin-top: 25px;
+    margin-top: 28px;
+    padding: 0 10px;
 }
 
 .title {
-    font-size: 14px;
-    margin-bottom: 5px;
+    font-size: 11px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 500;
 }
 
 .bar {
     position: relative;
-    height: 1px;
-    margin-bottom: 5px;
+    height: 2px;
+    margin-bottom: 6px;
+    background-color: var(--border-subtle);
+    border-radius: 2px;
+    overflow: hidden;
 }
 
 .max {
-    background-color: #93a1a1;
-    opacity: 0.25;
+    background-color: transparent;
     position: absolute;
     height: 100%;
     width: 100%;
 }
 
 .live {
-    background-color: green;
+    background-color: var(--text-primary);
     position: absolute;
     height: 100%;
     width: 0%;
@@ -31,7 +38,7 @@
 }
 
 .active {
-    background-color: blue;
+    background-color: var(--text-muted);
     position: absolute;
     height: 100%;
     width: 0%;
@@ -39,6 +46,7 @@
 }
 
 .caption {
-    margin-right: 5px;
-    font-size: 12px;
+    margin-right: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
 }
