@@ -94,12 +94,18 @@ public class ProfilePlayController(
         Guid nzoId;
         try
         {
+            var category = entry.Type switch
+            {
+                "movie" => "movies",
+                "series" => "tv",
+                _ => configManager.GetManualUploadCategory(),
+            };
             var addFileRequest = new AddFileRequest
             {
                 FileName = fileName,
                 ContentType = "application/x-nzb",
                 NzbFileStream = buffer,
-                Category = configManager.GetManualUploadCategory(),
+                Category = category,
                 Priority = QueueItem.PriorityOption.Force,
                 PostProcessing = QueueItem.PostProcessingOption.None,
                 CancellationToken = ct,

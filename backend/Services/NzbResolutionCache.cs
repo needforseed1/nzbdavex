@@ -8,7 +8,7 @@ public class NzbResolutionCache
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
     private readonly ConcurrentDictionary<string, Entry> _entries = new();
 
-    public string Add(string indexerName, string indexerUserAgent, string nzbUrl, string title)
+    public string Add(string indexerName, string indexerUserAgent, string nzbUrl, string title, string type)
     {
         Cleanup();
         var token = GenerateToken();
@@ -18,6 +18,7 @@ public class NzbResolutionCache
             IndexerUserAgent = indexerUserAgent,
             NzbUrl = nzbUrl,
             Title = title,
+            Type = type,
             CreatedAt = DateTime.UtcNow,
         };
         return token;
@@ -55,6 +56,7 @@ public class NzbResolutionCache
         public required string IndexerUserAgent { get; init; }
         public required string NzbUrl { get; init; }
         public required string Title { get; init; }
+        public required string Type { get; init; }
         public required DateTime CreatedAt { get; init; }
         public Guid? DavItemId { get; set; }
         public string? VideoExtension { get; set; }

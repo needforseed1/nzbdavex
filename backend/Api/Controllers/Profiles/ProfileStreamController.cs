@@ -66,7 +66,7 @@ public class ProfileStreamController(
             .OrderByDescending(x => x.item.Size)
             .Select(x =>
             {
-                var nzbToken = cache.Add(x.indexer, x.userAgent, x.item.NzbUrl, x.item.Title);
+                var nzbToken = cache.Add(x.indexer, x.userAgent, x.item.NzbUrl, x.item.Title, type);
                 return new
                 {
                     name = x.indexer,
