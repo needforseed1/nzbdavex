@@ -94,12 +94,9 @@ public class ProfilePlayController(
         Guid nzoId;
         try
         {
-            var category = entry.Type switch
-            {
-                "movie" => "movies",
-                "series" => "tv",
-                _ => configManager.GetManualUploadCategory(),
-            };
+            var category = string.IsNullOrWhiteSpace(entry.Type)
+                ? configManager.GetManualUploadCategory()
+                : entry.Type;
             var addFileRequest = new AddFileRequest
             {
                 FileName = fileName,
