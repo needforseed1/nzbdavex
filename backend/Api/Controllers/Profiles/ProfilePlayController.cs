@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.Controllers.GetWebdavItem;
@@ -76,6 +77,7 @@ public class ProfilePlayController(
         var maxAttempts = configManager.GetPlayMaxAttempts();
         var verifyMode = configManager.GetPlayVerifyMode();
         var watchdogEnabled = configManager.IsPlaybackWatchdogEnabled();
+        var excludePatterns = configManager.GetPlayExcludePatterns();
 
         using var totalCts = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
         totalCts.CancelAfter(totalBudget);
@@ -89,6 +91,17 @@ public class ProfilePlayController(
         // Watchdog OFF → simple single-candidate flow (no auto-fallback, no pre-verify, no negative cache).
         if (!watchdogEnabled)
         {
+            var primaryExcludeMatch = MatchExcludePattern(entry.Primary.Title, excludePatterns);
+            if (primaryExcludeMatch != null)
+            {
+                startsAt[entry.Primary.NzbUrl] = DateTimeOffset.UtcNow;
+                RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
+                    PlaybackAttemptLog.Outcome.ExcludedByPattern,
+                    $"Matched exclude pattern: {primaryExcludeMatch}", startsAt, isWinner: false);
+                return await ResolveExistingOrErrorAsync(entry, 503,
+                    "Release excluded by your filter. Adjust patterns in Settings → Watchdog.",
+                    60, HttpContext.RequestAborted).ConfigureAwait(false);
+            }
             startsAt[entry.Primary.NzbUrl] = DateTimeOffset.UtcNow;
             var nzbBytes = await FetchNzbBytesAsync(entry.Primary, totalCts.Token).ConfigureAwait(false);
             if (nzbBytes is null)
@@ -117,6 +130,7 @@ public class ProfilePlayController(
         var cursor = entry.StartIndex;
         var attemptsUsed = 0;
         var sawAnyBatch = false;
+        var excludedCount = 0;
 
         while (attemptsUsed < maxAttempts && cursor < entry.Candidates.Count)
         {
@@ -130,6 +144,18 @@ public class ProfilePlayController(
                 var c = entry.Candidates[cursor];
                 cursor++;
                 if (negativeCache.IsFailed(c.NzbUrl)) continue;
+                var excludeMatch = MatchExcludePattern(c.Title, excludePatterns);
+                if (excludeMatch != null)
+                {
+                    var excludedRank = displayRank++;
+                    rankIndex[c.NzbUrl] = excludedRank;
+                    startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
+                    RecordAttempt(clickId, c, contentType, requestedTitle, excludedRank,
+                        PlaybackAttemptLog.Outcome.ExcludedByPattern,
+                        $"Matched exclude pattern: {excludeMatch}", startsAt, isWinner: false);
+                    excludedCount++;
+                    continue;
+                }
                 rankIndex[c.NzbUrl] = displayRank++;
                 pool.Add(c);
             }

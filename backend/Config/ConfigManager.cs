@@ -1,9 +1,11 @@
 ﻿using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Utils;
+using Serilog;
 
 namespace NzbWebDAV.Config;
 
@@ -221,6 +223,35 @@ public class ConfigManager
         var v = StringUtil.EmptyToNull(GetConfigValue("play.candidate-negative-cache-minutes"));
         if (v == null) return TimeSpan.FromMinutes(5);
         return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(5);
+    }
+
+    // Newline-separated regex patterns. Candidates whose title matches ANY pattern are
+    // skipped before NZB fetch. Case-insensitive by default — use inline (?-i:...) for
+    // case-sensitive. Lines starting with '#' are comments. Malformed patterns are
+    // dropped (the settings UI rejects them at save time, this is defense in depth).
+    public IReadOnlyList<Regex> GetPlayExcludePatterns()
+    {
+        var raw = GetConfigValue("play.exclude-patterns");
+        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<Regex>();
+
+        var patterns = new List<Regex>();
+        foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+            try
+            {
+                patterns.Add(new Regex(
+                    trimmed,
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
+                    TimeSpan.FromMilliseconds(50)));
+            }
+            catch (ArgumentException e)
+            {
+                Log.Warning("Skipping invalid play.exclude-patterns regex {Pattern}: {Message}", trimmed, e.Message);
+            }
+        }
+        return patterns;
     }
 
     public bool IsPreviewPar2FilesEnabled()

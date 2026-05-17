@@ -52,5 +52,6 @@ public class PlaybackAttemptLog
         QueueFailed,
         QueueCompleted,
         BudgetTimeout,
+        ExcludedByPattern,
     }
 }
