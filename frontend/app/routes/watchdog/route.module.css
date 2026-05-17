@@ -190,6 +190,10 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     padding: 16px 18px;
+    /* In a flex column, children default to min-width:auto and grow to fit
+       unbreakable content (e.g. long playback titles). Force shrink-to-fit
+       so a wide child can't push the card past the viewport. */
+    min-width: 0;
 }
 
 .clickHeader {
@@ -516,6 +520,11 @@
         font-size: 12.5px;
         white-space: normal;
         overflow: visible;
+        /* Playback titles are often single long unbreakable tokens — without
+           this they'd extend past the card and push the page wider than the
+           viewport on iOS. */
+        word-break: break-word;
+        overflow-wrap: anywhere;
     }
 
     .controls {

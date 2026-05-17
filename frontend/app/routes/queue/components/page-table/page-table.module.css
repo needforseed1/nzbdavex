@@ -135,6 +135,7 @@
 
 .badges {
     display: flex;
+    flex-wrap: wrap;
     margin-top: 3px;
     margin-bottom: 5px;
     gap: 10px;
@@ -269,6 +270,19 @@
 
     .tableContainer {
         overflow-x: visible;
+    }
+
+    /* The desktop td rules (max-width:200px + nowrap) don't reliably clip in
+       table layout — a long filename can grow the cell and push the table
+       wider than the viewport. On mobile only one column is visible, so let
+       it wrap naturally. */
+    .table tbody td {
+        max-width: unset;
+        white-space: normal;
+    }
+
+    .providersBadge {
+        max-width: 100%;
     }
 }
 

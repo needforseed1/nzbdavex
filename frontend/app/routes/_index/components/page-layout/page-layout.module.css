@@ -46,6 +46,10 @@
     min-width: var(--width);
     min-height: var(--height);
     padding: var(--padding);
+    /* iOS Safari expands the layout viewport (zooming the whole page out) when any
+       descendant overflows horizontally. Clip here so a stray-wide child can't push
+       past the body and trigger that. */
+    overflow-x: clip;
     --bodyLeft: var(--left-nav-width);
     --width: calc(100% - 2 * var(--padding) - var(--bodyLeft));
     --height: calc(100% - 2 * var(--padding) - var(--top-nav-height));
