@@ -200,26 +200,18 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                             </div>
 
                                             <div className={styles["provider-detail-item"]}>
-                                                {connections[index] && (
-                                                    <div className={styles["connection-bar"]}>
-                                                        <div
-                                                            className={styles["connection-bar-live"]}
-                                                            style={{ width: `${100 * (connections[index].live / connections[index].max)}%` }}
-                                                        />
-                                                        <div
-                                                            className={styles["connection-bar-active"]}
-                                                            style={{ width: `${100 * (connections[index].active / connections[index].max)}%` }}
-                                                        />
-                                                    </div>
-                                                )}
                                                 <div className={styles["provider-detail-icon"]}>
                                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                                         <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
                                                     </svg>
                                                 </div>
                                                 <div className={styles["provider-detail-content"]}>
-                                                    <span className={styles["provider-detail-label"]}>Max Connections</span>
-                                                    <span className={styles["provider-detail-value"]}>{provider.MaxConnections}</span>
+                                                    <span className={styles["provider-detail-label"]}>Connections</span>
+                                                    <span className={styles["provider-detail-value"]}>
+                                                        {connections[index]
+                                                            ? `${connections[index].live} / ${provider.MaxConnections} max`
+                                                            : `${provider.MaxConnections} max`}
+                                                    </span>
                                                 </div>
                                             </div>
 
