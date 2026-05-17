@@ -95,7 +95,8 @@ public class ProfilePlayController(
             {
                 RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
                     PlaybackAttemptLog.Outcome.EnqueueFailed, "Indexer NZB fetch failed", startsAt, isWinner: false);
-                return StatusCode(502, "Failed to fetch NZB from indexer.");
+                return await ResolveExistingOrErrorAsync(entry, 502,
+                    "Failed to fetch NZB from indexer.", 10, HttpContext.RequestAborted).ConfigureAwait(false);
             }
             var single = new PreVerifyResult(entry.Primary, nzbBytes, PlaybackFastVerifier.Verdict.Available, null);
             var (result, reason, newNzoId) = await CommitAsync(nzbToken, single, deadline, totalCts.Token).ConfigureAwait(false);
@@ -103,7 +104,9 @@ public class ProfilePlayController(
                 MapCommitReason(reason), CommitReasonToMessage(reason), startsAt, isWinner: reason == CommitReason.Completed);
             if (reason == CommitReason.BudgetTimeout && newNzoId.HasValue)
                 ScheduleOrphanCleanup(newNzoId.Value);
-            return result ?? StatusCode(504, "Still processing. Retry the link in a few seconds.");
+            if (result is not null) return result;
+            return await ResolveExistingOrErrorAsync(entry, 503,
+                "Still processing. Retry the link in a few seconds.", 5, HttpContext.RequestAborted).ConfigureAwait(false);
         }
 
         // Batch retry loop: try up to maxCandidates candidates in parallel per batch;
@@ -138,14 +141,28 @@ public class ProfilePlayController(
             var batch = await RunBatchAsync(pool, rankIndex, nzbToken, contentType, requestedTitle,
                 clickId, startsAt, verifyMode, hedgeDelay, deadline, totalCts).ConfigureAwait(false);
 
-            if (batch.Outcome != BatchOutcome.AllFailed) return batch.Action!;
-            // AllFailed → loop and try next batch.
+            switch (batch.Outcome)
+            {
+                case BatchOutcome.Winner:
+                case BatchOutcome.Cancelled:
+                    return batch.Action!;
+                case BatchOutcome.BudgetTimeout:
+                    return await ResolveExistingOrErrorAsync(entry, 503,
+                        "Still processing. Retry the link in a few seconds.", 5,
+                        HttpContext.RequestAborted).ConfigureAwait(false);
+                case BatchOutcome.AllFailed:
+                    break; // try next batch
+            }
         }
 
         if (!sawAnyBatch)
-            return StatusCode(503, "All ranked candidates recently failed; try again shortly.");
+            return await ResolveExistingOrErrorAsync(entry, 503,
+                "All ranked candidates recently failed; try again shortly.", 5,
+                HttpContext.RequestAborted).ConfigureAwait(false);
 
-        return StatusCode(504, "All tried candidates failed. Retry in a few seconds.");
+        return await ResolveExistingOrErrorAsync(entry, 503,
+            "All tried candidates failed. Retry in a few seconds.", 5,
+            HttpContext.RequestAborted).ConfigureAwait(false);
     }
 
     private enum BatchOutcome { Winner, AllFailed, Cancelled, BudgetTimeout }
@@ -259,7 +276,9 @@ public class ProfilePlayController(
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
                         rankIndex, startsAt, remaining, ready, totalCts,
                         "Budget exhausted; loser cancelled");
-                    return (BatchOutcome.BudgetTimeout, StatusCode(504, "Still processing. Retry the link in a few seconds."));
+                    // HandleAsync converts this to a 503 + Retry-After (or a 302 if
+                    // another click finished the same group in the meantime).
+                    return (BatchOutcome.BudgetTimeout, null);
                 }
                 continue;
             }
@@ -601,6 +620,31 @@ public class ProfilePlayController(
         // Budget exhausted — caller is expected to schedule orphan cleanup so the
         // queue item doesn't keep downloading a release the player gave up on.
         return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId);
+    }
+
+    // Before returning a transient error, re-check whether ANY prior or concurrent download
+    // completed for any candidate in this group. Catches the race where another click — or a
+    // sonarr/radarr backfill — finished while we were still processing this one. Falls back
+    // to a structured error response with Retry-After so clients like Infuse retry instead
+    // of surfacing "demux instantly error" on the first failed read.
+    private async Task<IActionResult> ResolveExistingOrErrorAsync(
+        NzbResolutionCache.Entry entry,
+        int statusCode,
+        string message,
+        int retryAfterSeconds,
+        CancellationToken ct)
+    {
+        if (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var existing = await TryResolveExistingAsync(entry, ct).ConfigureAwait(false);
+                if (existing is not null) return existing;
+            }
+            catch (OperationCanceledException) { /* fall through to error */ }
+        }
+        Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
+        return StatusCode(statusCode, message);
     }
 
     // Looks for a completed HistoryItem matching ANY candidate in this group.
