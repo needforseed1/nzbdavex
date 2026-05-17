@@ -54,11 +54,15 @@ public class GetHistoryResponse : SabBaseResponse
         [JsonPropertyName("indexer")]
         public string? Indexer { get; set; }
 
+        [JsonPropertyName("providers")]
+        public List<ProviderUsage>? Providers { get; set; }
+
         public static HistorySlot FromHistoryItem
         (
             HistoryItem historyItem,
             DavItem? downloadFolder,
-            ConfigManager configManager
+            ConfigManager configManager,
+            IReadOnlyDictionary<string, long>? providerUsage = null
         )
         {
             return new HistorySlot()
@@ -74,7 +78,19 @@ public class GetHistoryResponse : SabBaseResponse
                 FailMessage = historyItem.FailMessage ?? "",
                 NzbBlobId = historyItem.NzbBlobId?.ToString(),
                 Indexer = historyItem.IndexerName,
+                Providers = providerUsage is { Count: > 0 }
+                    ? providerUsage
+                        .OrderByDescending(kv => kv.Value)
+                        .Select(kv => new ProviderUsage { Host = kv.Key, Segments = kv.Value })
+                        .ToList()
+                    : null,
             };
+        }
+
+        public class ProviderUsage
+        {
+            [JsonPropertyName("host")] public required string Host { get; init; }
+            [JsonPropertyName("segments")] public required long Segments { get; init; }
         }
 
         private static string? GetDownloadPath

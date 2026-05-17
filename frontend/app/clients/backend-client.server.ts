@@ -324,6 +324,7 @@ export type HistorySlot = {
     fail_message: string,
     nzb_blob_id?: string,
     indexer?: string | null,
+    providers?: ProviderUsage[] | null,
 }
 
 export type PlaybackAttemptOutcome =

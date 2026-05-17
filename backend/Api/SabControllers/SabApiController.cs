@@ -103,7 +103,7 @@ public class SabApiController(
                     HttpContext, dbClient, configManager, websocketManager);
             case "history":
                 return new GetHistoryController(
-                    HttpContext, dbClient, configManager);
+                    HttpContext, dbClient, configManager, providerUsageTracker);
 
             default:
                 throw new BadHttpRequestException("Invalid mode");

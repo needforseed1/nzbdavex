@@ -362,7 +362,8 @@ public class QueueItemProcessor(
         dbClient.Ctx.ClearChangeTracker();
         var mountFolder = databaseOperations != null ? await databaseOperations.Invoke().ConfigureAwait(false) : null;
         var historyItem = CreateHistoryItem(mountFolder, startTime, error);
-        var historySlot = GetHistoryResponse.HistorySlot.FromHistoryItem(historyItem, mountFolder, configManager);
+        var providerUsage = providerUsageTracker.Snapshot(queueItem.Id);
+        var historySlot = GetHistoryResponse.HistorySlot.FromHistoryItem(historyItem, mountFolder, configManager, providerUsage);
         dbClient.Ctx.QueueItems.Remove(queueItem);
         dbClient.Ctx.HistoryItems.Add(historyItem);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
