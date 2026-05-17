@@ -43,11 +43,17 @@
 .tableContainer {
     margin-left: calc(-1 * var(--container-padding));
     margin-right: calc(-1 * var(--container-padding));
+    /* Horizontal scroll when the table can't shrink to fit (e.g. narrow desktop
+       widths where Provider/Indexer/Status columns would otherwise overflow). */
+    overflow-x: auto;
 }
 
 .table {
     margin: 0;
     color: var(--text-secondary);
+    /* Floor the desktop layout: below this width the wrapper scrolls
+       horizontally instead of letting columns get squished. */
+    min-width: 880px;
 
     /* table headers */
     thead th {
@@ -253,6 +259,16 @@
 
     .table thead tr th:first-child {
         width: unset;
+    }
+
+    /* Mobile collapses to a single Name+Actions layout — no need for the
+       desktop-floor min-width that would otherwise force horizontal scroll. */
+    .table {
+        min-width: 0;
+    }
+
+    .tableContainer {
+        overflow-x: visible;
     }
 }
 
