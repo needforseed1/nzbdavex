@@ -171,26 +171,26 @@ function Body(props: BodyProps) {
                 <Tab eventKey="usenet" title={usenetTitle}>
                     <UsenetSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
-                <Tab eventKey="sabnzbd" title={sabnzbdTitle}>
-                    <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
-                </Tab>
-                <Tab eventKey="webdav" title={webdavTitle}>
-                    <WebdavSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="arrs" title={arrsTitle}>
-                    <ArrsSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
                 <Tab eventKey="indexers" title={indexersTitle}>
                     <IndexersSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
                 <Tab eventKey="profiles" title={profilesTitle}>
                     <ProfilesSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
-                <Tab eventKey="repairs" title={repairsTitle}>
-                    <RepairsSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
                 <Tab eventKey="watchdog" title={watchdogTitle}>
                     <WatchdogSettings config={newConfig} setNewConfig={setNewConfig} />
+                </Tab>
+                <Tab eventKey="webdav" title={webdavTitle}>
+                    <WebdavSettings config={newConfig} setNewConfig={setNewConfig} />
+                </Tab>
+                <Tab eventKey="sabnzbd" title={sabnzbdTitle}>
+                    <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
+                </Tab>
+                <Tab eventKey="arrs" title={arrsTitle}>
+                    <ArrsSettings config={newConfig} setNewConfig={setNewConfig} />
+                </Tab>
+                <Tab eventKey="repairs" title={repairsTitle}>
+                    <RepairsSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
                 <Tab eventKey="rclone" title={rcloneTitle}>
                     <RcloneSettings config={newConfig} setNewConfig={setNewConfig} />

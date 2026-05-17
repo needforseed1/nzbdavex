@@ -11,12 +11,27 @@
     overflow-x: auto;
     overflow-y: hidden;
     flex-wrap: unset;
-    scrollbar-width: none;
     white-space: nowrap;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 
 .tabs::-webkit-scrollbar {
-    display: none;
+    height: 6px;
+}
+
+.tabs::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.tabs::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    border: none;
+}
+
+.tabs::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.16);
 }
 
 .button {
