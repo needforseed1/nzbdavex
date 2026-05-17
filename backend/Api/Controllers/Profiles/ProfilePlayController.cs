@@ -573,7 +573,8 @@ public class ProfilePlayController(
         var safeTitle = SanitizeFileName(c.Title);
         var fileName = $"{safeTitle}.nzb";
 
-        var category = configManager.GetManualUploadCategory();
+        var category = StringUtil.EmptyToNull(cache.Get(nzbToken)?.Type)
+                       ?? configManager.GetManualUploadCategory();
 
         // If a previous click already enqueued this NZB and is still processing,
         // skip the duplicate enqueue and just poll on the existing item.
