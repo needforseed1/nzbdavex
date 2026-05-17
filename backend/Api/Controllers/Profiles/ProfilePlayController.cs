@@ -61,12 +61,14 @@ public class ProfilePlayController(
         var entry = cache.Get(nzbToken);
         if (entry is null) return NotFound("Stream link expired. Re-search in your player.");
 
-        // already-resolved (a previous click on the same token resolved it): shortcut
-        if (entry.DavItemId.HasValue && !string.IsNullOrEmpty(entry.VideoExtension))
-            return BuildRedirect(entry.DavItemId.Value, entry.VideoExtension);
-
-        // already-downloaded by a prior request (same title): shortcut
-        var existingResolved = await TryResolveExistingAsync(entry.Primary.Title, nzbToken, HttpContext.RequestAborted).ConfigureAwait(false);
+        // Already-downloaded by a prior request (same title): single durable shortcut.
+        // We deliberately don't use any in-memory "previously resolved DavItemId" cache:
+        // DavItems can be deleted (RemoveUnlinkedFilesTask, manual cleanup from /explore),
+        // and a stale cached redirect would 302 the player into a dead 400 — looking
+        // exactly like a broken stream. TryResolveExistingAsync queries the DB and
+        // self-heals when the items are gone (FindLargestVideoAsync returns null →
+        // falls through to the watchdog flow).
+        var existingResolved = await TryResolveExistingAsync(entry.Primary.Title, HttpContext.RequestAborted).ConfigureAwait(false);
         if (existingResolved is not null) return existingResolved;
 
         var totalBudget = TimeSpan.FromSeconds(configManager.GetPlayTotalBudgetSeconds());
@@ -521,7 +523,6 @@ public class ProfilePlayController(
                 if (video is null) return (null, CommitReason.QueueFailed, newlyEnqueuedNzoId);
 
                 var ext = Path.GetExtension(video.Name).TrimStart('.').ToLowerInvariant();
-                cache.UpdateResolved(nzbToken, video.Id, ext);
                 return (BuildRedirect(video.Id, ext), CommitReason.Completed, newlyEnqueuedNzoId);
             }
 
@@ -538,7 +539,7 @@ public class ProfilePlayController(
         return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId);
     }
 
-    private async Task<IActionResult?> TryResolveExistingAsync(string title, string nzbToken, CancellationToken ct)
+    private async Task<IActionResult?> TryResolveExistingAsync(string title, CancellationToken ct)
     {
         var safeTitle = SanitizeFileName(title);
         var fileName = $"{safeTitle}.nzb";
@@ -552,7 +553,6 @@ public class ProfilePlayController(
         var existingVideo = await FindLargestVideoAsync(existing.Id, ct).ConfigureAwait(false);
         if (existingVideo is null) return null;
         var ext = Path.GetExtension(existingVideo.Name).TrimStart('.').ToLowerInvariant();
-        cache.UpdateResolved(nzbToken, existingVideo.Id, ext);
         return BuildRedirect(existingVideo.Id, ext);
     }
 

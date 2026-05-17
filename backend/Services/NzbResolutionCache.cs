@@ -34,15 +34,6 @@ public class NzbResolutionCache
 
     public Entry? Get(string token) => _entries.TryGetValue(token, out var e) ? e : null;
 
-    public void UpdateResolved(string token, Guid davItemId, string extension)
-    {
-        if (_entries.TryGetValue(token, out var e))
-        {
-            e.DavItemId = davItemId;
-            e.VideoExtension = extension;
-        }
-    }
-
     private void Cleanup()
     {
         var cutoff = DateTime.UtcNow - Ttl;
@@ -74,8 +65,6 @@ public class NzbResolutionCache
         public required int StartIndex { get; init; }
         public required string Type { get; init; }
         public required DateTime CreatedAt { get; init; }
-        public Guid? DavItemId { get; set; }
-        public string? VideoExtension { get; set; }
 
         public Candidate Primary => Candidates[StartIndex];
     }
