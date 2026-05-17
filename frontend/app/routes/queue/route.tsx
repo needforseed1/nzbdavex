@@ -5,7 +5,6 @@ import { Alert } from 'react-bootstrap';
 import { backendClient, type HistorySlot, type QueueSlot } from "~/clients/backend-client.server";
 import { HistoryTable } from "./components/history-table/history-table";
 import { QueueTable } from "./components/queue-table/queue-table";
-import { WatchdogActivity } from "./components/watchdog-activity/watchdog-activity";
 import { useState, useRef } from "react";
 import { useHistoryEvents, useQueueEvents } from "./controllers/events-controller";
 import { initializeQueueHistoryWebsocket } from "./controllers/websocket-controller";
@@ -86,9 +85,6 @@ export default function Queue(props: Route.ComponentProps) {
                     </ul>
                 </Alert>
             }
-
-            {/* watchdog activity (auto-hides when no recent clicks) */}
-            <WatchdogActivity />
 
             {/* queue */}
             <div className={styles.queueContainer}>

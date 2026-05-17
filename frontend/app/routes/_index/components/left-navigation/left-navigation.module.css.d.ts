@@ -13,6 +13,7 @@ declare const styles: {
   readonly "settings-icon": string;
   readonly "stream-icon": string;
   readonly "title": string;
+  readonly "watchdog-icon": string;
   readonly "unstyled": string;
   readonly "selected": string;
 };

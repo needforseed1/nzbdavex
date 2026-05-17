@@ -7,15 +7,22 @@ import { LiveUsenetConnections } from "../live-usenet-connections/live-usenet-co
 export type LeftNavigationProps = {
     version?: string,
     isFrontendAuthDisabled?: boolean,
+    isWatchdogEnabled?: boolean,
 }
 
-export function LeftNavigation({ version, isFrontendAuthDisabled }: LeftNavigationProps) {
+export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnabled }: LeftNavigationProps) {
     return (
         <div className={styles.container}>
             <Item target="/queue">
                 <div className={styles["queue-icon"]} />
                 <div className={styles.title}>Queue</div>
             </Item>
+            {isWatchdogEnabled && (
+                <Item target="/watchdog">
+                    <div className={styles["watchdog-icon"]} />
+                    <div className={styles.title}>Watchdog</div>
+                </Item>
+            )}
             <Item target="/explore">
                 <div className={styles["explore-icon"]} />
                 <div className={styles.title}>Files</div>
