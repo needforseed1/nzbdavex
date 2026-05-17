@@ -38,6 +38,12 @@ Add these to Prowlarr and sync them to your Radarr/Sonarr instances.
 
 We start with a basic NzbDav container.
 
+There is no pre-built image published, so we build from source. Clone the repo somewhere on the host first:
+
+```bash
+git clone https://github.com/qooode/nzbdavex.git
+```
+
 ### 1. `docker-compose.yml` (Part 1)
 
 Create the file structure like below:
@@ -49,13 +55,14 @@ your-root-docker-folder/
 │   └── ...
 ```
 
-Update `PUID`, `PGID`, `TZ`, and volume paths as needed.
+Update `PUID`, `PGID`, `TZ`, `build:` path (to where you cloned `nzbdavex`), and volume paths as needed.
 You can get your PUID/PGID by running `id` in your terminal.
 
 ```yaml
 services:
   nzbdav:
-    image: nzbdav/nzbdav:latest
+    build: /path/to/nzbdavex   # path to the cloned https://github.com/qooode/nzbdavex repo
+    image: nzbdavex:latest
     container_name: nzbdav
     restart: unless-stopped
     healthcheck:
@@ -79,10 +86,12 @@ services:
       - /mnt:/mnt
 ```
 
-Run the container
+Build and run the container (the first run will build the image from the cloned source — subsequent runs reuse it):
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
+
+To update later: `git pull` in the cloned `nzbdavex` directory, then `docker compose up -d --build` again.
 
 ### 2. Core Configuration
 

@@ -18,23 +18,28 @@ This is an extended fork of [nzbdav](https://github.com/nzbdav-dev/nzbdav) with 
 
 ## Getting Started
 
-Run with Docker:
+There is no pre-built image published — clone the repo and build it locally with Docker:
 
 ```bash
-docker run --rm -it -p 3000:3000 nzbdav/nzbdav:latest
+git clone https://github.com/qooode/nzbdavex.git
+cd nzbdavex
+docker build -t nzbdavex:latest .
+docker run --rm -it -p 3000:3000 nzbdavex:latest
 ```
 
 To persist settings, mount a volume at `/config`:
 
 ```bash
-mkdir -p $(pwd)/nzbdav && \
+mkdir -p $(pwd)/nzbdavex-config && \
 docker run --rm -it \
-  -v $(pwd)/nzbdav:/config \
+  -v $(pwd)/nzbdavex-config:/config \
   -e PUID=1000 \
   -e PGID=1000 \
   -p 3000:3000 \
-  nzbdav/nzbdav:latest
+  nzbdavex:latest
 ```
+
+To update later, `git pull` in the cloned repo and rebuild with `docker build -t nzbdavex:latest .`.
 
 Once running, open the UI on port `3000` and head to **Settings** to configure your NNTP providers and WebDAV credentials.
 
