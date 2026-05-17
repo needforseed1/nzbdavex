@@ -20,9 +20,9 @@ public class PlaybackFastVerifier
         _usenetClient = usenetClient;
     }
 
-    public async Task<Verdict> VerifyAsync(Stream nzbStream, string mode, CancellationToken ct)
+    public async Task<VerifyOutcome> VerifyAsync(Stream nzbStream, string mode, CancellationToken ct)
     {
-        if (mode == "none") return Verdict.Available;
+        if (mode == "none") return new VerifyOutcome(Verdict.Available, null);
 
         NzbDocument nzb;
         try
@@ -32,39 +32,43 @@ public class PlaybackFastVerifier
         catch (Exception e)
         {
             Log.Debug("Fast-verify: NZB parse failed: {Message}", e.Message);
-            return Verdict.Dead;
+            return new VerifyOutcome(Verdict.Dead, null);
         }
 
         var sampleSegmentId = PickSampleSegment(nzb);
-        if (sampleSegmentId is null) return Verdict.Dead;
+        if (sampleSegmentId is null) return new VerifyOutcome(Verdict.Dead, null);
 
         try
         {
             if (mode == "body")
             {
                 var resp = await _usenetClient.DecodedBodyAsync(sampleSegmentId, ct).ConfigureAwait(false);
-                return resp.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
+                var verdict = resp.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
                     ? Verdict.Available
                     : Verdict.Dead;
+                return new VerifyOutcome(verdict, MultiProviderNntpClient.LastResponderHost.Value);
             }
             else
             {
                 var resp = await _usenetClient.StatAsync(sampleSegmentId, ct).ConfigureAwait(false);
-                return resp.ResponseType == UsenetResponseType.ArticleExists
+                var verdict = resp.ResponseType == UsenetResponseType.ArticleExists
                     ? Verdict.Available
                     : Verdict.Dead;
+                return new VerifyOutcome(verdict, MultiProviderNntpClient.LastResponderHost.Value);
             }
         }
         catch (OperationCanceledException)
         {
-            return Verdict.Timeout;
+            return new VerifyOutcome(Verdict.Timeout, null);
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
             Log.Debug("Fast-verify errored on {Segment}: {Message}", sampleSegmentId, e.Message);
-            return Verdict.Timeout;
+            return new VerifyOutcome(Verdict.Timeout, null);
         }
     }
+
+    public readonly record struct VerifyOutcome(Verdict Verdict, string? ResponderHost);
 
     private static string? PickSampleSegment(NzbDocument nzb)
     {

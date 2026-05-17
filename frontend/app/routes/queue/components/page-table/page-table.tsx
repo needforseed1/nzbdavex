@@ -27,6 +27,8 @@ export function PageTable({ children, headerCheckboxState, onHeaderCheckboxChang
                             </TriCheckbox>
                         </th>
                         <th className={styles.desktop}>Category</th>
+                        <th className={styles.desktop}>Indexer</th>
+                        <th className={styles.desktop}>Provider</th>
                         <th className={styles.desktop}>Status</th>
                         <th className={styles.desktop}>Size</th>
                         <th>Actions</th>
@@ -82,16 +84,14 @@ export function PageRow(props: PageRowProps) {
             </td>
             <td className={styles.desktop}>
                 <CategoryBadge category={props.category} />
-                {props.indexer && (
-                    <div style={{ marginTop: 4 }}>
-                        <IndexerBadge indexer={props.indexer} />
-                    </div>
-                )}
-                {props.providers && props.providers.length > 0 && (
-                    <div style={{ marginTop: 4 }}>
-                        <ProvidersBadge providers={props.providers} />
-                    </div>
-                )}
+            </td>
+            <td className={styles.desktop}>
+                {props.indexer ? <IndexerBadge indexer={props.indexer} /> : <span className={styles.emptyCell}>—</span>}
+            </td>
+            <td className={styles.desktop}>
+                {props.providers && props.providers.length > 0
+                    ? <ProvidersBadge providers={props.providers} />
+                    : <span className={styles.emptyCell}>—</span>}
             </td>
             <td className={styles.desktop}>
                 <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
@@ -124,16 +124,27 @@ export function ProvidersBadge({ providers }: { providers: ProviderUsage[] }) {
     const total = providers.reduce((acc, p) => acc + p.segments, 0);
     const visible = providers.slice(0, MAX_INLINE_PROVIDERS);
     const hidden = providers.length - visible.length;
-    const parts = visible.map(p => total > 0
-        ? `${stripHost(p.host)} ${Math.round((p.segments / total) * 100)}%`
-        : stripHost(p.host));
-    const label = hidden > 0 ? `${parts.join(" · ")} +${hidden}` : parts.join(" · ");
     const tooltip = providers
         .map(p => total > 0
             ? `${p.host}: ${p.segments} segments (${Math.round((p.segments / total) * 100)}%)`
             : `${p.host}: idle`)
         .join("\n");
-    return <div className={styles.providersBadge} title={tooltip}>📡 {label}</div>;
+    return (
+        <div className={styles.providersBadge} title={tooltip}>
+            {visible.map((p, i) => (
+                <span key={p.host} className={styles.providersEntry}>
+                    {i > 0 && <span className={styles.providersSep}>·</span>}
+                    <span className={styles.providersHost}>{stripHost(p.host)}</span>
+                    {total > 0 && (
+                        <span className={styles.providersPct}>
+                            {Math.round((p.segments / total) * 100)}%
+                        </span>
+                    )}
+                </span>
+            ))}
+            {hidden > 0 && <span className={styles.providersMore}>+{hidden}</span>}
+        </div>
+    );
 }
 
 function stripHost(host: string): string {

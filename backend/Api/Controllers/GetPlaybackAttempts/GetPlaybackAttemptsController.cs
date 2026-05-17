@@ -27,6 +27,7 @@ public class GetPlaybackAttemptsController(PlaybackAttemptLog attemptLog) : Base
             FailReason = a.FailReason,
             DurationMs = a.DurationMs,
             IsWinner = a.IsWinner,
+            ProviderHost = a.ProviderHost,
         }).ToList();
 
         IActionResult result = Ok(new GetPlaybackAttemptsResponse

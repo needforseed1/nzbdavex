@@ -24,5 +24,6 @@ public class GetPlaybackAttemptsResponse : BaseApiResponse
         [JsonPropertyName("failReason")] public string? FailReason { get; init; }
         [JsonPropertyName("durationMs")] public required int DurationMs { get; init; }
         [JsonPropertyName("isWinner")] public required bool IsWinner { get; init; }
+        [JsonPropertyName("providerHost")] public string? ProviderHost { get; init; }
     }
 }

@@ -350,6 +350,7 @@ export type PlaybackAttempt = {
     failReason: string | null,
     durationMs: number,
     isWinner: boolean,
+    providerHost?: string | null,
 }
 
 export type DirectoryItem = {

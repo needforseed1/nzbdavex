@@ -95,7 +95,7 @@ public class ProfilePlayController(
                     PlaybackAttemptLog.Outcome.EnqueueFailed, "Indexer NZB fetch failed", startsAt, isWinner: false);
                 return StatusCode(502, "Failed to fetch NZB from indexer.");
             }
-            var single = new PreVerifyResult(entry.Primary, nzbBytes, PlaybackFastVerifier.Verdict.Available);
+            var single = new PreVerifyResult(entry.Primary, nzbBytes, PlaybackFastVerifier.Verdict.Available, null);
             var (result, reason, newNzoId) = await CommitAsync(nzbToken, single, deadline, totalCts.Token).ConfigureAwait(false);
             RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
                 MapCommitReason(reason), CommitReasonToMessage(reason), startsAt, isWinner: reason == CommitReason.Completed);
@@ -164,7 +164,8 @@ public class ProfilePlayController(
                         RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                             rankIndex[r.Candidate.NzbUrl],
                             PlaybackAttemptLog.Outcome.PreVerifyDead,
-                            "STAT/HEAD reported article missing on every provider", startsAt, isWinner: false);
+                            "STAT/HEAD reported article missing on every provider", startsAt, isWinner: false,
+                            providerHost: AllConfiguredProvidersDisplay());
                         break;
                     case PlaybackFastVerifier.Verdict.Timeout:
                         // Don't poison on timeout — provider was just slow.
@@ -182,7 +183,8 @@ public class ProfilePlayController(
                 RecordAttempt(clickId, best.Candidate, contentType, requestedTitle,
                     rankIndex[best.Candidate.NzbUrl],
                     MapCommitReason(reason), CommitReasonToMessage(reason), startsAt,
-                    isWinner: reason == CommitReason.Completed);
+                    isWinner: reason == CommitReason.Completed,
+                    providerHost: best.ResponderHost);
                 if (action is not null)
                 {
                     // Winner found. Cancel in-flight losers so they stop holding
@@ -337,7 +339,8 @@ public class ProfilePlayController(
         PlaybackAttemptLog.Outcome outcome,
         string? failReason,
         Dictionary<string, DateTimeOffset> startsAt,
-        bool isWinner)
+        bool isWinner,
+        string? providerHost = null)
     {
         var attemptedAt = startsAt.GetValueOrDefault(c.NzbUrl, DateTimeOffset.UtcNow);
         attemptLog.Record(new PlaybackAttemptLog.Attempt
@@ -354,7 +357,18 @@ public class ProfilePlayController(
             FailReason = failReason,
             DurationMs = (int)Math.Max(0, (DateTimeOffset.UtcNow - attemptedAt).TotalMilliseconds),
             IsWinner = isWinner,
+            ProviderHost = providerHost,
         });
+    }
+
+    private string AllConfiguredProvidersDisplay()
+    {
+        var hosts = configManager.GetUsenetProviderConfig().Providers
+            .Select(p => p.Host)
+            .Where(h => !string.IsNullOrEmpty(h))
+            .Distinct()
+            .ToList();
+        return hosts.Count == 0 ? "—" : string.Join(", ", hosts);
     }
 
     private static PlaybackAttemptLog.Outcome MapCommitReason(CommitReason r) => r switch
@@ -395,20 +409,20 @@ public class ProfilePlayController(
         {
             var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
             if (nzbBytes is null)
-                return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead);
+                return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
 
             using var verifyStream = new MemoryStream(nzbBytes, writable: false);
-            var verdict = await fastVerifier.VerifyAsync(verifyStream, verifyMode, ct).ConfigureAwait(false);
-            return new PreVerifyResult(candidate, nzbBytes, verdict);
+            var outcome = await fastVerifier.VerifyAsync(verifyStream, verifyMode, ct).ConfigureAwait(false);
+            return new PreVerifyResult(candidate, nzbBytes, outcome.Verdict, outcome.ResponderHost);
         }
         catch (OperationCanceledException)
         {
-            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout);
+            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout, null);
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
             Log.Debug(e, "Pre-verify failed for {Url}", candidate.NzbUrl);
-            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead);
+            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
         }
     }
 
@@ -594,5 +608,6 @@ public class ProfilePlayController(
     private readonly record struct PreVerifyResult(
         NzbResolutionCache.Candidate Candidate,
         byte[]? NzbBytes,
-        PlaybackFastVerifier.Verdict Verdict);
+        PlaybackFastVerifier.Verdict Verdict,
+        string? ResponderHost);
 }

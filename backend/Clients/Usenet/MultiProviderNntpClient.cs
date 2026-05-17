@@ -10,6 +10,12 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, ProviderUsageTracker usageTracker) : NntpClient
 {
+    // Per-call attribution: hostname of the provider that returned a non-"missing"
+    // response. Reset at the start of each RunFromPoolWithBackup, set on a successful
+    // response. Read it from the same async context immediately after an awaited call
+    // to attribute that single response to a provider (e.g. watchdog pre-verify).
+    public static readonly AsyncLocal<string?> LastResponderHost = new();
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");
@@ -125,6 +131,7 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, 
         CancellationToken cancellationToken
     ) where T : UsenetResponse
     {
+        LastResponderHost.Value = null;
         ExceptionDispatchInfo? lastException = null;
         var orderedProviders = GetOrderedProviders();
         for (var i = 0; i < orderedProviders.Count; i++)
@@ -146,6 +153,11 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, 
                 // if no article with that message-id is found, try again with the next provider.
                 if (!isLastProvider && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
                     continue;
+
+                // attribute the response to this provider, unless it was a "missing" hit
+                // from the last provider (in which case nobody actually answered).
+                if (result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId)
+                    LastResponderHost.Value = provider.Host;
 
                 // record per-queue-item attribution only for bytes-bearing responses (BODY/ARTICLE).
                 if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse

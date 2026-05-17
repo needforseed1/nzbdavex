@@ -39,6 +39,7 @@ public class PlaybackAttemptLog
         public string? FailReason { get; init; }
         public int DurationMs { get; init; }
         public bool IsWinner { get; init; }
+        public string? ProviderHost { get; init; }
     }
 
     public enum Outcome

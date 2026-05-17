@@ -374,6 +374,7 @@
 .colRank      { width: 36px; color: var(--text-muted); font-variant-numeric: tabular-nums; font-weight: 600; }
 .colCandidate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
 .colIndexer   { white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.colProvider  { white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: #4ade80; }
 .colSize      { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-muted); width: 80px; }
 .colOutcome   { white-space: nowrap; width: 130px; }
 .colReason    { color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

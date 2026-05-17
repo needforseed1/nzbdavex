@@ -169,6 +169,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             <th className={styles.colRank}>#</th>
                             <th className={styles.colCandidate}>Candidate</th>
                             <th className={styles.colIndexer}>Indexer</th>
+                            <th className={styles.colProvider}>Provider</th>
                             <th className={styles.colSize}>Size</th>
                             <th className={styles.colOutcome}>Outcome</th>
                             <th className={styles.colReason}>Reason</th>
@@ -181,6 +182,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                                 <td className={styles.colRank}>{a.rankIndex + 1}</td>
                                 <td className={styles.colCandidate} title={a.candidateTitle}>{a.candidateTitle || "—"}</td>
                                 <td className={styles.colIndexer}>{a.indexerName || "—"}</td>
+                                <td className={styles.colProvider} title={a.providerHost ?? undefined}>{a.providerHost ?? "—"}</td>
                                 <td className={styles.colSize}>{formatBytes(a.size)}</td>
                                 <td className={styles.colOutcome}>
                                     <OutcomeBadge outcome={a.outcome} winner={a.isWinner} />
@@ -202,6 +204,8 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             </div>
                             <div className={styles.attemptCardTitle} title={a.candidateTitle}>{a.candidateTitle || "—"}</div>
                             <div className={styles.attemptCardMeta}>
+                                <span title={a.providerHost ?? undefined}>📡 {a.providerHost ?? "—"}</span>
+                                <span className={styles.attemptCardMetaDot}>·</span>
                                 <span>{formatBytes(a.size)}</span>
                                 <span className={styles.attemptCardMetaDot}>·</span>
                                 <span>{a.durationMs}ms</span>
