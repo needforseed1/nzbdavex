@@ -192,18 +192,17 @@ public class ProfileStreamController(
 
     private static string BuildDescription(NzbResolutionCache.Candidate c)
     {
-        var meta = new List<string> { FormatBytes(c.Size) };
-        if (c.Posted is { } p) meta.Add(FormatAge(DateTimeOffset.UtcNow - p));
-        meta.Add(c.IndexerName);
+        var meta = new List<string> { $"💾 {FormatBytes(c.Size)}" };
+        if (c.Posted is { } p) meta.Add($"📅 {FormatAge(DateTimeOffset.UtcNow - p)}");
+        meta.Add($"🌐 {c.IndexerName}");
         return $"{c.Title}\n{string.Join(" | ", meta)}";
     }
 
     private static string FormatAge(TimeSpan a)
     {
         if (a.TotalDays >= 365) return $"{(int)(a.TotalDays / 365)}y";
-        if (a.TotalDays >= 30) return $"{(int)(a.TotalDays / 30)}mo";
         if (a.TotalDays >= 1) return $"{(int)a.TotalDays}d";
         if (a.TotalHours >= 1) return $"{(int)a.TotalHours}h";
-        return "<1h";
+        return $"{Math.Max(1, (int)a.TotalMinutes)}m";
     }
 }
