@@ -30,18 +30,19 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const refresh = useCallback(async () => {
-        setRefreshing(true);
+    const refresh = useCallback(async (silent: boolean = false) => {
+        if (!silent) setRefreshing(true);
         try {
             const r = await fetch("/settings/watchdog-attempts?limit=200");
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const data = await r.json();
-            setAttempts(data.attempts ?? []);
+            const next: PlaybackAttempt[] = data.attempts ?? [];
+            setAttempts(prev => attemptsEqual(prev, next) ? prev : next);
             setError(null);
         } catch (e: any) {
             setError(e?.message ?? String(e));
         } finally {
-            setRefreshing(false);
+            if (!silent) setRefreshing(false);
         }
     }, []);
 
@@ -51,7 +52,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
         let timer: ReturnType<typeof setTimeout> | null = null;
         const loop = async () => {
             if (cancelled) return;
-            await refresh();
+            await refresh(true);
             if (cancelled) return;
             timer = setTimeout(loop, POLL_INTERVAL_MS);
         };
@@ -83,7 +84,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                             label={refreshing ? "Refreshing…" : "Live"}
                             checked={autoRefresh}
                             onChange={e => setAutoRefresh(e.target.checked)} />
-                        <Button variant="outline-secondary" size="sm" onClick={refresh} disabled={refreshing}>
+                        <Button variant="outline-secondary" size="sm" onClick={() => refresh()} disabled={refreshing}>
                             Refresh
                         </Button>
                         <Button
@@ -300,6 +301,23 @@ type ClickGroup = {
     allResolved: boolean,
     attempts: PlaybackAttempt[],
 };
+
+function attemptsEqual(a: PlaybackAttempt[], b: PlaybackAttempt[]): boolean {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i], y = b[i];
+        if (x.clickId !== y.clickId) return false;
+        if (x.rankIndex !== y.rankIndex) return false;
+        if (x.outcome !== y.outcome) return false;
+        if (x.isWinner !== y.isWinner) return false;
+        if (x.attemptedAtUnix !== y.attemptedAtUnix) return false;
+        if (x.durationMs !== y.durationMs) return false;
+        if (x.size !== y.size) return false;
+        if (x.failReason !== y.failReason) return false;
+    }
+    return true;
+}
 
 function groupByClick(list: PlaybackAttempt[], hiddenBefore: number): ClickGroup[] {
     const map = new Map<string, ClickGroup>();
