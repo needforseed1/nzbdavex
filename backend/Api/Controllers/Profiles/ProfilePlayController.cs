@@ -61,14 +61,12 @@ public class ProfilePlayController(
         var entry = cache.Get(nzbToken);
         if (entry is null) return NotFound("Stream link expired. Re-search in your player.");
 
-        // Already-downloaded by a prior request (same title): single durable shortcut.
+        // Already-downloaded by any prior click in this candidate group: single DB lookup.
         // We deliberately don't use any in-memory "previously resolved DavItemId" cache:
         // DavItems can be deleted (RemoveUnlinkedFilesTask, manual cleanup from /explore),
-        // and a stale cached redirect would 302 the player into a dead 400 — looking
-        // exactly like a broken stream. TryResolveExistingAsync queries the DB and
-        // self-heals when the items are gone (FindLargestVideoAsync returns null →
-        // falls through to the watchdog flow).
-        var existingResolved = await TryResolveExistingAsync(entry.Primary.Title, HttpContext.RequestAborted).ConfigureAwait(false);
+        // and a stale cached redirect would 302 the player into a dead 400. The DB lookup
+        // self-heals when items are gone (FindLargestVideoAsync returns null → falls through).
+        var existingResolved = await TryResolveExistingAsync(entry, HttpContext.RequestAborted).ConfigureAwait(false);
         if (existingResolved is not null) return existingResolved;
 
         var totalBudget = TimeSpan.FromSeconds(configManager.GetPlayTotalBudgetSeconds());
@@ -539,13 +537,22 @@ public class ProfilePlayController(
         return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId);
     }
 
-    private async Task<IActionResult?> TryResolveExistingAsync(string title, CancellationToken ct)
+    // Looks for a completed HistoryItem matching ANY candidate in this group.
+    // Necessary because the queue item's filename comes from the WINNING candidate,
+    // not from the player's requested primary candidate — so matching by Primary.Title
+    // alone misses every prior click where the winner was a different release variant
+    // (e.g. requested REMUX-d3g but resolved via x265-DON).
+    private async Task<IActionResult?> TryResolveExistingAsync(NzbResolutionCache.Entry entry, CancellationToken ct)
     {
-        var safeTitle = SanitizeFileName(title);
-        var fileName = $"{safeTitle}.nzb";
+        var fileNames = entry.Candidates
+            .Skip(entry.StartIndex)
+            .Select(c => $"{SanitizeFileName(c.Title)}.nzb")
+            .Distinct()
+            .ToList();
+        if (fileNames.Count == 0) return null;
 
         var existing = await dbClient.Ctx.HistoryItems.AsNoTracking()
-            .Where(h => h.FileName == fileName && h.DownloadStatus == HistoryItem.DownloadStatusOption.Completed)
+            .Where(h => fileNames.Contains(h.FileName) && h.DownloadStatus == HistoryItem.DownloadStatusOption.Completed)
             .OrderByDescending(h => h.CreatedAt)
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
