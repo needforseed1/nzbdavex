@@ -20,14 +20,15 @@ namespace NzbWebDAV.Api.Controllers.Profiles;
 public class ProfilePlayController(
     ConfigManager configManager,
     NzbResolutionCache cache,
+    CandidateNegativeCache negativeCache,
+    PlaybackFastVerifier fastVerifier,
     DavDatabaseClient dbClient,
     QueueManager queueManager,
     WebsocketManager websocketManager
 ) : ControllerBase
 {
-    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(60) };
-    private static readonly TimeSpan ProcessingTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     [HttpGet]
     public async Task<IActionResult> Get(string token, string nzbToken)
@@ -53,51 +54,152 @@ public class ProfilePlayController(
         var entry = cache.Get(nzbToken);
         if (entry is null) return NotFound("Stream link expired. Re-search in your player.");
 
+        // already-resolved (a previous click on the same token resolved it): shortcut
         if (entry.DavItemId.HasValue && !string.IsNullOrEmpty(entry.VideoExtension))
             return BuildRedirect(entry.DavItemId.Value, entry.VideoExtension);
 
-        var ct = HttpContext.RequestAborted;
-        var safeTitle = SanitizeFileName(entry.Title);
-        var fileName = $"{safeTitle}.nzb";
+        // already-downloaded by a prior request (same title): shortcut
+        var existingResolved = await TryResolveExistingAsync(entry.Primary.Title, nzbToken, HttpContext.RequestAborted).ConfigureAwait(false);
+        if (existingResolved is not null) return existingResolved;
 
-        var existing = await dbClient.Ctx.HistoryItems.AsNoTracking()
-            .Where(h => h.FileName == fileName && h.DownloadStatus == HistoryItem.DownloadStatusOption.Completed)
-            .OrderByDescending(h => h.CreatedAt)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var totalBudget = TimeSpan.FromSeconds(configManager.GetPlayTotalBudgetSeconds());
+        var hedgeDelay = TimeSpan.FromSeconds(configManager.GetPlayHedgeDelaySeconds());
+        var maxCandidates = configManager.GetPlayMaxCandidates();
+        var verifyMode = configManager.GetPlayVerifyMode();
 
-        if (existing is not null)
+        using var totalCts = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+        totalCts.CancelAfter(totalBudget);
+        var deadline = DateTimeOffset.UtcNow + totalBudget;
+
+        var pool = entry.Candidates
+            .Skip(entry.StartIndex)
+            .Take(maxCandidates)
+            .Where(c => !negativeCache.IsFailed(c.NzbUrl))
+            .ToList();
+        if (pool.Count == 0)
+            return StatusCode(503, "All ranked candidates recently failed; try again shortly.");
+
+        // Phase 1 — pre-verify (parallel, hedged): fetch NZB + verify first segment exists.
+        var preVerifies = new List<Task<PreVerifyResult>>();
+        preVerifies.Add(PreVerifyAsync(pool[0], verifyMode, totalCts.Token));
+
+        if (pool.Count > 1)
         {
-            var existingVideo = await FindLargestVideoAsync(existing.Id, ct).ConfigureAwait(false);
-            if (existingVideo is not null)
+            // Give the primary a brief head start; if it hasn't passed by then, fire backups.
+            var hedgeTask = Task.Delay(hedgeDelay, totalCts.Token);
+            var settled = await Task.WhenAny(preVerifies[0], hedgeTask).ConfigureAwait(false);
+            var primaryReady = settled == preVerifies[0]
+                               && preVerifies[0].IsCompletedSuccessfully
+                               && preVerifies[0].Result.Verdict == PlaybackFastVerifier.Verdict.Available;
+
+            if (!primaryReady)
             {
-                var existingExt = Path.GetExtension(existingVideo.Name).TrimStart('.').ToLowerInvariant();
-                cache.UpdateResolved(nzbToken, existingVideo.Id, existingExt);
-                return BuildRedirect(existingVideo.Id, existingExt);
+                for (var i = 1; i < pool.Count; i++)
+                    preVerifies.Add(PreVerifyAsync(pool[i], verifyMode, totalCts.Token));
             }
         }
 
-        var buffer = new MemoryStream();
+        // Phase 2 — commit. Take pre-verified candidates in their original ranking order,
+        // try to commit each (enqueue + poll), first one to complete wins.
+        var rankIndex = new Dictionary<string, int>();
+        for (var i = 0; i < pool.Count; i++) rankIndex[pool[i].NzbUrl] = i;
+
+        var remaining = new List<Task<PreVerifyResult>>(preVerifies);
+        var ready = new SortedList<int, PreVerifyResult>();
+
+        while (remaining.Count > 0 || ready.Count > 0)
+        {
+            // Pull off any newly-settled pre-verifications.
+            while (remaining.Count > 0)
+            {
+                var anyDone = remaining.FirstOrDefault(t => t.IsCompleted);
+                if (anyDone == null) break;
+                remaining.Remove(anyDone);
+                var r = await anyDone.ConfigureAwait(false);
+                if (r.Verdict == PlaybackFastVerifier.Verdict.Available)
+                    ready[rankIndex[r.Candidate.NzbUrl]] = r;
+                else
+                    negativeCache.MarkFailed(r.Candidate.NzbUrl);
+            }
+
+            if (ready.Count > 0)
+            {
+                var best = ready.Values[0];
+                ready.RemoveAt(0);
+                var committed = await CommitAsync(nzbToken, best, deadline, totalCts.Token).ConfigureAwait(false);
+                if (committed is not null) return committed;
+                negativeCache.MarkFailed(best.Candidate.NzbUrl);
+                continue;
+            }
+
+            if (remaining.Count == 0) break;
+            if (DateTimeOffset.UtcNow >= deadline) break;
+            await Task.WhenAny(remaining).ConfigureAwait(false);
+        }
+
+        return StatusCode(504, "No candidate completed within the configured budget.");
+    }
+
+    private async Task<PreVerifyResult> PreVerifyAsync(
+        NzbResolutionCache.Candidate candidate,
+        string verifyMode,
+        CancellationToken ct)
+    {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, entry.NzbUrl);
-            req.Headers.TryAddWithoutValidation("User-Agent", entry.IndexerUserAgent);
-            using var resp = await HttpClient.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode) return StatusCode(502, $"Indexer returned {(int)resp.StatusCode}.");
-            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await stream.CopyToAsync(buffer, ct).ConfigureAwait(false);
+            var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
+            if (nzbBytes is null)
+                return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead);
+
+            using var verifyStream = new MemoryStream(nzbBytes, writable: false);
+            var verdict = await fastVerifier.VerifyAsync(verifyStream, verifyMode, ct).ConfigureAwait(false);
+            return new PreVerifyResult(candidate, nzbBytes, verdict);
         }
-        catch (Exception e)
+        catch (OperationCanceledException)
         {
-            return StatusCode(502, $"Failed to fetch NZB: {e.Message}");
+            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout);
         }
-        buffer.Position = 0;
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            Log.Debug(e, "Pre-verify failed for {Url}", candidate.NzbUrl);
+            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead);
+        }
+    }
+
+    private async Task<byte[]?> FetchNzbBytesAsync(NzbResolutionCache.Candidate c, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+            req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+            using var resp = await HttpClient.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            Log.Debug("NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
+            return null;
+        }
+    }
+
+    private async Task<IActionResult?> CommitAsync(
+        string nzbToken,
+        PreVerifyResult preVerify,
+        DateTimeOffset deadline,
+        CancellationToken ct)
+    {
+        var c = preVerify.Candidate;
+        var nzbBytes = preVerify.NzbBytes!;
+        var safeTitle = SanitizeFileName(c.Title);
+        var fileName = $"{safeTitle}.nzb";
+
+        var category = configManager.GetManualUploadCategory();
 
         Guid nzoId;
         try
         {
-            var category = string.IsNullOrWhiteSpace(entry.Type)
-                ? configManager.GetManualUploadCategory()
-                : entry.Type;
+            using var buffer = new MemoryStream(nzbBytes, writable: false);
             var addFileRequest = new AddFileRequest
             {
                 FileName = fileName,
@@ -110,18 +212,18 @@ public class ProfilePlayController(
             };
             var addFileController = new AddFileController(HttpContext, dbClient, queueManager, configManager, websocketManager);
             var addResponse = await addFileController.AddFileAsync(addFileRequest).ConfigureAwait(false);
-            if (addResponse.NzoIds.Count == 0) return StatusCode(500, "Queueing failed.");
+            if (addResponse.NzoIds.Count == 0) return null;
             nzoId = Guid.Parse(addResponse.NzoIds[0]);
         }
-        catch (Exception e)
+        catch (Exception e) when (!e.IsCancellationException())
         {
-            return StatusCode(500, $"Queueing failed: {e.GetType().Name}: {e.Message}");
+            Log.Debug(e, "Enqueue failed for {Url}", c.NzbUrl);
+            return null;
         }
 
-        var deadline = DateTime.UtcNow + ProcessingTimeout;
-        while (DateTime.UtcNow < deadline)
+        while (DateTimeOffset.UtcNow < deadline)
         {
-            if (ct.IsCancellationRequested) return new EmptyResult();
+            if (ct.IsCancellationRequested) return null;
 
             var history = await dbClient.Ctx.HistoryItems.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.Id == nzoId, ct).ConfigureAwait(false);
@@ -129,20 +231,42 @@ public class ProfilePlayController(
             if (history is not null)
             {
                 if (history.DownloadStatus != HistoryItem.DownloadStatusOption.Completed)
-                    return StatusCode(502, history.FailMessage ?? "Processing failed.");
+                {
+                    Log.Debug("Candidate {Url} processing failed: {Msg}", c.NzbUrl, history.FailMessage);
+                    return null;
+                }
 
                 var video = await FindLargestVideoAsync(nzoId, ct).ConfigureAwait(false);
-                if (video is null) return NotFound("No playable video found in NZB.");
+                if (video is null) return null;
 
                 var ext = Path.GetExtension(video.Name).TrimStart('.').ToLowerInvariant();
                 cache.UpdateResolved(nzbToken, video.Id, ext);
                 return BuildRedirect(video.Id, ext);
             }
 
-            await Task.Delay(PollInterval, ct).ConfigureAwait(false);
+            try { await Task.Delay(PollInterval, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return null; }
         }
 
-        return StatusCode(504, "Timed out waiting for NZB processing.");
+        return null;
+    }
+
+    private async Task<IActionResult?> TryResolveExistingAsync(string title, string nzbToken, CancellationToken ct)
+    {
+        var safeTitle = SanitizeFileName(title);
+        var fileName = $"{safeTitle}.nzb";
+
+        var existing = await dbClient.Ctx.HistoryItems.AsNoTracking()
+            .Where(h => h.FileName == fileName && h.DownloadStatus == HistoryItem.DownloadStatusOption.Completed)
+            .OrderByDescending(h => h.CreatedAt)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+
+        if (existing is null) return null;
+        var existingVideo = await FindLargestVideoAsync(existing.Id, ct).ConfigureAwait(false);
+        if (existingVideo is null) return null;
+        var ext = Path.GetExtension(existingVideo.Name).TrimStart('.').ToLowerInvariant();
+        cache.UpdateResolved(nzbToken, existingVideo.Id, ext);
+        return BuildRedirect(existingVideo.Id, ext);
     }
 
     private async Task<DavItem?> FindLargestVideoAsync(Guid historyItemId, CancellationToken ct)
@@ -172,4 +296,9 @@ public class ProfilePlayController(
         var dlKey = GetWebdavItemRequest.GenerateDownloadKey(configManager.GetStrmKey(), path);
         return Redirect($"{baseUrl}/view/{path}?downloadKey={dlKey}&extension={extension}");
     }
+
+    private readonly record struct PreVerifyResult(
+        NzbResolutionCache.Candidate Candidate,
+        byte[]? NzbBytes,
+        PlaybackFastVerifier.Verdict Verdict);
 }

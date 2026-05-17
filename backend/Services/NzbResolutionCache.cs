@@ -8,20 +8,28 @@ public class NzbResolutionCache
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
     private readonly ConcurrentDictionary<string, Entry> _entries = new();
 
-    public string Add(string indexerName, string indexerUserAgent, string nzbUrl, string title, string type)
+    /// <summary>
+    /// Register a candidate group and return one token per candidate. Each token's entry
+    /// points at the same ordered Candidates list with its own StartIndex, so the play
+    /// handler can iterate from any starting position for fast-fail + fallback.
+    /// </summary>
+    public string[] AddGroup(IReadOnlyList<Candidate> candidates, string type)
     {
         Cleanup();
-        var token = GenerateToken();
-        _entries[token] = new Entry
+        var tokens = new string[candidates.Count];
+        for (var i = 0; i < candidates.Count; i++)
         {
-            IndexerName = indexerName,
-            IndexerUserAgent = indexerUserAgent,
-            NzbUrl = nzbUrl,
-            Title = title,
-            Type = type,
-            CreatedAt = DateTime.UtcNow,
-        };
-        return token;
+            var token = GenerateToken();
+            _entries[token] = new Entry
+            {
+                Candidates = candidates,
+                StartIndex = i,
+                Type = type,
+                CreatedAt = DateTime.UtcNow,
+            };
+            tokens[i] = token;
+        }
+        return tokens;
     }
 
     public Entry? Get(string token) => _entries.TryGetValue(token, out var e) ? e : null;
@@ -50,15 +58,25 @@ public class NzbResolutionCache
         return Convert.ToHexStringLower(bytes);
     }
 
-    public class Entry
+    public class Candidate
     {
         public required string IndexerName { get; init; }
         public required string IndexerUserAgent { get; init; }
         public required string NzbUrl { get; init; }
         public required string Title { get; init; }
+        public long Size { get; init; }
+        public DateTimeOffset? Posted { get; init; }
+    }
+
+    public class Entry
+    {
+        public required IReadOnlyList<Candidate> Candidates { get; init; }
+        public required int StartIndex { get; init; }
         public required string Type { get; init; }
         public required DateTime CreatedAt { get; init; }
         public Guid? DavItemId { get; set; }
         public string? VideoExtension { get; set; }
+
+        public Candidate Primary => Candidates[StartIndex];
     }
 }

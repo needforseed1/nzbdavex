@@ -171,6 +171,45 @@ public class ConfigManager
             .ToHashSet();
     }
 
+    public int GetPlayTotalBudgetSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("play.total-budget-seconds"));
+        if (v == null) return 10;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 3, 60) : 10;
+    }
+
+    public int GetPlayHedgeDelaySeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("play.hedge-delay-seconds"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 30) : 3;
+    }
+
+    public int GetPlayMaxCandidates()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("play.max-candidates"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 3;
+    }
+
+    public string GetPlayVerifyMode()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("play.verify-mode"));
+        return v switch
+        {
+            "body" => "body",
+            "none" => "none",
+            _ => "stat",
+        };
+    }
+
+    public TimeSpan GetPlayCandidateNegativeCacheTtl()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("play.candidate-negative-cache-minutes"));
+        if (v == null) return TimeSpan.FromMinutes(5);
+        return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(5);
+    }
+
     public bool IsPreviewPar2FilesEnabled()
     {
         var defaultValue = false;

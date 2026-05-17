@@ -58,21 +58,36 @@ public class ProfileStreamController(
         })).ConfigureAwait(false);
 
         var baseUrl = HttpContext.GetPublicBaseUrl(configManager.GetBaseUrl());
-        var streams = perIndexer
+        var deduped = perIndexer
             .SelectMany(x => x)
             .Where(x => !string.IsNullOrWhiteSpace(x.item.NzbUrl))
             .GroupBy(x => x.item.NzbUrl)
             .Select(g => g.First())
             .OrderByDescending(x => x.item.Size)
-            .Select(x =>
+            .ThenByDescending(x => x.item.Posted ?? DateTimeOffset.MinValue)
+            .ToList();
+
+        if (deduped.Count == 0) return new JsonResult(new { streams = Array.Empty<object>() });
+
+        var candidates = deduped
+            .Select(x => new NzbResolutionCache.Candidate
             {
-                var nzbToken = cache.Add(x.indexer, x.userAgent, x.item.NzbUrl, x.item.Title, type);
-                return new
-                {
-                    name = x.indexer,
-                    title = $"{x.item.Title}\n{FormatBytes(x.item.Size)}",
-                    url = $"{baseUrl}/p/{token}/play/{nzbToken}.mkv",
-                };
+                IndexerName = x.indexer,
+                IndexerUserAgent = x.userAgent,
+                NzbUrl = x.item.NzbUrl,
+                Title = x.item.Title,
+                Size = x.item.Size,
+                Posted = x.item.Posted,
+            })
+            .ToList();
+
+        var tokens = cache.AddGroup(candidates, type);
+        var streams = candidates
+            .Select((c, i) => new
+            {
+                name = c.IndexerName,
+                title = $"{c.Title}\n{FormatBytes(c.Size)}",
+                url = $"{baseUrl}/p/{token}/play/{tokens[i]}.mkv",
             })
             .ToList();
 

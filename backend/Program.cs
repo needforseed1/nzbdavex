@@ -92,6 +92,8 @@ class Program
             .AddSingleton<UsenetStreamingClient>()
             .AddSingleton<QueueManager>()
             .AddSingleton<NzbResolutionCache>()
+            .AddSingleton<CandidateNegativeCache>()
+            .AddSingleton<PlaybackFastVerifier>()
             .AddSingleton<NewznabRateLimiter>()
             .AddSingleton<TvdbIdResolver>()
             .AddHostedService<HealthCheckService>()
