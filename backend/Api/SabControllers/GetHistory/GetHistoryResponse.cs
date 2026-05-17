@@ -51,6 +51,9 @@ public class GetHistoryResponse : SabBaseResponse
         [JsonPropertyName("nzb_blob_id")]
         public string? NzbBlobId { get; set; }
 
+        [JsonPropertyName("indexer")]
+        public string? Indexer { get; set; }
+
         public static HistorySlot FromHistoryItem
         (
             HistoryItem historyItem,
@@ -70,6 +73,7 @@ public class GetHistoryResponse : SabBaseResponse
                 DownloadTimeSeconds = historyItem.DownloadTimeSeconds,
                 FailMessage = historyItem.FailMessage ?? "",
                 NzbBlobId = historyItem.NzbBlobId?.ToString(),
+                Indexer = historyItem.IndexerName,
             };
         }
 

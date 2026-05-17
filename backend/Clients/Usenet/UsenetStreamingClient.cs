@@ -1,13 +1,14 @@
 ﻿using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Config;
+using NzbWebDAV.Services;
 using NzbWebDAV.Websocket;
 
 namespace NzbWebDAV.Clients.Usenet;
 
 public class UsenetStreamingClient : WrappingNntpClient
 {
-    public UsenetStreamingClient(ConfigManager configManager, WebsocketManager websocketManager)
-        : base(CreateDownloadingNntpClient(configManager, websocketManager))
+    public UsenetStreamingClient(ConfigManager configManager, WebsocketManager websocketManager, ProviderUsageTracker usageTracker)
+        : base(CreateDownloadingNntpClient(configManager, websocketManager, usageTracker))
     {
         // when config changes, create a new MultiProviderClient to use instead.
         configManager.OnConfigChanged += (_, configEventArgs) =>
@@ -16,7 +17,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             if (!configEventArgs.ChangedConfig.ContainsKey("usenet.providers")) return;
 
             // update the connection-pool according to the new config
-            var newUsenetClient = CreateDownloadingNntpClient(configManager, websocketManager);
+            var newUsenetClient = CreateDownloadingNntpClient(configManager, websocketManager, usageTracker);
             ReplaceUnderlyingClient(newUsenetClient);
         };
     }
@@ -24,17 +25,19 @@ public class UsenetStreamingClient : WrappingNntpClient
     private static DownloadingNntpClient CreateDownloadingNntpClient
     (
         ConfigManager configManager,
-        WebsocketManager websocketManager
+        WebsocketManager websocketManager,
+        ProviderUsageTracker usageTracker
     )
     {
-        var multiProviderClient = CreateMultiProviderClient(configManager, websocketManager);
+        var multiProviderClient = CreateMultiProviderClient(configManager, websocketManager, usageTracker);
         return new DownloadingNntpClient(multiProviderClient, configManager);
     }
 
     private static MultiProviderNntpClient CreateMultiProviderClient
     (
         ConfigManager configManager,
-        WebsocketManager websocketManager
+        WebsocketManager websocketManager,
+        ProviderUsageTracker usageTracker
     )
     {
         var providerConfig = configManager.GetUsenetProviderConfig();
@@ -45,7 +48,7 @@ public class UsenetStreamingClient : WrappingNntpClient
                 connectionPoolStats.GetOnConnectionPoolChanged(index)
             ))
             .ToList();
-        return new MultiProviderNntpClient(providerClients);
+        return new MultiProviderNntpClient(providerClients, usageTracker);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient
@@ -60,7 +63,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             onConnectionPoolChanged
         );
         var circuitBreaker = new ProviderCircuitBreaker(connectionDetails.Host);
-        return new MultiConnectionNntpClient(connectionPool, connectionDetails.Type, circuitBreaker);
+        return new MultiConnectionNntpClient(connectionPool, connectionDetails.Type, circuitBreaker, connectionDetails.Host);
     }
 
     private static ConnectionPool<INntpClient> CreateNewConnectionPool

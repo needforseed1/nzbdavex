@@ -26,7 +26,8 @@ public class SabApiController(
     DavDatabaseClient dbClient,
     ConfigManager configManager,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    NzbWebDAV.Services.ProviderUsageTracker providerUsageTracker
 ) : ControllerBase
 {
     [HttpGet]
@@ -95,7 +96,7 @@ public class SabApiController(
                     HttpContext, dbClient, queueManager, configManager, websocketManager);
             case "queue":
                 return new GetQueueController(
-                    HttpContext, dbClient, queueManager, configManager);
+                    HttpContext, dbClient, queueManager, configManager, providerUsageTracker);
 
             case "history" when HttpContext.GetRequestParam("name") == "delete":
                 return new RemoveFromHistoryController(

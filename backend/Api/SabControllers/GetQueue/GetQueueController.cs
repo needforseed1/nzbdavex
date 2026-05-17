@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.SabControllers.GetQueue;
 
@@ -10,7 +11,8 @@ public class GetQueueController(
     HttpContext httpContext,
     DavDatabaseClient dbClient,
     QueueManager queueManager,
-    ConfigManager configManager
+    ConfigManager configManager,
+    ProviderUsageTracker providerUsageTracker
 ) : SabApiController.BaseController(httpContext, configManager)
 {
     private async Task<GetQueueResponse> GetQueueAsync(GetQueueRequest request)
@@ -36,7 +38,8 @@ public class GetQueueController(
             {
                 var percentage = (queueItem == inProgressQueueItem ? progressPercentage : 0)!.Value;
                 var status = queueItem == inProgressQueueItem ? "Downloading" : "Queued";
-                return GetQueueResponse.QueueSlot.FromQueueItem(queueItem!, index, percentage, status);
+                var providerUsage = providerUsageTracker.Snapshot(queueItem!.Id);
+                return GetQueueResponse.QueueSlot.FromQueueItem(queueItem!, index, percentage, status, providerUsage);
             })
             .ToList();
 

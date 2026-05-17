@@ -210,6 +210,8 @@ export const QueueRow = memo(({ slot, onIsSelectedChanged, onIsRemovingChanged, 
                 actions={<ActionButton type="delete" disabled={!!slot.isRemoving || isActivelyUploading} onClick={onRemove} />}
                 onRowSelectionChanged={isSelected => onIsSelectedChanged(slot.nzo_id, isSelected)}
                 error={slot.error}
+                indexer={slot.indexer}
+                providers={slot.providers}
             />
             <ConfirmModal
                 show={isConfirmingRemoval}

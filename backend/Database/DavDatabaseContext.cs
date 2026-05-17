@@ -263,6 +263,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.JobName)
                 .IsRequired();
 
+            e.Property(i => i.IndexerName)
+                .IsRequired(false);
+
             e.HasIndex(i => new { i.Category, i.FileName })
                 .IsUnique();
 
@@ -321,6 +324,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
                 .IsRequired(false);
 
             e.Property(i => i.NzbBlobId)
+                .IsRequired(false);
+
+            e.Property(i => i.IndexerName)
                 .IsRequired(false);
 
             e.HasIndex(i => new { i.CreatedAt })

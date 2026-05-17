@@ -6,6 +6,7 @@ import { Truncate } from "../truncate/truncate";
 import { StatusBadge } from "../status-badge/status-badge";
 import { formatFileSize } from "~/utils/file-size";
 import { classNames } from "~/utils/styling";
+import type { ProviderUsage } from "~/clients/backend-client.server";
 
 export type PageTableProps = {
     children?: ReactNode,
@@ -53,6 +54,8 @@ export type PageRowProps = {
     error?: string,
     fileSizeBytes: number,
     actions: ReactNode,
+    indexer?: string | null,
+    providers?: ProviderUsage[] | null,
     onRowSelectionChanged: (isSelected: boolean) => void
 }
 export function PageRow(props: PageRowProps) {
@@ -70,6 +73,8 @@ export function PageRow(props: PageRowProps) {
                         <div className={styles.badges}>
                             <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
                             <CategoryBadge category={props.category} />
+                            {props.indexer && <IndexerBadge indexer={props.indexer} />}
+                            {props.providers && props.providers.length > 0 && <ProvidersBadge providers={props.providers} />}
                         </div>
                         <div>{formatFileSize(props.fileSizeBytes)}</div>
                     </div>
@@ -77,6 +82,16 @@ export function PageRow(props: PageRowProps) {
             </td>
             <td className={styles.desktop}>
                 <CategoryBadge category={props.category} />
+                {props.indexer && (
+                    <div style={{ marginTop: 4 }}>
+                        <IndexerBadge indexer={props.indexer} />
+                    </div>
+                )}
+                {props.providers && props.providers.length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                        <ProvidersBadge providers={props.providers} />
+                    </div>
+                )}
             </td>
             <td className={styles.desktop}>
                 <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
@@ -96,4 +111,28 @@ export function PageRow(props: PageRowProps) {
 export function CategoryBadge({ category }: { category: string }) {
     const categoryLower = category?.toLowerCase();
     return <div className={styles.categoryBadge}>{categoryLower}</div>
+}
+
+export function IndexerBadge({ indexer }: { indexer: string }) {
+    return <div className={styles.indexerBadge} title={`Indexer: ${indexer}`}>via {indexer}</div>
+}
+
+export function ProvidersBadge({ providers }: { providers: ProviderUsage[] }) {
+    const total = providers.reduce((acc, p) => acc + p.segments, 0);
+    if (total === 0) return null;
+    const top = providers[0];
+    const others = providers.length - 1;
+    const topPct = Math.round((top.segments / total) * 100);
+    const label = others > 0
+        ? `${stripHost(top.host)} ${topPct}% +${others}`
+        : `${stripHost(top.host)} ${topPct}%`;
+    const tooltip = providers
+        .map(p => `${p.host}: ${p.segments} (${Math.round((p.segments / total) * 100)}%)`)
+        .join("\n");
+    return <div className={styles.providersBadge} title={tooltip}>📡 {label}</div>;
+}
+
+function stripHost(host: string): string {
+    if (!host) return "—";
+    return host.split(".")[0];
 }

@@ -2,12 +2,13 @@
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services;
 using Serilog;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
 
-public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) : NntpClient
+public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, ProviderUsageTracker usageTracker) : NntpClient
 {
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
@@ -145,6 +146,14 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
                 // if no article with that message-id is found, try again with the next provider.
                 if (!isLastProvider && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
                     continue;
+
+                // record per-queue-item attribution only for bytes-bearing responses (BODY/ARTICLE).
+                if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse
+                    && result.ResponseType is UsenetResponseType.ArticleRetrievedBodyFollows
+                                          or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
+                {
+                    usageTracker.RecordSuccess(provider.Host);
+                }
 
                 return result;
             }

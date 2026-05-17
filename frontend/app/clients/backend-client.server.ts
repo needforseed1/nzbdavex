@@ -298,6 +298,13 @@ export type QueueSlot = {
     status: string,
     mb: string,
     mbleft: string,
+    indexer?: string | null,
+    providers?: ProviderUsage[] | null,
+}
+
+export type ProviderUsage = {
+    host: string,
+    segments: number,
 }
 
 export type HistoryResponse = {
@@ -316,6 +323,7 @@ export type HistorySlot = {
     download_time: number,
     fail_message: string,
     nzb_blob_id?: string,
+    indexer?: string | null,
 }
 
 export type PlaybackAttemptOutcome =

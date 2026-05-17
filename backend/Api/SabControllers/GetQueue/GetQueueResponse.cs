@@ -57,12 +57,19 @@ public class GetQueueResponse : SabBaseResponse
         [JsonPropertyName("mbleft")]
         public string SizeLeftInMB { get; init; }
 
+        [JsonPropertyName("indexer")]
+        public string? Indexer { get; init; }
+
+        [JsonPropertyName("providers")]
+        public List<ProviderUsage>? Providers { get; init; }
+
         public static QueueSlot FromQueueItem
         (
             QueueItem queueItem,
             int index = 0,
             int progressPercentage = 0,
-            string status = "Queued"
+            string status = "Queued",
+            IReadOnlyDictionary<string, long>? providerUsage = null
         )
         {
             return new QueueSlot
@@ -78,6 +85,13 @@ public class GetQueueResponse : SabBaseResponse
                 TimeLeft = TimeSpan.Zero,
                 SizeInMB = FormatSizeMB(queueItem.TotalSegmentBytes),
                 SizeLeftInMB = FormatSizeMB((100 - progressPercentage) * queueItem.TotalSegmentBytes / 100),
+                Indexer = queueItem.IndexerName,
+                Providers = providerUsage is { Count: > 0 }
+                    ? providerUsage
+                        .OrderByDescending(kv => kv.Value)
+                        .Select(kv => new ProviderUsage { Host = kv.Key, Segments = kv.Value })
+                        .ToList()
+                    : null,
             };
         }
 
@@ -95,5 +109,11 @@ public class GetQueueResponse : SabBaseResponse
 
         public override void Write(Utf8JsonWriter writer, TimeSpan value, JsonSerializerOptions options) =>
             writer.WriteStringValue(value.ToString(@"d\:h\:m\:s"));
+    }
+
+    public class ProviderUsage
+    {
+        [JsonPropertyName("host")] public required string Host { get; init; }
+        [JsonPropertyName("segments")] public required long Segments { get; init; }
     }
 }

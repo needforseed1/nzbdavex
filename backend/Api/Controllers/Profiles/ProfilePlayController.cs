@@ -332,6 +332,7 @@ public class ProfilePlayController(
                     Category = category,
                     Priority = QueueItem.PriorityOption.Force,
                     PostProcessing = QueueItem.PostProcessingOption.None,
+                    IndexerName = c.IndexerName,
                     CancellationToken = ct,
                 };
                 var addFileController = new AddFileController(HttpContext, dbClient, queueManager, configManager, websocketManager);

@@ -147,6 +147,7 @@ export function HistoryRow({ slot, onIsSelectedChanged, onIsRemovingChanged, onR
                 fileSizeBytes={slot.bytes}
                 actions={<Actions slot={slot} onRemove={onRemove} />}
                 onRowSelectionChanged={isSelected => onIsSelectedChanged(slot.nzo_id, isSelected)}
+                indexer={slot.indexer}
             />
             <ConfirmModal
                 show={isConfirmingRemoval}

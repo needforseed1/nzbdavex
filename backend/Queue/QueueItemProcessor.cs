@@ -28,6 +28,7 @@ public class QueueItemProcessor(
     INntpClient usenetClient,
     ConfigManager configManager,
     WebsocketManager websocketManager,
+    ProviderUsageTracker providerUsageTracker,
     IProgress<int> progress,
     CancellationToken ct
 )
@@ -37,6 +38,8 @@ public class QueueItemProcessor(
         // initialize
         var startTime = DateTime.Now;
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Downloading");
+
+        using var providerScope = providerUsageTracker.BeginScope(queueItem.Id);
 
         // process the job
         try
@@ -345,6 +348,7 @@ public class QueueItemProcessor(
             FailMessage = errorMessage,
             DownloadDirId = mountFolder?.Id,
             NzbBlobId = queueItem.Id,
+            IndexerName = queueItem.IndexerName,
         };
     }
 
