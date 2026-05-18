@@ -12,17 +12,43 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    transition: border-color 120ms ease, background 120ms ease;
+    position: relative;
 }
 
-.tileLive {
-    border-color: var(--success);
-    box-shadow: 0 0 0 1px var(--success) inset, 0 0 24px rgba(52, 211, 153, 0.08);
+/* Soft state indicators: a small dot in the corner + a colored value, rather
+   than recoloring the whole border which dominates the layout. */
+.tileLive::before,
+.tileDanger::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
 }
 
-.tileDanger {
-    border-color: var(--danger-muted);
-    box-shadow: 0 0 0 1px var(--danger-muted) inset;
+.tileLive::before {
+    background: var(--success);
+    box-shadow: 0 0 6px rgba(52, 211, 153, 0.6);
+    animation: tilePulse 1.6s ease-in-out infinite;
+}
+
+.tileDanger::before {
+    background: var(--danger-muted);
+}
+
+@keyframes tilePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.tileLive .value {
+    color: var(--success);
+}
+
+.tileDanger .value {
+    color: var(--danger-muted);
 }
 
 .label {

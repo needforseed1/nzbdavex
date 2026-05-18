@@ -44,9 +44,9 @@
     min-width: 78px;
 }
 
-.ok { color: var(--text-primary); }
-.warn { color: #d97706; border-color: #d97706; }
-.danger { color: var(--danger-muted); border-color: var(--danger-muted); }
+.ok { }
+.warn .pctileValue { color: #d97706; }
+.danger .pctileValue { color: var(--danger-muted); }
 
 .pctileTop {
     display: flex;

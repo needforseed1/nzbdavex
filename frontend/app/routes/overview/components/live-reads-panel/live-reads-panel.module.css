@@ -1,9 +1,9 @@
 .container {
-    background: linear-gradient(180deg, rgba(52, 211, 153, 0.04), var(--bg-elevated));
-    border: 1px solid var(--success);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     padding: 18px 20px;
-    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.18), 0 12px 32px rgba(52, 211, 153, 0.06);
+    min-width: 0;
 }
 
 .header {
@@ -17,17 +17,17 @@
 }
 
 .livePulse {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--success);
     animation: pulse 1.6s ease-in-out infinite;
-    box-shadow: 0 0 8px var(--success);
+    flex-shrink: 0;
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.85); }
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
 }
 
 .title {
@@ -46,13 +46,18 @@
     margin-left: auto;
 }
 
+/* Flex layout caps every card to a comfortable max width so a single read
+   doesn't stretch across the whole page on wide viewports. Cards still wrap
+   and shrink on narrow ones. */
 .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 10px;
 }
 
 .card {
+    flex: 1 1 260px;
+    max-width: 380px;
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
@@ -60,12 +65,14 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-width: 0;
 }
 
 .cardHeader {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
 }
 
 .fileName {
@@ -76,6 +83,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
 }
 
 .providerBadge {
@@ -85,22 +93,27 @@
     letter-spacing: 0.06em;
     padding: 2px 8px;
     border-radius: 100px;
-    background: rgba(52, 211, 153, 0.12);
-    color: var(--success);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-muted);
     font-weight: 500;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .progressWrap {
     position: relative;
-    height: 6px;
-    background: rgba(255, 255, 255, 0.06);
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
     border-radius: 100px;
     overflow: hidden;
 }
 
 .progressFill {
     height: 100%;
-    background: linear-gradient(90deg, var(--success), rgba(52, 211, 153, 0.6));
+    background: var(--success);
+    opacity: 0.7;
     border-radius: 100px;
     transition: width 600ms ease;
 }
@@ -108,7 +121,7 @@
 .progressIndeterminate {
     position: absolute;
     inset: 0;
-    background: linear-gradient(90deg, transparent, var(--success), transparent);
+    background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.7), transparent);
     background-size: 50% 100%;
     background-repeat: no-repeat;
     animation: indet 1.6s linear infinite;
@@ -139,8 +152,8 @@
 
 .rate {
     font-size: 12px;
-    color: var(--success);
-    font-weight: 600;
+    color: var(--text-primary);
+    font-weight: 500;
 }
 
 .providerStrip {

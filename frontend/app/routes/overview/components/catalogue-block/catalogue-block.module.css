@@ -40,10 +40,6 @@
     border-color: var(--danger-muted);
 }
 
-.good {
-    border-color: var(--success);
-}
-
 .good .value {
     color: var(--success);
 }
