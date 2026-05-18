@@ -1,13 +1,14 @@
 import type { Route } from "./+types/route";
 import styles from "./route.module.css";
 import { backendClient, type LiveStatsMessage, type OverviewStatsResponse } from "~/clients/backend-client.server";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { receiveMessage } from "~/utils/websocket-util";
 import { LiveTiles } from "./components/live-tiles/live-tiles";
 import { ThroughputChart } from "./components/throughput-chart/throughput-chart";
 import { ProviderScoreboard } from "./components/provider-scoreboard/provider-scoreboard";
 import { CatalogueBlock } from "./components/catalogue-block/catalogue-block";
-import { RepairBlock } from "./components/repair-block/repair-block";
+import { SessionsBlock } from "./components/sessions-block/sessions-block";
+import { TopReadsBlock } from "./components/top-reads-block/top-reads-block";
 
 const topicNames = {
     liveStats: 'ls',
@@ -70,8 +71,6 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         return () => { disposed = true; ws?.close(); };
     }, [onWsMessage]);
 
-    const headlineAmp = useMemo(() => stats.readAmplification.toFixed(2), [stats.readAmplification]);
-
     return (
         <div className={styles.container}>
             <div className={styles.header}>
@@ -92,14 +91,22 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
             <LiveTiles tiles={liveTiles} />
 
-            <ThroughputChart points={stats.throughput} amplification={headlineAmp} window={window} />
+            <ThroughputChart
+                points={stats.throughput}
+                totalArticles={stats.totalArticles}
+                totalErrors={stats.totalErrors}
+                totalBytesServed={stats.sessions.totalBytesServed}
+                window={window}
+            />
 
             <ProviderScoreboard providers={stats.providers} window={window} />
 
             <div className={styles.twoCol}>
-                <RepairBlock repair={stats.repair} />
-                <CatalogueBlock catalogue={stats.catalogue} />
+                <SessionsBlock sessions={stats.sessions} window={window} />
+                <TopReadsBlock reads={stats.topReads} window={window} />
             </div>
+
+            <CatalogueBlock catalogue={stats.catalogue} />
         </div>
     );
 }

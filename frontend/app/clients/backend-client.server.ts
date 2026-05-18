@@ -468,7 +468,8 @@ export type OverviewStatsResponse = {
         bytesServedPerMinute: number,
     },
     throughput: ThroughputPoint[],
-    readAmplification: number,
+    totalArticles: number,
+    totalErrors: number,
     providers: ProviderRow[],
     catalogue: {
         fileCount: number,
@@ -476,20 +477,28 @@ export type OverviewStatsResponse = {
         checkedPercent: number,
         repairBacklog: number,
     },
-    repair: {
-        healthy: number,
-        repaired: number,
-        deleted: number,
-        actionNeeded: number,
+    sessions: {
+        count: number,
+        totalBytesServed: number,
+        avgDurationMs: number,
+        longestDurationMs: number,
+        biggestReadBytes: number,
     },
+    topReads: TopRead[],
 }
 
 export type ThroughputPoint = {
     bucket: number,
-    bytesServed: number,
-    bytesFetched: number,
     articles: number,
     errors: number,
+    bytesServed: number,
+}
+
+export type TopRead = {
+    path: string,
+    reads: number,
+    bytesServed: number,
+    lastEndedAt: number,
 }
 
 export type ProviderRow = {

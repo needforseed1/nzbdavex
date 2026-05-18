@@ -5,10 +5,12 @@ public class GetOverviewStatsResponse
     public string Window { get; init; } = "24h";
     public LiveTiles Tiles { get; init; } = new();
     public List<ThroughputPoint> Throughput { get; init; } = new();
-    public double ReadAmplification { get; init; }
+    public long TotalArticles { get; init; }
+    public long TotalErrors { get; init; }
     public List<ProviderRow> Providers { get; init; } = new();
     public CatalogueBlock Catalogue { get; init; } = new();
-    public RepairBlock Repair { get; init; } = new();
+    public SessionsBlock Sessions { get; init; } = new();
+    public List<TopRead> TopReads { get; init; } = new();
 
     public class LiveTiles
     {
@@ -21,10 +23,9 @@ public class GetOverviewStatsResponse
     public class ThroughputPoint
     {
         public long Bucket { get; init; }
-        public long BytesServed { get; init; }
-        public long BytesFetched { get; init; }
         public long Articles { get; init; }
         public long Errors { get; init; }
+        public long BytesServed { get; init; }
     }
 
     public class ProviderRow
@@ -46,11 +47,20 @@ public class GetOverviewStatsResponse
         public long RepairBacklog { get; init; }
     }
 
-    public class RepairBlock
+    public class SessionsBlock
     {
-        public long Healthy { get; init; }
-        public long Repaired { get; init; }
-        public long Deleted { get; init; }
-        public long ActionNeeded { get; init; }
+        public long Count { get; init; }
+        public long TotalBytesServed { get; init; }
+        public long AvgDurationMs { get; init; }
+        public long LongestDurationMs { get; init; }
+        public long BiggestReadBytes { get; init; }
+    }
+
+    public class TopRead
+    {
+        public string Path { get; init; } = "";
+        public long Reads { get; init; }
+        public long BytesServed { get; init; }
+        public long LastEndedAt { get; init; }
     }
 }
