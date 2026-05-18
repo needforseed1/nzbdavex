@@ -36,7 +36,6 @@ export function LiveReadsPanel() {
                             const db = r.bytesRead - old.bytes;
                             if (dt > 0 && db >= 0) {
                                 const instant = db / dt;
-                                // Light EMA so the number doesn't jitter wildly.
                                 rate = old.rate * 0.4 + instant * 0.6;
                             }
                         }
@@ -72,14 +71,10 @@ export function LiveReadsPanel() {
                     const pct = r.fileSize && r.fileSize > 0
                         ? Math.min(100, (r.bytesRead / r.fileSize) * 100)
                         : null;
-                    const topProvider = r.providers[0];
                     return (
                         <div key={r.id} className={styles.card}>
-                            <div className={styles.cardHeader}>
-                                <div className={styles.fileName} title={r.path}>{r.fileName || lastSegment(r.path)}</div>
-                                {topProvider && (
-                                    <div className={styles.providerBadge}>{topProvider.host}</div>
-                                )}
+                            <div className={styles.fileName} title={r.path}>
+                                {r.fileName || lastSegment(r.path)}
                             </div>
                             <div className={styles.progressWrap}>
                                 <div
@@ -94,11 +89,16 @@ export function LiveReadsPanel() {
                                 </span>
                                 <span className={styles.rate}>{formatBytes(rate)}/s</span>
                             </div>
-                            {r.providers.length > 1 && (
+                            {r.providers.length > 0 && (
                                 <div className={styles.providerStrip}>
-                                    {r.providers.slice(0, 4).map(p => (
-                                        <span key={p.host} className={styles.providerChip}>
-                                            {p.host} <span className={styles.providerChipCount}>{p.segments}</span>
+                                    {r.providers.slice(0, 6).map((p, i) => (
+                                        <span
+                                            key={p.host}
+                                            className={`${styles.providerChip} ${i === 0 ? styles.providerChipPrimary : ""}`}
+                                            title={`${p.host}: ${p.segments} segments`}
+                                        >
+                                            <span className={styles.providerChipHost}>{p.host}</span>
+                                            <span className={styles.providerChipCount}>{p.segments}</span>
                                         </span>
                                     ))}
                                 </div>

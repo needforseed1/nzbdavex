@@ -46,9 +46,6 @@
     margin-left: auto;
 }
 
-/* Flex layout caps every card to a comfortable max width so a single read
-   doesn't stretch across the whole page on wide viewports. Cards still wrap
-   and shrink on narrow ones. */
 .grid {
     display: flex;
     flex-wrap: wrap;
@@ -68,15 +65,7 @@
     min-width: 0;
 }
 
-.cardHeader {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-}
-
 .fileName {
-    flex: 1;
     font-size: 13px;
     color: var(--text-primary);
     font-weight: 500;
@@ -86,27 +75,11 @@
     min-width: 0;
 }
 
-.providerBadge {
-    flex-shrink: 0;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 2px 8px;
-    border-radius: 100px;
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text-muted);
-    font-weight: 500;
-    max-width: 140px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .progressWrap {
     position: relative;
     height: 4px;
     background: rgba(255, 255, 255, 0.05);
-    border-radius: 100px;
+    border-radius: 4px;
     overflow: hidden;
 }
 
@@ -114,7 +87,7 @@
     height: 100%;
     background: var(--success);
     opacity: 0.7;
-    border-radius: 100px;
+    border-radius: 4px;
     transition: width 600ms ease;
 }
 
@@ -160,19 +133,37 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-top: 2px;
+    min-width: 0;
 }
 
 .providerChip {
-    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
     color: var(--text-muted);
     background: rgba(255, 255, 255, 0.04);
-    padding: 2px 6px;
+    padding: 3px 8px;
     border-radius: 4px;
+    max-width: 100%;
+    min-width: 0;
     font-variant-numeric: tabular-nums;
+}
+
+.providerChipPrimary {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text-primary);
+}
+
+.providerChipHost {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 .providerChipCount {
     color: var(--text-primary);
     font-weight: 500;
+    flex-shrink: 0;
 }

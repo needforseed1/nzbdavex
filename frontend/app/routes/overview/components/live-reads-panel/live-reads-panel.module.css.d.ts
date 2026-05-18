@@ -7,9 +7,7 @@ declare const styles: {
   readonly count: string;
   readonly grid: string;
   readonly card: string;
-  readonly cardHeader: string;
   readonly fileName: string;
-  readonly providerBadge: string;
   readonly progressWrap: string;
   readonly progressFill: string;
   readonly progressIndeterminate: string;
@@ -19,6 +17,8 @@ declare const styles: {
   readonly rate: string;
   readonly providerStrip: string;
   readonly providerChip: string;
+  readonly providerChipPrimary: string;
+  readonly providerChipHost: string;
   readonly providerChipCount: string;
 };
 export = styles;

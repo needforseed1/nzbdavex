@@ -14,6 +14,12 @@ public class ActiveReadRegistry
     private static readonly TimeSpan ActivityWindow = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<Guid, Entry> _entries = new();
 
+    // Process-lifetime monotonic counter of every byte served downstream. The
+    // broadcaster samples this on a fixed tick to compute a rolling rate, so
+    // active (not-yet-pruned) reads still show up in throughput.
+    private long _totalBytesServed;
+    public long TotalBytesServed => Interlocked.Read(ref _totalBytesServed);
+
     public Guid GetOrCreate(string path, string clientKey, string fileName, long? fileSize)
     {
         var id = DeriveId(path, clientKey);
@@ -44,7 +50,11 @@ public class ActiveReadRegistry
         if (_entries.TryGetValue(id, out var entry))
         {
             entry.LastActivityAt = DateTimeOffset.UtcNow;
-            if (bytesRead > 0) Interlocked.Add(ref entry.BytesRead, bytesRead);
+            if (bytesRead > 0)
+            {
+                Interlocked.Add(ref entry.BytesRead, bytesRead);
+                Interlocked.Add(ref _totalBytesServed, bytesRead);
+            }
         }
     }
 

@@ -4,6 +4,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Services;
+using NzbWebDAV.Services.Metrics;
 
 namespace NzbWebDAV.Api.Controllers.GetOverviewStats;
 
@@ -11,7 +12,8 @@ namespace NzbWebDAV.Api.Controllers.GetOverviewStats;
 [Route("api/get-overview-stats")]
 public class GetOverviewStatsController(
     DavDatabaseClient davDb,
-    ActiveReadRegistry registry
+    ActiveReadRegistry registry,
+    LiveStatsBroadcaster liveStats
 ) : BaseApiController
 {
     private const long OneMinute = 60_000;
@@ -85,26 +87,23 @@ public class GetOverviewStatsController(
         long nowMs
     ) where TFetch : class where TSession : class
     {
-        // We want last 60 s slice; reuse the already-pulled rows by inspecting properties dynamically.
+        // Articles + errors come from the raw event stream; bytes-served comes
+        // from the broadcaster's rolling window so active reads count even
+        // before they're pruned to the ReadSessions table.
         var sinceMs = nowMs - OneMinute;
-        long articles = 0, errors = 0, served = 0;
+        long articles = 0, errors = 0;
         foreach (var f in fetches.Cast<dynamic>())
         {
             if ((long)f.At < sinceMs) continue;
             articles++;
             if (f.Status != SegmentFetch.FetchStatus.Ok) errors++;
         }
-        foreach (var s in sessions.Cast<dynamic>())
-        {
-            if ((long)s.EndedAt < sinceMs) continue;
-            served += (long)s.BytesServed;
-        }
         return new GetOverviewStatsResponse.LiveTiles
         {
             ActiveReads = registry.Count,
             ArticlesPerMinute = articles,
             ErrorsPerMinute = errors,
-            BytesServedPerMinute = served,
+            BytesServedPerMinute = liveStats.BytesServedLastMinute,
         };
     }
 
