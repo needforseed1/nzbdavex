@@ -4,11 +4,15 @@ import { backendClient, type LiveStatsMessage, type OverviewStatsResponse } from
 import { useCallback, useEffect, useState } from "react";
 import { receiveMessage } from "~/utils/websocket-util";
 import { LiveTiles } from "./components/live-tiles/live-tiles";
+import { LiveReadsPanel } from "./components/live-reads-panel/live-reads-panel";
+import { ActivityHeatmap } from "./components/activity-heatmap/activity-heatmap";
 import { ThroughputChart } from "./components/throughput-chart/throughput-chart";
+import { LatencyHistogram } from "./components/latency-histogram/latency-histogram";
+import { ErrorDonut } from "./components/error-donut/error-donut";
 import { ProviderScoreboard } from "./components/provider-scoreboard/provider-scoreboard";
-import { CatalogueBlock } from "./components/catalogue-block/catalogue-block";
+import { IndexerScoreboard } from "./components/indexer-scoreboard/indexer-scoreboard";
 import { SessionsBlock } from "./components/sessions-block/sessions-block";
-import { TopReadsBlock } from "./components/top-reads-block/top-reads-block";
+import { CatalogueBlock } from "./components/catalogue-block/catalogue-block";
 
 const topicNames = {
     liveStats: 'ls',
@@ -28,7 +32,6 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
     const liveTiles = stats.tiles;
 
-    // Re-fetch when window changes.
     useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -40,7 +43,6 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         return () => { cancelled = true; };
     }, [window]);
 
-    // Subscribe to live tile updates.
     const onWsMessage = useCallback((topic: string, message: string) => {
         if (topic !== topicNames.liveStats) return;
         try {
@@ -54,7 +56,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
                     bytesServedPerMinute: live.bytesServedPerMinute,
                 }
             }));
-        } catch { /* ignore malformed */ }
+        } catch { /* ignore */ }
     }, []);
 
     useEffect(() => {
@@ -91,6 +93,10 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
             <LiveTiles tiles={liveTiles} />
 
+            <LiveReadsPanel />
+
+            <ActivityHeatmap maxCell={stats.heatmap.maxCell} cells={stats.heatmap.cells} />
+
             <ThroughputChart
                 points={stats.throughput}
                 totalArticles={stats.totalArticles}
@@ -99,12 +105,22 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
                 window={window}
             />
 
-            <ProviderScoreboard providers={stats.providers} window={window} />
+            <LatencyHistogram
+                p50Ms={stats.latency.p50Ms}
+                p95Ms={stats.latency.p95Ms}
+                p99Ms={stats.latency.p99Ms}
+                samples={stats.latency.samples}
+                buckets={stats.latency.buckets}
+            />
 
             <div className={styles.twoCol}>
+                <ErrorDonut errors={stats.errors} />
                 <SessionsBlock sessions={stats.sessions} window={window} />
-                <TopReadsBlock reads={stats.topReads} window={window} />
             </div>
+
+            <ProviderScoreboard providers={stats.providers} window={window} />
+
+            <IndexerScoreboard indexers={stats.indexers} />
 
             <CatalogueBlock catalogue={stats.catalogue} />
         </div>

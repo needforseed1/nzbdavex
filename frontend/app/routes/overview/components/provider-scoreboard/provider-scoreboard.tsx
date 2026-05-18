@@ -24,6 +24,7 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                     <thead>
                         <tr>
                             <th>Provider</th>
+                            <th className={styles.sparkCol}>Activity</th>
                             <th className={styles.numCol}>Articles</th>
                             <th className={styles.numCol}>Share</th>
                             <th className={styles.numCol}>Errors</th>
@@ -39,6 +40,9 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                                     <td className={styles.providerCell}>
                                         <span className={styles.dot} />
                                         {p.provider}
+                                    </td>
+                                    <td className={styles.sparkCol}>
+                                        <Sparkline values={p.spark} />
                                     </td>
                                     <td className={styles.numCol}>{formatNumber(p.articles)}</td>
                                     <td className={styles.numCol}>
@@ -60,5 +64,24 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                 </table>
             )}
         </div>
+    );
+}
+
+function Sparkline({ values }: { values: number[] }) {
+    if (values.length === 0) return <div className={styles.sparkEmpty} />;
+    const w = 110;
+    const h = 22;
+    const max = Math.max(1, ...values);
+    const step = values.length > 1 ? w / (values.length - 1) : 0;
+    const y = (v: number) => h - (v / max) * (h - 4) - 2;
+    const path = values
+        .map((v, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)},${y(v).toFixed(1)}`)
+        .join(" ");
+    const area = `${path} L${((values.length - 1) * step).toFixed(1)},${h} L0,${h} Z`;
+    return (
+        <svg viewBox={`0 0 ${w} ${h}`} className={styles.spark} preserveAspectRatio="none">
+            <path d={area} className={styles.sparkArea} />
+            <path d={path} className={styles.sparkLine} />
+        </svg>
     );
 }

@@ -1,0 +1,165 @@
+.container {
+    background: linear-gradient(180deg, rgba(52, 211, 153, 0.04), var(--bg-elevated));
+    border: 1px solid var(--success);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.18), 0 12px 32px rgba(52, 211, 153, 0.06);
+}
+
+.header {
+    margin-bottom: 14px;
+}
+
+.titleWrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.livePulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: pulse 1.6s ease-in-out infinite;
+    box-shadow: 0 0 8px var(--success);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+}
+
+.count {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
+}
+
+.card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cardHeader {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.fileName {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.providerBadge {
+    flex-shrink: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 100px;
+    background: rgba(52, 211, 153, 0.12);
+    color: var(--success);
+    font-weight: 500;
+}
+
+.progressWrap {
+    position: relative;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 100px;
+    overflow: hidden;
+}
+
+.progressFill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--success), rgba(52, 211, 153, 0.6));
+    border-radius: 100px;
+    transition: width 600ms ease;
+}
+
+.progressIndeterminate {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, var(--success), transparent);
+    background-size: 50% 100%;
+    background-repeat: no-repeat;
+    animation: indet 1.6s linear infinite;
+}
+
+@keyframes indet {
+    0% { background-position: -50% 0; }
+    100% { background-position: 150% 0; }
+}
+
+.stats {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-variant-numeric: tabular-nums;
+}
+
+.bytes {
+    font-size: 12px;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.bytesTotal {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.rate {
+    font-size: 12px;
+    color: var(--success);
+    font-weight: 600;
+}
+
+.providerStrip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.providerChip {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+.providerChipCount {
+    color: var(--text-primary);
+    font-weight: 500;
+}

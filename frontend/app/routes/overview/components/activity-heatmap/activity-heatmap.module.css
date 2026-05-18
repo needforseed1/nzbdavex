@@ -1,0 +1,158 @@
+.container {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+}
+
+.sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.peak {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+    text-align: right;
+}
+
+.peakLabel {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.peakValue {
+    font-size: 14px;
+    color: var(--text-primary);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+}
+
+.peakCount {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 40px 0;
+}
+
+.gridWrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.hourAxis {
+    display: flex;
+    justify-content: space-between;
+    padding-left: 38px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+}
+
+.hourAxisEnd {
+    margin-right: 2px;
+}
+
+.grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dayLabel {
+    width: 30px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+    user-select: none;
+}
+
+.cellRow {
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 2px;
+    flex: 1;
+}
+
+.cell {
+    aspect-ratio: 1 / 1;
+    border-radius: 2px;
+    transition: transform 80ms ease;
+    cursor: default;
+}
+
+.cell:hover {
+    transform: scale(1.18);
+    outline: 1px solid var(--text-primary);
+    outline-offset: 0;
+    z-index: 1;
+    position: relative;
+}
+
+.footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 12px;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.tooltip {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.scale {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.scaleSwatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+}

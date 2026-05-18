@@ -1,0 +1,21 @@
+declare const styles: {
+  readonly container: string;
+  readonly header: string;
+  readonly title: string;
+  readonly sub: string;
+  readonly percentiles: string;
+  readonly pctile: string;
+  readonly ok: string;
+  readonly warn: string;
+  readonly danger: string;
+  readonly pctileLabel: string;
+  readonly pctileValue: string;
+  readonly empty: string;
+  readonly bars: string;
+  readonly barCol: string;
+  readonly barWrap: string;
+  readonly bar: string;
+  readonly barLabel: string;
+  readonly legend: string;
+};
+export = styles;

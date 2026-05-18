@@ -10,7 +10,12 @@ public class GetOverviewStatsResponse
     public List<ProviderRow> Providers { get; init; } = new();
     public CatalogueBlock Catalogue { get; init; } = new();
     public SessionsBlock Sessions { get; init; } = new();
-    public List<TopRead> TopReads { get; init; } = new();
+
+    // Goated additions
+    public HeatmapBlock Heatmap { get; init; } = new();
+    public LatencyBlock Latency { get; init; } = new();
+    public List<ErrorSlice> Errors { get; init; } = new();
+    public List<IndexerRow> Indexers { get; init; } = new();
 
     public class LiveTiles
     {
@@ -37,6 +42,7 @@ public class GetOverviewStatsResponse
         public long Retries { get; init; }
         public double AvgDurationMs { get; init; }
         public double ErrorRate { get; init; }
+        public List<long> Spark { get; init; } = new();
     }
 
     public class CatalogueBlock
@@ -56,11 +62,56 @@ public class GetOverviewStatsResponse
         public long BiggestReadBytes { get; init; }
     }
 
-    public class TopRead
+    /// <summary>
+    /// Day-of-week × hour-of-day grid of article counts over the trailing 7 days.
+    /// Day is 0 = Monday … 6 = Sunday (the user-friendly week start). Hour is 0–23 in UTC.
+    /// Cells with zero activity are omitted.
+    /// </summary>
+    public class HeatmapBlock
     {
-        public string Path { get; init; } = "";
-        public long Reads { get; init; }
-        public long BytesServed { get; init; }
-        public long LastEndedAt { get; init; }
+        public long MaxCell { get; init; }
+        public List<HeatmapCell> Cells { get; init; } = new();
+    }
+
+    public class HeatmapCell
+    {
+        public int Day { get; init; }    // 0..6
+        public int Hour { get; init; }   // 0..23
+        public long Count { get; init; }
+    }
+
+    /// <summary>Fetch-duration percentiles + log-scale histogram for the window.</summary>
+    public class LatencyBlock
+    {
+        public int P50Ms { get; init; }
+        public int P95Ms { get; init; }
+        public int P99Ms { get; init; }
+        public int Samples { get; init; }
+        public List<LatencyBucket> Buckets { get; init; } = new();
+    }
+
+    public class LatencyBucket
+    {
+        public int LoMs { get; init; }
+        public int HiMs { get; init; }
+        public long Count { get; init; }
+    }
+
+    /// <summary>Share of each fetch error type, for the donut.</summary>
+    public class ErrorSlice
+    {
+        public string Status { get; init; } = "";
+        public long Count { get; init; }
+    }
+
+    /// <summary>Per-indexer aggregate over the last 30 days from HistoryItems.</summary>
+    public class IndexerRow
+    {
+        public string Name { get; init; } = "";
+        public long Completed { get; init; }
+        public long Failed { get; init; }
+        public long BytesCompleted { get; init; }
+        public int AvgSeconds { get; init; }
+        public double SuccessRate { get; init; }
     }
 }

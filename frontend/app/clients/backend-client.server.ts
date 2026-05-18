@@ -484,7 +484,19 @@ export type OverviewStatsResponse = {
         longestDurationMs: number,
         biggestReadBytes: number,
     },
-    topReads: TopRead[],
+    heatmap: {
+        maxCell: number,
+        cells: HeatmapCell[],
+    },
+    latency: {
+        p50Ms: number,
+        p95Ms: number,
+        p99Ms: number,
+        samples: number,
+        buckets: LatencyBucket[],
+    },
+    errors: ErrorSlice[],
+    indexers: IndexerRow[],
 }
 
 export type ThroughputPoint = {
@@ -492,13 +504,6 @@ export type ThroughputPoint = {
     articles: number,
     errors: number,
     bytesServed: number,
-}
-
-export type TopRead = {
-    path: string,
-    reads: number,
-    bytesServed: number,
-    lastEndedAt: number,
 }
 
 export type ProviderRow = {
@@ -509,6 +514,48 @@ export type ProviderRow = {
     retries: number,
     avgDurationMs: number,
     errorRate: number,
+    spark: number[],
+}
+
+export type HeatmapCell = {
+    day: number,      // 0=Mon..6=Sun
+    hour: number,     // 0..23
+    count: number,
+}
+
+export type LatencyBucket = {
+    loMs: number,
+    hiMs: number,
+    count: number,
+}
+
+export type ErrorSlice = {
+    status: string,
+    count: number,
+}
+
+export type IndexerRow = {
+    name: string,
+    completed: number,
+    failed: number,
+    bytesCompleted: number,
+    avgSeconds: number,
+    successRate: number,
+}
+
+export type ActiveReadsMessage = {
+    reads: ActiveRead[],
+}
+
+export type ActiveRead = {
+    id: string,
+    fileName: string,
+    path: string,
+    startedAt: number,
+    lastActivityAt: number,
+    bytesRead: number,
+    fileSize: number | null,
+    providers: { host: string, segments: number }[],
 }
 
 export type LiveStatsMessage = {

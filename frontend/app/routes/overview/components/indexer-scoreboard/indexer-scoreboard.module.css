@@ -62,61 +62,16 @@
     font-variant-numeric: tabular-nums;
 }
 
-.providerCell {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+.nameCell {
     font-weight: 500;
+    color: var(--text-primary);
 }
 
-.dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--success);
-    flex-shrink: 0;
-}
-
-.warn {
+.fail {
     color: var(--danger-muted);
 }
 
-.errorRate {
-    font-size: 11px;
-    color: var(--text-muted);
-}
-
-.sparkCol {
-    width: 120px;
-    padding: 4px 8px !important;
-}
-
-.spark {
-    width: 110px;
-    height: 22px;
-    display: block;
-}
-
-.sparkArea {
-    fill: rgba(52, 211, 153, 0.16);
-    stroke: none;
-}
-
-.sparkLine {
-    fill: none;
-    stroke: var(--success);
-    stroke-width: 1.2;
-    vector-effect: non-scaling-stroke;
-}
-
-.sparkEmpty {
-    width: 110px;
-    height: 22px;
-    background: rgba(255, 255, 255, 0.02);
-    border-radius: 3px;
-}
-
-.shareBar {
+.successBar {
     position: relative;
     width: 80px;
     height: 16px;
@@ -126,14 +81,14 @@
     overflow: hidden;
 }
 
-.shareFill {
+.successFill {
     position: absolute;
     inset: 0;
     background: var(--success);
-    opacity: 0.25;
+    opacity: 0.28;
 }
 
-.shareText {
+.successText {
     position: relative;
     display: block;
     text-align: right;

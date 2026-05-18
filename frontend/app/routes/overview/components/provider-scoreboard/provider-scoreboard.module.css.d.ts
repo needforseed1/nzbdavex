@@ -10,6 +10,11 @@ declare const styles: {
   readonly dot: string;
   readonly warn: string;
   readonly errorRate: string;
+  readonly sparkCol: string;
+  readonly spark: string;
+  readonly sparkArea: string;
+  readonly sparkLine: string;
+  readonly sparkEmpty: string;
   readonly shareBar: string;
   readonly shareFill: string;
   readonly shareText: string;

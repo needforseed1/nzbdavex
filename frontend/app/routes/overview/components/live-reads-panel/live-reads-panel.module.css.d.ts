@@ -1,0 +1,24 @@
+declare const styles: {
+  readonly container: string;
+  readonly header: string;
+  readonly titleWrap: string;
+  readonly livePulse: string;
+  readonly title: string;
+  readonly count: string;
+  readonly grid: string;
+  readonly card: string;
+  readonly cardHeader: string;
+  readonly fileName: string;
+  readonly providerBadge: string;
+  readonly progressWrap: string;
+  readonly progressFill: string;
+  readonly progressIndeterminate: string;
+  readonly stats: string;
+  readonly bytes: string;
+  readonly bytesTotal: string;
+  readonly rate: string;
+  readonly providerStrip: string;
+  readonly providerChip: string;
+  readonly providerChipCount: string;
+};
+export = styles;

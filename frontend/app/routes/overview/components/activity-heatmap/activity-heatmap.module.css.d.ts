@@ -1,0 +1,24 @@
+declare const styles: {
+  readonly container: string;
+  readonly header: string;
+  readonly title: string;
+  readonly sub: string;
+  readonly peak: string;
+  readonly peakLabel: string;
+  readonly peakValue: string;
+  readonly peakCount: string;
+  readonly empty: string;
+  readonly gridWrap: string;
+  readonly hourAxis: string;
+  readonly hourAxisEnd: string;
+  readonly grid: string;
+  readonly row: string;
+  readonly dayLabel: string;
+  readonly cellRow: string;
+  readonly cell: string;
+  readonly footer: string;
+  readonly tooltip: string;
+  readonly scale: string;
+  readonly scaleSwatch: string;
+};
+export = styles;
