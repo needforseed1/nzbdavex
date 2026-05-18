@@ -13,7 +13,6 @@ const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 export function ActivityHeatmap({ maxCell, cells }: ActivityHeatmapProps) {
     const [hover, setHover] = useState<{ day: number, hour: number, count: number } | null>(null);
 
-    // Build a lookup keyed by `${day}-${hour}` so the grid renders 7×24 deterministically.
     const lookup = useMemo(() => {
         const m = new Map<string, number>();
         for (const c of cells) m.set(`${c.day}-${c.hour}`, c.count);
@@ -23,7 +22,6 @@ export function ActivityHeatmap({ maxCell, cells }: ActivityHeatmapProps) {
     const total = useMemo(() => cells.reduce((s, c) => s + c.count, 0), [cells]);
     const empty = total === 0;
 
-    // Identify "busiest hour" for the headline callout.
     const peak = useMemo(() => {
         let best: HeatmapCell | null = null;
         for (const c of cells) if (!best || c.count > best.count) best = c;
@@ -52,35 +50,36 @@ export function ActivityHeatmap({ maxCell, cells }: ActivityHeatmapProps) {
                 <div className={styles.empty}>No activity in the last 7 days yet.</div>
             ) : (
                 <>
-                    <div className={styles.gridWrap}>
-                        <div className={styles.hourAxis}>
-                            <span>00</span>
-                            <span>06</span>
-                            <span>12</span>
-                            <span>18</span>
-                            <span className={styles.hourAxisEnd}>23</span>
-                        </div>
-                        <div className={styles.grid}>
-                            {DAYS.map((label, day) => (
-                                <div key={day} className={styles.row}>
-                                    <div className={styles.dayLabel}>{label}</div>
-                                    <div className={styles.cellRow}>
-                                        {Array.from({ length: 24 }, (_, hour) => {
-                                            const count = lookup.get(`${day}-${hour}`) ?? 0;
-                                            const intensity = maxCell > 0 ? count / maxCell : 0;
-                                            return (
-                                                <div
-                                                    key={hour}
-                                                    className={styles.cell}
-                                                    style={{ backgroundColor: cellColor(intensity) }}
-                                                    onMouseEnter={() => setHover({ day, hour, count })}
-                                                    onMouseLeave={() => setHover(h => (h && h.day === day && h.hour === hour ? null : h))}
-                                                />
-                                            );
-                                        })}
-                                    </div>
+                    <div className={styles.grid}>
+                        {DAYS.map((label, day) => (
+                            <div key={day} className={styles.row}>
+                                <div className={styles.dayLabel}>{label}</div>
+                                <div className={styles.cellRow}>
+                                    {Array.from({ length: 24 }, (_, hour) => {
+                                        const count = lookup.get(`${day}-${hour}`) ?? 0;
+                                        const intensity = maxCell > 0 ? count / maxCell : 0;
+                                        return (
+                                            <div
+                                                key={hour}
+                                                className={styles.cell}
+                                                style={{ backgroundColor: cellColor(intensity) }}
+                                                onMouseEnter={() => setHover({ day, hour, count })}
+                                                onMouseLeave={() => setHover(h => (h && h.day === day && h.hour === hour ? null : h))}
+                                            />
+                                        );
+                                    })}
                                 </div>
-                            ))}
+                            </div>
+                        ))}
+                        <div className={styles.axisRow}>
+                            <div className={styles.dayLabel} aria-hidden />
+                            <div className={styles.axisInner}>
+                                <span>00</span>
+                                <span>06</span>
+                                <span>12</span>
+                                <span>18</span>
+                                <span>23</span>
+                            </div>
                         </div>
                     </div>
 
@@ -113,7 +112,6 @@ export function ActivityHeatmap({ maxCell, cells }: ActivityHeatmapProps) {
 
 function cellColor(intensity: number): string {
     if (intensity <= 0) return "rgba(255,255,255,0.04)";
-    // Easing so low values are still readable.
     const eased = Math.pow(Math.min(1, intensity), 0.6);
     const alpha = 0.15 + eased * 0.75;
     return `rgba(52, 211, 153, ${alpha.toFixed(3)})`;

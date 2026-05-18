@@ -62,6 +62,7 @@ export function LatencyHistogram({ p50Ms, p95Ms, p99Ms, samples, buckets }: Late
                         })}
                     </div>
                     <div className={styles.footer}>
+                        <div className={styles.axisHint}>ms ← faster &nbsp;·&nbsp; slower → seconds</div>
                         <div className={styles.tooltip}>
                             {hover ? (
                                 <>
@@ -69,7 +70,7 @@ export function LatencyHistogram({ p50Ms, p95Ms, p99Ms, samples, buckets }: Late
                                     {samples > 0 && <> · {formatPercent((hover.count / samples) * 100, 1)}</>}
                                 </>
                             ) : (
-                                <>Hover a bar for exact count. Faster fetches are on the left.</>
+                                <>Hover a bar for the exact count</>
                             )}
                         </div>
                     </div>
@@ -97,10 +98,12 @@ function formatMs(ms: number): string {
     return `${ms} ms`;
 }
 
+// Short axis-style label, just the upper bound of the bucket so 13 of them fit
+// comfortably across narrow viewports. The full range lives in the tooltip.
 function bucketLabel(b: LatencyBucket): string {
-    if (b.loMs === 0) return `<${formatBucketBound(b.hiMs)}`;
-    if (b.hiMs >= 1_000_000_000) return `≥${formatBucketBound(b.loMs)}`;
-    return `${formatBucketBound(b.loMs)}–${formatBucketBound(b.hiMs)}`;
+    if (b.hiMs >= 1_000_000_000) return "30s+";
+    if (b.hiMs >= 1000) return `${b.hiMs / 1000}s`;
+    return `${b.hiMs}`;
 }
 
 function fullBucketLabel(b: LatencyBucket): string {

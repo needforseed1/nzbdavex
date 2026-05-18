@@ -20,6 +20,7 @@ declare const styles: {
   readonly bar: string;
   readonly barLabel: string;
   readonly footer: string;
+  readonly axisHint: string;
   readonly tooltip: string;
 };
 export = styles;

@@ -8,14 +8,13 @@ declare const styles: {
   readonly peakValue: string;
   readonly peakCount: string;
   readonly empty: string;
-  readonly gridWrap: string;
-  readonly hourAxis: string;
-  readonly hourAxisEnd: string;
   readonly grid: string;
   readonly row: string;
   readonly dayLabel: string;
   readonly cellRow: string;
   readonly cell: string;
+  readonly axisRow: string;
+  readonly axisInner: string;
   readonly footer: string;
   readonly tooltip: string;
   readonly scale: string;

@@ -20,6 +20,7 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
             {providers.length === 0 ? (
                 <div className={styles.empty}>No fetches yet.</div>
             ) : (
+                <div className={styles.tableWrap}>
                 <table className={styles.table}>
                     <thead>
                         <tr>
@@ -37,9 +38,11 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                             const share = total > 0 ? (p.articles / total) * 100 : 0;
                             return (
                                 <tr key={p.provider}>
-                                    <td className={styles.providerCell}>
-                                        <span className={styles.dot} />
-                                        {p.provider}
+                                    <td>
+                                        <div className={styles.providerCell} title={p.provider}>
+                                            <span className={styles.dot} />
+                                            <span className={styles.providerName}>{p.provider}</span>
+                                        </div>
                                     </td>
                                     <td className={styles.sparkCol}>
                                         <Sparkline values={p.spark} />
@@ -62,6 +65,7 @@ export function ProviderScoreboard({ providers, window }: ProviderScoreboardProp
                         })}
                     </tbody>
                 </table>
+                </div>
             )}
         </div>
     );

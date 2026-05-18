@@ -4,9 +4,11 @@ declare const styles: {
   readonly title: string;
   readonly sub: string;
   readonly empty: string;
+  readonly tableWrap: string;
   readonly table: string;
   readonly numCol: string;
   readonly providerCell: string;
+  readonly providerName: string;
   readonly dot: string;
   readonly warn: string;
   readonly errorRate: string;

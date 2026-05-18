@@ -3,6 +3,17 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     padding: 18px 20px;
+    overflow: hidden;
+    min-width: 0;
+}
+
+/* Lets the table scroll horizontally inside the card when the viewport is
+   narrower than the table's natural min-width, instead of overflowing. */
+.tableWrap {
+    overflow-x: auto;
+    margin: 0 -20px;
+    padding: 0 20px;
+    -webkit-overflow-scrolling: touch;
 }
 
 .header {
@@ -32,9 +43,11 @@
 
 .table {
     width: 100%;
+    min-width: 560px;
     border-collapse: collapse;
     font-size: 13px;
     color: var(--text-primary);
+    table-layout: auto;
 }
 
 .table thead th {
@@ -67,6 +80,15 @@
     align-items: center;
     gap: 8px;
     font-weight: 500;
+    max-width: 240px;
+    min-width: 0;
+}
+
+.providerName {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .dot {

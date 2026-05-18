@@ -3,6 +3,7 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     padding: 18px 20px;
+    overflow: hidden;
 }
 
 .header {
@@ -65,40 +66,25 @@
     padding: 40px 0;
 }
 
-.gridWrap {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.hourAxis {
-    display: flex;
-    justify-content: space-between;
-    padding-left: 38px;
-    color: var(--text-muted);
-    font-size: 10px;
-    font-variant-numeric: tabular-nums;
-    user-select: none;
-}
-
-.hourAxisEnd {
-    margin-right: 2px;
-}
-
 .grid {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    width: 100%;
+    min-width: 0;
 }
 
 .row {
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
+    min-width: 0;
 }
 
 .dayLabel {
     width: 30px;
+    flex-shrink: 0;
     text-align: right;
     font-size: 11px;
     color: var(--text-muted);
@@ -108,24 +94,45 @@
 
 .cellRow {
     display: grid;
-    grid-template-columns: repeat(24, 1fr);
+    grid-template-columns: repeat(24, minmax(0, 1fr));
     gap: 2px;
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 .cell {
     aspect-ratio: 1 / 1;
     border-radius: 2px;
-    transition: transform 80ms ease;
+    transition: filter 80ms ease, box-shadow 80ms ease;
     cursor: default;
+    min-width: 0;
 }
 
 .cell:hover {
-    transform: scale(1.18);
-    outline: 1px solid var(--text-primary);
-    outline-offset: 0;
+    filter: brightness(1.4);
+    box-shadow: 0 0 0 1px var(--text-primary);
     z-index: 1;
     position: relative;
+}
+
+.axisRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    margin-top: 4px;
+}
+
+.axisInner {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
 }
 
 .footer {

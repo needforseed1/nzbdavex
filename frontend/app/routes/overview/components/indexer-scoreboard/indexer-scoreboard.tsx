@@ -17,6 +17,7 @@ export function IndexerScoreboard({ indexers }: IndexerScoreboardProps) {
             {indexers.length === 0 ? (
                 <div className={styles.empty}>No imports recorded yet.</div>
             ) : (
+                <div className={styles.tableWrap}>
                 <table className={styles.table}>
                     <thead>
                         <tr>
@@ -31,7 +32,9 @@ export function IndexerScoreboard({ indexers }: IndexerScoreboardProps) {
                     <tbody>
                         {indexers.map(i => (
                             <tr key={i.name}>
-                                <td className={styles.nameCell}>{i.name}</td>
+                                <td className={styles.nameCell}>
+                                    <span className={styles.nameInner} title={i.name}>{i.name}</span>
+                                </td>
                                 <td className={styles.numCol}>{formatNumber(i.completed)}</td>
                                 <td className={`${styles.numCol} ${i.failed > 0 ? styles.fail : ""}`}>{formatNumber(i.failed)}</td>
                                 <td className={styles.numCol}>
@@ -46,6 +49,7 @@ export function IndexerScoreboard({ indexers }: IndexerScoreboardProps) {
                         ))}
                     </tbody>
                 </table>
+                </div>
             )}
         </div>
     );
