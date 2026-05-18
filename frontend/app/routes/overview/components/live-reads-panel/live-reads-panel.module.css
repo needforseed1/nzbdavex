@@ -54,7 +54,6 @@
 
 .card {
     flex: 1 1 260px;
-    max-width: 380px;
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);

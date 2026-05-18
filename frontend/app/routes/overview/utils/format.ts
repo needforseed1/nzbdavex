@@ -1,9 +1,11 @@
+// Decimal (SI) bytes — KB/MB/GB at base 1000. Matches what people mean by
+// "MB/s" in everyday usage (and what sabnzbd / NZBGet / hosters all use).
 export function formatBytes(bytes: number): string {
     if (!isFinite(bytes) || bytes <= 0) return "0 B";
-    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
     let i = 0;
     let v = bytes;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
     return v >= 100 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
 }
 
