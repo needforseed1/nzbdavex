@@ -1,0 +1,17 @@
+declare const styles: {
+  readonly container: string;
+  readonly header: string;
+  readonly title: string;
+  readonly sub: string;
+  readonly empty: string;
+  readonly table: string;
+  readonly numCol: string;
+  readonly providerCell: string;
+  readonly dot: string;
+  readonly warn: string;
+  readonly errorRate: string;
+  readonly shareBar: string;
+  readonly shareFill: string;
+  readonly shareText: string;
+};
+export = styles;

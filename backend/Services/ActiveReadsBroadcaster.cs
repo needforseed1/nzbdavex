@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
+using NzbWebDAV.Database.Models.Metrics;
+using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
@@ -15,7 +17,8 @@ namespace NzbWebDAV.Services;
 public class ActiveReadsBroadcaster(
     ActiveReadRegistry registry,
     ProviderUsageTracker usageTracker,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    MetricsWriter metricsWriter
 ) : BackgroundService
 {
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
@@ -46,9 +49,28 @@ public class ActiveReadsBroadcaster(
     private async Task BroadcastTickAsync()
     {
         // Prune sessions that haven't been touched in the activity window first,
-        // so their counters don't leak in the tracker.
+        // so their counters don't leak in the tracker. Each pruned entry becomes
+        // a terminal ReadSession row so the dashboard can show historical reads.
         var pruned = registry.PruneExpired();
-        foreach (var id in pruned) usageTracker.Clear(id);
+        foreach (var entry in pruned)
+        {
+            usageTracker.Clear(entry.Id);
+            metricsWriter.RecordSession(new ReadSession
+            {
+                Id = entry.Id,
+                StartedAt = entry.StartedAt.ToUnixTimeMilliseconds(),
+                EndedAt = entry.LastActivityAt.ToUnixTimeMilliseconds(),
+                DurationMs = (int)Math.Min(int.MaxValue,
+                    (entry.LastActivityAt - entry.StartedAt).TotalMilliseconds),
+                Path = entry.Path,
+                FileSize = entry.FileSize,
+                BytesServed = Interlocked.Read(ref entry.BytesRead),
+                BytesFetched = 0, // not measured per-session yet (bytes stream after fetch attribution)
+                ClientUserAgent = null,
+                ClientIp = null,
+                EndReason = ReadSession.EndReasonCode.Completed,
+            });
+        }
 
         var entries = registry.Snapshot();
 

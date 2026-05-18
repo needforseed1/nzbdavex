@@ -1,0 +1,54 @@
+.grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+}
+
+.tile {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.tileLive {
+    border-color: var(--success);
+    box-shadow: 0 0 0 1px var(--success) inset, 0 0 24px rgba(52, 211, 153, 0.08);
+}
+
+.tileDanger {
+    border-color: var(--danger-muted);
+    box-shadow: 0 0 0 1px var(--danger-muted) inset;
+}
+
+.label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+}
+
+.value {
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.025em;
+    line-height: 1.1;
+}
+
+.sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+@media (max-width: 800px) {
+    .grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

@@ -1,15 +1,41 @@
-﻿using System.Runtime.ExceptionServices;
+﻿using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
+using NzbWebDAV.Services.Metrics;
 using Serilog;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
 
-public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, ProviderUsageTracker usageTracker) : NntpClient
+public class MultiProviderNntpClient(
+    List<MultiConnectionNntpClient> providers,
+    ProviderUsageTracker usageTracker,
+    MetricsWriter? metricsWriter = null
+) : NntpClient
 {
+    private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
+
+    /// <summary>
+    /// Tag the current async flow with a read-session id so SegmentFetch rows
+    /// emitted while fulfilling this read can be correlated back to the session.
+    /// Disposing the returned scope restores the previous value.
+    /// </summary>
+    public static IDisposable BeginReadSessionScope(Guid readSessionId)
+    {
+        var previous = ReadSessionScope.Value;
+        ReadSessionScope.Value = readSessionId;
+        return new ScopeReleaser(() => ReadSessionScope.Value = previous);
+    }
+
+    private sealed class ScopeReleaser(Action onDispose) : IDisposable
+    {
+        public void Dispose() => onDispose();
+    }
+
     // Per-call attribution. Caller (e.g. PlaybackFastVerifier) sets a mutable
     // holder on AttributionContext BEFORE invoking; we read it inside the call and
     // mutate Host on a non-"missing" response. AsyncLocal reliably flows the holder
@@ -149,13 +175,18 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, 
                 Log.Debug($"Encountered error during NNTP Operation: `{msg}`. Trying another provider.");
             }
 
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 var result = await task.Invoke(provider).ConfigureAwait(false);
+                stopwatch.Stop();
 
                 // if no article with that message-id is found, try again with the next provider.
                 if (!isLastProvider && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
+                {
+                    RecordFetch(provider.Host, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
                     continue;
+                }
 
                 // attribute the response to this provider, unless it was a "missing" hit
                 // from the last provider (in which case nobody actually answered).
@@ -168,18 +199,48 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers, 
                                           or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
                 {
                     usageTracker.RecordSuccess(provider.Host);
+                    RecordFetch(provider.Host, SegmentFetch.FetchStatus.Ok, stopwatch.ElapsedMilliseconds, i);
+                }
+                else
+                {
+                    RecordFetch(provider.Host, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
                 }
 
                 return result;
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
+                stopwatch.Stop();
+                RecordFetch(provider.Host, ClassifyException(e), stopwatch.ElapsedMilliseconds, i);
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
         }
 
         lastException?.Throw();
         throw new Exception("There are no usenet providers configured.");
+    }
+
+    private void RecordFetch(string host, SegmentFetch.FetchStatus status, long durationMs, int retries)
+    {
+        if (metricsWriter == null) return;
+        metricsWriter.RecordFetch(new SegmentFetch
+        {
+            At = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Provider = host,
+            ReadSessionId = ReadSessionScope.Value,
+            Bytes = 0, // bytes flow through a lazy stream after this point; counted on the read session
+            DurationMs = (int)Math.Min(int.MaxValue, durationMs),
+            Status = status,
+            Retries = retries,
+        });
+    }
+
+    private static SegmentFetch.FetchStatus ClassifyException(Exception ex)
+    {
+        if (ex is TimeoutException) return SegmentFetch.FetchStatus.Timeout;
+        if (ex is UnauthorizedAccessException) return SegmentFetch.FetchStatus.Auth;
+        if (ex is System.IO.IOException || ex is System.Net.Sockets.SocketException) return SegmentFetch.FetchStatus.Network;
+        return SegmentFetch.FetchStatus.Other;
     }
 
     private List<MultiConnectionNntpClient> GetOrderedProviders()

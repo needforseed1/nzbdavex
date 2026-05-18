@@ -71,16 +71,17 @@ public class ActiveReadRegistry
 
     /// <summary>
     /// Remove entries that haven't been touched within the activity window.
-    /// Returns ids that were pruned so callers can clear external bookkeeping.
+    /// Returns the pruned entries so callers can clear external bookkeeping
+    /// and persist a terminal record of the session.
     /// </summary>
-    public IReadOnlyList<Guid> PruneExpired()
+    public IReadOnlyList<Entry> PruneExpired()
     {
         var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
         var expired = _entries
             .Where(kv => kv.Value.LastActivityAt < cutoff)
-            .Select(kv => kv.Key)
+            .Select(kv => kv.Value)
             .ToList();
-        foreach (var id in expired) _entries.TryRemove(id, out _);
+        foreach (var entry in expired) _entries.TryRemove(entry.Id, out _);
         return expired;
     }
 

@@ -279,6 +279,20 @@ class BackendClient {
         const data = await response.json();
         return data;
     }
+
+    public async getOverviewStats(window: "24h" | "7d" = "24h"): Promise<OverviewStatsResponse> {
+        const url = `${process.env.BACKEND_URL}/api/get-overview-stats?window=${window}`;
+        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const response = await fetch(url, {
+            method: "GET",
+            headers: { "x-api-key": apiKey }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to get overview stats: ${(await response.json()).error}`);
+        }
+        return await response.json();
+    }
 }
 
 export const backendClient = new BackendClient();
@@ -443,4 +457,55 @@ export enum RepairAction {
     Repaired = 1,
     Deleted = 2,
     ActionNeeded = 3,
+}
+
+export type OverviewStatsResponse = {
+    window: "24h" | "7d",
+    tiles: {
+        activeReads: number,
+        articlesPerMinute: number,
+        errorsPerMinute: number,
+        bytesServedPerMinute: number,
+    },
+    throughput: ThroughputPoint[],
+    readAmplification: number,
+    providers: ProviderRow[],
+    catalogue: {
+        fileCount: number,
+        totalBytes: number,
+        checkedPercent: number,
+        repairBacklog: number,
+    },
+    repair: {
+        healthy: number,
+        repaired: number,
+        deleted: number,
+        actionNeeded: number,
+    },
+}
+
+export type ThroughputPoint = {
+    bucket: number,
+    bytesServed: number,
+    bytesFetched: number,
+    articles: number,
+    errors: number,
+}
+
+export type ProviderRow = {
+    provider: string,
+    articles: number,
+    bytesFetched: number,
+    errors: number,
+    retries: number,
+    avgDurationMs: number,
+    errorRate: number,
+}
+
+export type LiveStatsMessage = {
+    activeReads: number,
+    articlesPerMinute: number,
+    errorsPerMinute: number,
+    bytesServedPerMinute: number,
+    ts: number,
 }

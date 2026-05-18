@@ -121,6 +121,7 @@ class Program
             .AddHostedService(sp => sp.GetRequiredService<MetricsWriter>())
             .AddHostedService<MetricsRollupService>()
             .AddHostedService<MetricsRetentionService>()
+            .AddHostedService<LiveStatsBroadcaster>()
             .AddHostedService<HealthCheckService>()
             .AddHostedService<ArrMonitoringService>()
             .AddHostedService<BlobCleanupService>()

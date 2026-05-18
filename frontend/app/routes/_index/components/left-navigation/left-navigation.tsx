@@ -14,6 +14,10 @@ export type LeftNavigationProps = {
 export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnabled }: LeftNavigationProps) {
     return (
         <div className={styles.container}>
+            <Item target="/overview">
+                <div className={styles["overview-icon"]} />
+                <div className={styles.title}>Overview</div>
+            </Item>
             <Item target="/queue">
                 <div className={styles["queue-icon"]} />
                 <div className={styles.title}>Queue</div>
