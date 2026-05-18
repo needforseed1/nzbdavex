@@ -29,6 +29,8 @@ public class QueueItemProcessor(
     ConfigManager configManager,
     WebsocketManager websocketManager,
     ProviderUsageTracker providerUsageTracker,
+    PlaybackAttemptLog playbackAttemptLog,
+    QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
     CancellationToken ct
 )
@@ -371,6 +373,54 @@ public class QueueItemProcessor(
         _ = websocketManager.SendMessage(WebsocketTopic.HistoryItemAdded, historySlot.ToJson());
         _ = DavDatabaseContext.RcloneVfsForget(["/nzbs"]);
         _ = RefreshMonitoredDownloads();
+        RecordWatchdogAttemptIfExternal(startTime, error, providerUsage);
+    }
+
+    // Emits a Watchdog attempt entry for queue items that didn't come through
+    // ProfilePlayController (which writes its own attempts already). Lets users
+    // see service-mode AIOStreams / Sonarr enqueues with provider attribution
+    // on the /watchdog page.
+    private void RecordWatchdogAttemptIfExternal(
+        DateTime startTime,
+        string? error,
+        IReadOnlyDictionary<string, long> providerUsage)
+    {
+        if (sourceTracker.ConsumeIsProfileFlow(queueItem.Id)) return;
+        if (!configManager.IsPlaybackWatchdogEnabled()) return;
+
+        var attemptedAt = new DateTimeOffset(startTime.ToUniversalTime(), TimeSpan.Zero);
+        var durationMs = (int)Math.Max(0, (DateTime.Now - startTime).TotalMilliseconds);
+        var outcome = error == null
+            ? PlaybackAttemptLog.Outcome.QueueCompleted
+            : PlaybackAttemptLog.Outcome.QueueFailed;
+        var providerHost = FormatProviders(providerUsage);
+
+        playbackAttemptLog.Record(new PlaybackAttemptLog.Attempt
+        {
+            ClickId = queueItem.Id,
+            AttemptedAt = attemptedAt,
+            ContentType = string.IsNullOrEmpty(queueItem.Category) ? "unknown" : queueItem.Category,
+            RequestedTitle = queueItem.JobName ?? queueItem.FileName,
+            CandidateTitle = queueItem.JobName ?? queueItem.FileName,
+            IndexerName = queueItem.IndexerName ?? "—",
+            Size = queueItem.TotalSegmentBytes,
+            RankIndex = 0,
+            Result = outcome,
+            FailReason = error,
+            DurationMs = durationMs,
+            IsWinner = error == null,
+            ProviderHost = providerHost,
+        });
+    }
+
+    private static string? FormatProviders(IReadOnlyDictionary<string, long> usage)
+    {
+        if (usage.Count == 0) return null;
+        var total = usage.Values.Sum();
+        if (total == 0) return string.Join(", ", usage.Keys);
+        return string.Join(", ", usage
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => $"{kv.Key} ({(int)Math.Round(100.0 * kv.Value / total)}%)"));
     }
 
     private async Task RefreshMonitoredDownloads()

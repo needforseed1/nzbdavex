@@ -28,7 +28,8 @@ public class ProfilePlayController(
     NewznabRateLimiter rateLimiter,
     DavDatabaseClient dbClient,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    QueueItemSourceTracker sourceTracker
 ) : ControllerBase
 {
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(8) };
@@ -611,6 +612,10 @@ public class ProfilePlayController(
                 if (addResponse.NzoIds.Count == 0) return (null, CommitReason.EnqueueFailed, null);
                 nzoId = Guid.Parse(addResponse.NzoIds[0]);
                 newlyEnqueuedNzoId = nzoId;
+                // Tag this queue item as profile-flow so the queue processor doesn't
+                // emit a redundant watchdog completion entry — we already log every
+                // attempt explicitly via RecordAttempt above.
+                sourceTracker.MarkAsProfileFlow(nzoId);
                 // Mark this queue item as play-owned so orphan cleanup can identify it.
                 _playLastSeen[nzoId] = DateTimeOffset.UtcNow;
             }

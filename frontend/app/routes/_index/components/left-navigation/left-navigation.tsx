@@ -3,6 +3,7 @@ import styles from "./left-navigation.module.css";
 import { className } from "~/utils/styling";
 import type React from "react";
 import { LiveUsenetConnections } from "../live-usenet-connections/live-usenet-connections";
+import { LiveStreams } from "../live-streams/live-streams";
 
 export type LeftNavigationProps = {
     version?: string,
@@ -40,6 +41,7 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
                 <div className={styles.title}>Settings</div>
             </Item>
             <LiveUsenetConnections />
+            <LiveStreams />
 
             <div className={styles.footer}>
                 <div className={styles["footer-item"]}>

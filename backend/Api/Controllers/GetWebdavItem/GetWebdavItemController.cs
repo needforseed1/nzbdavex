@@ -5,6 +5,7 @@ using NWebDav.Server.Stores;
 using NzbWebDAV.Config;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Par2Recovery;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using NzbWebDAV.WebDav;
 
@@ -12,7 +13,12 @@ namespace NzbWebDAV.Api.Controllers.GetWebdavItem;
 
 [ApiController]
 [Route("view/{*path}")]
-public class GetWebdavItemController(DatabaseStore store, ConfigManager configManager) : ControllerBase
+public class GetWebdavItemController(
+    DatabaseStore store,
+    ConfigManager configManager,
+    ProviderUsageTracker providerUsageTracker,
+    ActiveStreamRegistry activeStreamRegistry
+) : ControllerBase
 {
     private async Task<Stream> GetWebdavItem(GetWebdavItemRequest request)
     {
@@ -69,12 +75,33 @@ public class GetWebdavItemController(DatabaseStore store, ConfigManager configMa
         {
             HttpContext.Items["configManager"] = configManager;
             var request = new GetWebdavItemRequest(HttpContext);
+            var sessionId = TrackStreamSession(request.Item);
+            using var scope = providerUsageTracker.BeginScope(sessionId);
             await using var response = await GetWebdavItem(request);
-            await response.CopyToAsync(Response.Body, bufferSize: 1024, HttpContext.RequestAborted);
+            await CopyAndTrackAsync(response, Response.Body, sessionId, HttpContext.RequestAborted);
         }
         catch (UnauthorizedAccessException)
         {
             Response.StatusCode = 401;
+        }
+    }
+
+    private Guid TrackStreamSession(string itemPath)
+    {
+        var fileName = Path.GetFileName(itemPath);
+        var clientKey = $"{HttpContext.Connection.RemoteIpAddress}|{Request.Headers.UserAgent}";
+        return activeStreamRegistry.GetOrCreate(itemPath, clientKey, fileName, fileSize: null);
+    }
+
+    private async Task CopyAndTrackAsync(Stream source, Stream destination, Guid sessionId, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+            if (read == 0) break;
+            await destination.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
+            activeStreamRegistry.Touch(sessionId, read);
         }
     }
 

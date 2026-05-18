@@ -4,6 +4,7 @@ using NWebDav.Server.Handlers;
 using NWebDav.Server.Helpers;
 using NWebDav.Server.Props;
 using NWebDav.Server.Stores;
+using NzbWebDAV.Services;
 
 namespace NzbWebDAV.WebDav.Base;
 
@@ -20,10 +21,17 @@ namespace NzbWebDAV.WebDav.Base;
 public class GetAndHeadHandlerPatch : IRequestHandler
 {
     private readonly IStore _store;
+    private readonly ProviderUsageTracker _providerUsageTracker;
+    private readonly ActiveStreamRegistry _activeStreamRegistry;
 
-    public GetAndHeadHandlerPatch(IStore store)
+    public GetAndHeadHandlerPatch(
+        IStore store,
+        ProviderUsageTracker providerUsageTracker,
+        ActiveStreamRegistry activeStreamRegistry)
     {
         _store = store;
+        _providerUsageTracker = providerUsageTracker;
+        _activeStreamRegistry = activeStreamRegistry;
     }
     
     /// <summary>
@@ -150,7 +158,16 @@ public class GetAndHeadHandlerPatch : IRequestHandler
 
                 // HEAD method doesn't require the actual item data
                 if (!isHeadRequest)
-                    await CopyToAsync(stream, response.Body, range?.Start ?? 0, range?.End, httpContext.RequestAborted).ConfigureAwait(false);
+                {
+                    var path = request.GetUri().AbsolutePath;
+                    var fileName = System.IO.Path.GetFileName(path);
+                    var clientKey = $"{httpContext.Connection.RemoteIpAddress}|{request.Headers.UserAgent}";
+                    var sessionId = _activeStreamRegistry.GetOrCreate(
+                        path, clientKey, fileName, stream.CanSeek ? stream.Length : null);
+                    using var scope = _providerUsageTracker.BeginScope(sessionId);
+                    await CopyToAsync(stream, response.Body, range?.Start ?? 0, range?.End,
+                        sessionId, httpContext.RequestAborted).ConfigureAwait(false);
+                }
             }
             else
             {
@@ -161,7 +178,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         return true;
     }
 
-    private async Task CopyToAsync(Stream src, Stream dest, long start, long? end, CancellationToken cancellationToken)
+    private async Task CopyToAsync(Stream src, Stream dest, long start, long? end, Guid sessionId, CancellationToken cancellationToken)
     {
         // Skip to the first offset
         if (start > 0)
@@ -169,7 +186,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             // We prefer seeking instead of draining data
             if (!src.CanSeek)
                 throw new IOException("Cannot use range, because the source stream isn't seekable");
-            
+
             src.Seek(start, SeekOrigin.Begin);
         }
 
@@ -189,9 +206,12 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             // We're done, if we cannot read any data anymore
             if (bytesRead == 0)
                 return;
-            
+
             // Write the data to the destination stream
             await dest.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+
+            // Update activity for the live-streams dashboard.
+            _activeStreamRegistry.Touch(sessionId, bytesRead);
 
             // Decrement the number of bytes left to read
             bytesToRead -= bytesRead;

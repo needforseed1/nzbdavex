@@ -19,6 +19,8 @@ public class QueueManager : IDisposable
     private readonly ConfigManager _configManager;
     private readonly WebsocketManager _websocketManager;
     private readonly ProviderUsageTracker _providerUsageTracker;
+    private readonly PlaybackAttemptLog _playbackAttemptLog;
+    private readonly QueueItemSourceTracker _sourceTracker;
 
     private CancellationTokenSource _sleepingQueueToken = new();
     private readonly Lock _sleepingQueueLock = new();
@@ -27,13 +29,17 @@ public class QueueManager : IDisposable
         UsenetStreamingClient usenetClient,
         ConfigManager configManager,
         WebsocketManager websocketManager,
-        ProviderUsageTracker providerUsageTracker
+        ProviderUsageTracker providerUsageTracker,
+        PlaybackAttemptLog playbackAttemptLog,
+        QueueItemSourceTracker sourceTracker
     )
     {
         _usenetClient = usenetClient;
         _configManager = configManager;
         _websocketManager = websocketManager;
         _providerUsageTracker = providerUsageTracker;
+        _playbackAttemptLog = playbackAttemptLog;
+        _sourceTracker = sourceTracker;
         _cancellationTokenSource = CancellationTokenSource
             .CreateLinkedTokenSource(SigtermUtil.GetCancellationToken());
         _ = ProcessQueueAsync(_cancellationTokenSource.Token);
@@ -156,7 +162,8 @@ public class QueueManager : IDisposable
         var progressHook = new Progress<int>();
         var task = new QueueItemProcessor(
             queueItem, queueNzbStream, dbClient, usenetClient,
-            _configManager, _websocketManager, _providerUsageTracker, progressHook, cts.Token
+            _configManager, _websocketManager, _providerUsageTracker,
+            _playbackAttemptLog, _sourceTracker, progressHook, cts.Token
         ).ProcessAsync();
         var inProgressQueueItem = new InProgressQueueItem()
         {
