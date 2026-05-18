@@ -172,7 +172,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                         path, clientKey, fileName, stream.CanSeek ? stream.Length : null);
                     using var scope = _providerUsageTracker.BeginScope(sessionId);
                     await CopyToAsync(stream, response.Body, range?.Start ?? 0, range?.End,
-                        n => _activeReadRegistry.Touch(sessionId, n),
+                        (n, pos) => _activeReadRegistry.Touch(sessionId, n, pos),
                         httpContext.RequestAborted).ConfigureAwait(false);
                 }
             }
@@ -190,7 +190,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         Stream dest,
         long start,
         long? end,
-        Action<long>? onBytesServed,
+        Action<long, long>? onBytesServed,
         CancellationToken cancellationToken)
     {
         // Skip to the first offset
@@ -208,6 +208,7 @@ public class GetAndHeadHandlerPatch : IRequestHandler
 
         // Read in 64KB blocks
         var buffer = new byte[64 * 1024];
+        var position = start;
 
         // Copy, until we don't get any data anymore
         while (bytesToRead > 0)
@@ -223,9 +224,10 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             // Write the data to the destination stream
             await dest.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
 
-            // Tell the active-read registry how many bytes were served downstream
-            // so per-session BytesServed (and dashboards) actually populate.
-            onBytesServed?.Invoke(bytesRead);
+            // Report chunk size + new absolute file position so dashboards can
+            // surface real playback location (not cumulative transferred bytes).
+            position += bytesRead;
+            onBytesServed?.Invoke(bytesRead, position);
 
             // Decrement the number of bytes left to read
             bytesToRead -= bytesRead;

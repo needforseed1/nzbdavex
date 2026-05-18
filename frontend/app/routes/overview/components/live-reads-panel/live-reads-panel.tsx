@@ -68,8 +68,11 @@ export function LiveReadsPanel() {
                 {reads.map(r => {
                     const meta = prevRef.current.get(r.id);
                     const rate = meta?.rate ?? 0;
+                    // Use the latest read position (what the player is requesting
+                    // right now) — not cumulative bytes transferred — so the bar
+                    // reflects actual playback location, immune to seeks/replays.
                     const pct = r.fileSize && r.fileSize > 0
-                        ? Math.min(100, (r.bytesRead / r.fileSize) * 100)
+                        ? Math.min(100, (r.currentOffset / r.fileSize) * 100)
                         : null;
                     return (
                         <div key={r.id} className={styles.card}>
@@ -84,8 +87,10 @@ export function LiveReadsPanel() {
                             </div>
                             <div className={styles.stats}>
                                 <span className={styles.bytes}>
-                                    {formatBytes(r.bytesRead)}
-                                    {r.fileSize ? <span className={styles.bytesTotal}> / {formatBytes(r.fileSize)}</span> : null}
+                                    {r.fileSize
+                                        ? <>at {formatBytes(r.currentOffset)} <span className={styles.bytesTotal}>/ {formatBytes(r.fileSize)}</span></>
+                                        : <>at {formatBytes(r.currentOffset)}</>
+                                    }
                                 </span>
                                 <span className={styles.rate}>{formatBytes(rate)}/s</span>
                             </div>

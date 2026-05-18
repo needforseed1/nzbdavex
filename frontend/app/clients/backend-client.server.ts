@@ -554,6 +554,7 @@ export type ActiveRead = {
     startedAt: number,
     lastActivityAt: number,
     bytesRead: number,
+    currentOffset: number,
     fileSize: number | null,
     providers: { host: string, segments: number }[],
 }

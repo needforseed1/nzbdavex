@@ -87,7 +87,7 @@ public class GetWebdavItemController(
             HttpContext.Items["readSessionId"] = sessionId;
             using var scope = providerUsageTracker.BeginScope(sessionId);
             await using var response = await GetWebdavItem(request);
-            await CopyAndReportAsync(response, Response.Body, sessionId, HttpContext.RequestAborted);
+            await CopyAndReportAsync(response, Response.Body, sessionId, request.RangeStart ?? 0, HttpContext.RequestAborted);
         }
         catch (UnauthorizedAccessException)
         {
@@ -95,17 +95,19 @@ public class GetWebdavItemController(
         }
     }
 
-    private async Task CopyAndReportAsync(Stream src, Stream dest, Guid sessionId, CancellationToken ct)
+    private async Task CopyAndReportAsync(Stream src, Stream dest, Guid sessionId, long startOffset, CancellationToken ct)
     {
-        // 64 KB chunks; report each written chunk back to the registry so the
-        // Right-Now panel's bytes-served / rate populate and the terminal
-        // ReadSession row records real BytesServed.
+        // 64 KB chunks; after each write report (bytesRead, absolutePosition)
+        // so the Right-Now panel can show real playback location and the
+        // throughput rate populates correctly.
         var buffer = new byte[64 * 1024];
+        var position = startOffset;
         int read;
         while ((read = await src.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
         {
             await dest.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
-            activeReadRegistry.Touch(sessionId, read);
+            position += read;
+            activeReadRegistry.Touch(sessionId, read, position);
         }
     }
 

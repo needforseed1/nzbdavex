@@ -32,15 +32,30 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
     const liveTiles = stats.tiles;
 
+    // Re-fetch on window change + every 30s so chart, heatmap, providers, etc.
+    // stay fresh without manual refresh. Skipped when the tab is hidden so
+    // background tabs don't churn the backend; an immediate refetch fires when
+    // the tab becomes visible again.
     useEffect(() => {
         let cancelled = false;
-        (async () => {
-            const res = await fetch(`/api/get-overview-stats?window=${window}`);
-            if (!res.ok || cancelled) return;
-            const data: OverviewStatsResponse = await res.json();
-            if (!cancelled) setStats(data);
-        })();
-        return () => { cancelled = true; };
+        const refetch = async () => {
+            if (typeof document !== "undefined" && document.hidden) return;
+            try {
+                const res = await fetch(`/api/get-overview-stats?window=${window}`);
+                if (!res.ok || cancelled) return;
+                const data: OverviewStatsResponse = await res.json();
+                if (!cancelled) setStats(data);
+            } catch { /* network blip, retry next tick */ }
+        };
+        refetch();
+        const interval = setInterval(refetch, 30_000);
+        const onVisible = () => { if (!document.hidden) refetch(); };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+            document.removeEventListener("visibilitychange", onVisible);
+        };
     }, [window]);
 
     const onWsMessage = useCallback((topic: string, message: string) => {

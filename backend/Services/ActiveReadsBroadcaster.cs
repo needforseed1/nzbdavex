@@ -88,6 +88,7 @@ public class ActiveReadsBroadcaster(
                 startedAt = e.StartedAt.ToUnixTimeMilliseconds(),
                 lastActivityAt = e.LastActivityAt.ToUnixTimeMilliseconds(),
                 bytesRead = Interlocked.Read(ref e.BytesRead),
+                currentOffset = Interlocked.Read(ref e.CurrentOffset),
                 fileSize = e.FileSize,
                 providers = (usage.GetValueOrDefault(e.Id) ?? new Dictionary<string, long>())
                     .Select(kv => new { host = kv.Key, segments = kv.Value })

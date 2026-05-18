@@ -45,7 +45,7 @@ public class ActiveReadRegistry
         return id;
     }
 
-    public void Touch(Guid id, long bytesRead)
+    public void Touch(Guid id, long bytesRead, long? currentOffset = null)
     {
         if (_entries.TryGetValue(id, out var entry))
         {
@@ -55,6 +55,8 @@ public class ActiveReadRegistry
                 Interlocked.Add(ref entry.BytesRead, bytesRead);
                 Interlocked.Add(ref _totalBytesServed, bytesRead);
             }
+            if (currentOffset.HasValue)
+                Interlocked.Exchange(ref entry.CurrentOffset, currentOffset.Value);
         }
     }
 
@@ -117,5 +119,12 @@ public class ActiveReadRegistry
         public DateTimeOffset StartedAt { get; init; }
         public DateTimeOffset LastActivityAt { get; set; }
         public long BytesRead;
+        /// <summary>
+        /// Most recent absolute file offset the player has been served (i.e. the
+        /// "where the read head is" position). Updated after every chunk so the
+        /// Right Now panel can show genuine playback position, not cumulative
+        /// transferred bytes (which over-counts on seek/rewind).
+        /// </summary>
+        public long CurrentOffset;
     }
 }
