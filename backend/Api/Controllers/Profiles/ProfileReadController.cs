@@ -4,6 +4,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
+using Serilog;
 
 namespace NzbWebDAV.Api.Controllers.Profiles;
 
@@ -57,8 +58,13 @@ public class ProfileReadController(
                 var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
                 return filtered.Select(i => new { indexer = x.Name, userAgent = ua, item = i });
             }
-            catch
+            catch (Exception e)
             {
+                // Swallow per-indexer so one bad indexer doesn't take down the whole search,
+                // but surface non-cancellation failures so the user can diagnose "I configured
+                // 4 indexers but only see results from 1" (auth, 5xx, malformed XML, etc).
+                if (!e.IsCancellationException())
+                    Log.Warning("Indexer {Indexer} search failed: {Message}", x.Name, e.Message);
                 return [];
             }
         })).ConfigureAwait(false);

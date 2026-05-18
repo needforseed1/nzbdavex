@@ -126,24 +126,30 @@ public class ProfilePlayController(
         // Batch retry loop: try up to maxCandidates candidates in parallel per batch;
         // if all in a batch fail, advance to the next batch — until a winner, budget elapses,
         // total attempts (maxAttempts) are exhausted, or we run out of cached candidates.
+        //
+        // Iteration order is BuildFallbackQueue, not the raw ranked list: clicked candidate
+        // first, then round-robin by indexer. Without this, indexers whose releases cluster
+        // at the top of the global ranking (typically the most popular one) monopolize the
+        // maxAttempts budget and other configured indexers never get tried.
+        var fallbackQueue = BuildFallbackQueue(entry);
         var rankIndex = new Dictionary<string, int>();
         var displayRank = 0;
-        var cursor = entry.StartIndex;
+        var queueIndex = 0;
         var attemptsUsed = 0;
         var sawAnyBatch = false;
         var excludedCount = 0;
 
-        while (attemptsUsed < maxAttempts && cursor < entry.Candidates.Count)
+        while (attemptsUsed < maxAttempts && queueIndex < fallbackQueue.Count)
         {
             if (totalCts.IsCancellationRequested) break;
             if (DateTimeOffset.UtcNow >= deadline) break;
 
             var batchBudget = Math.Min(maxCandidates, maxAttempts - attemptsUsed);
             var pool = new List<NzbResolutionCache.Candidate>();
-            while (cursor < entry.Candidates.Count && pool.Count < batchBudget)
+            while (queueIndex < fallbackQueue.Count && pool.Count < batchBudget)
             {
-                var c = entry.Candidates[cursor];
-                cursor++;
+                var c = fallbackQueue[queueIndex];
+                queueIndex++;
                 if (negativeCache.IsFailed(c.NzbUrl)) continue;
                 var excludeMatch = MatchExcludePattern(c.Title, excludePatterns);
                 if (excludeMatch != null)
@@ -194,6 +200,49 @@ public class ProfilePlayController(
         return await ResolveExistingOrErrorAsync(entry, 503,
             "All tried candidates failed. Retry in a few seconds.", 5,
             HttpContext.RequestAborted).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Build the watchdog's fallback iteration order. Clicked candidate (Primary) is always
+    /// tried first; remaining candidates are round-robin'd across their indexers so a single
+    /// indexer's cluster at the top of the global ranking can't monopolize the maxAttempts
+    /// budget. Indexer iteration order is each indexer's first-appearance position in the
+    /// ranked list, and each indexer's internal order is preserved (size/grabs-desc), so the
+    /// strongest-ranked indexer still gets the first slot of each round-robin pass.
+    /// </summary>
+    private static List<NzbResolutionCache.Candidate> BuildFallbackQueue(NzbResolutionCache.Entry entry)
+    {
+        var queue = new List<NzbResolutionCache.Candidate>(entry.Candidates.Count) { entry.Primary };
+
+        var groups = new Dictionary<string, Queue<NzbResolutionCache.Candidate>>(StringComparer.Ordinal);
+        var indexerOrder = new List<string>();
+        for (var i = 0; i < entry.Candidates.Count; i++)
+        {
+            if (i == entry.StartIndex) continue;
+            var c = entry.Candidates[i];
+            if (!groups.TryGetValue(c.IndexerName, out var q))
+            {
+                q = new Queue<NzbResolutionCache.Candidate>();
+                groups[c.IndexerName] = q;
+                indexerOrder.Add(c.IndexerName);
+            }
+            q.Enqueue(c);
+        }
+
+        while (true)
+        {
+            var added = false;
+            foreach (var name in indexerOrder)
+            {
+                var q = groups[name];
+                if (q.Count == 0) continue;
+                queue.Add(q.Dequeue());
+                added = true;
+            }
+            if (!added) break;
+        }
+
+        return queue;
     }
 
     private static string? MatchExcludePattern(string title, IReadOnlyList<Regex> patterns)
