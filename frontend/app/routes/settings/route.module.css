@@ -37,3 +37,126 @@
 .button {
     margin-right: 10px;
 }
+
+/* ---------- Advanced tab ---------- */
+
+.advanced {
+    max-width: 820px;
+}
+
+.advancedIntro {
+    margin-bottom: 20px;
+}
+
+.advancedTitle {
+    color: var(--text-primary);
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin-bottom: 4px;
+}
+
+.advancedSubtitle {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.advancedAccordion {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.advancedItem {
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-md) !important;
+    overflow: hidden;
+    background-color: var(--bg-elevated) !important;
+    transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.advancedItem:hover {
+    border-color: var(--border-default) !important;
+}
+
+.advancedItemHeader {
+    margin: 0;
+}
+
+.advancedItemHeader button {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    box-shadow: none !important;
+    border-radius: var(--radius-md) !important;
+    padding: 14px 18px !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+    transition: background-color 140ms ease;
+}
+
+.advancedItemHeader button:hover {
+    background-color: var(--bg-hover) !important;
+}
+
+.advancedItemHeader button[aria-expanded="true"] {
+    background-color: var(--bg-surface) !important;
+    border-radius: var(--radius-md) var(--radius-md) 0 0 !important;
+}
+
+.advancedItemHeader button::after {
+    filter: invert(0.7);
+    margin-top: 4px;
+    flex-shrink: 0;
+}
+
+.advancedItemHeaderInner {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+}
+
+.advancedItemTitleRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.advancedItemTitle {
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+}
+
+.advancedItemBadge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background-color: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    color: #fcd34d;
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.advancedItemDescription {
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.45;
+    font-weight: 400;
+}
+
+.advancedItemBody {
+    background-color: var(--bg-elevated) !important;
+    color: var(--text-secondary) !important;
+    padding: 20px 18px !important;
+    border-top: 1px solid var(--border-subtle);
+}

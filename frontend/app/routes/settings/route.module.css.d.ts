@@ -2,6 +2,18 @@ declare const styles: {
   readonly "container": string;
   readonly "tabs": string;
   readonly "button": string;
+  readonly "advanced": string;
+  readonly "advancedIntro": string;
+  readonly "advancedTitle": string;
+  readonly "advancedSubtitle": string;
+  readonly "advancedAccordion": string;
+  readonly "advancedItem": string;
+  readonly "advancedItemHeader": string;
+  readonly "advancedItemHeaderInner": string;
+  readonly "advancedItemTitleRow": string;
+  readonly "advancedItemTitle": string;
+  readonly "advancedItemBadge": string;
+  readonly "advancedItemDescription": string;
+  readonly "advancedItemBody": string;
 };
 export = styles;
-

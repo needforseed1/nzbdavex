@@ -1,6 +1,6 @@
 import type { Route } from "./+types/route";
 import styles from "./route.module.css"
-import { Tabs, Tab, Button } from "react-bootstrap"
+import { Tabs, Tab, Button, Accordion } from "react-bootstrap"
 import { backendClient } from "~/clients/backend-client.server";
 import { isUsenetSettingsUpdated, UsenetSettings } from "./usenet/usenet";
 import { isSabnzbdSettingsUpdated, isSabnzbdSettingsValid, SabnzbdSettings } from "./sabnzbd/sabnzbd";
@@ -12,7 +12,7 @@ import { isMaintenanceSettingsUpdated, Maintenance } from "./maintenance/mainten
 import { isRepairsSettingsUpdated, RepairsSettings } from "./repairs/repairs";
 import { isWatchdogSettingsUpdated, isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
 import { isRcloneSettingsUpdated, RcloneSettings } from "./rclone/rclone";
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
 
@@ -110,18 +110,14 @@ function Body(props: BodyProps) {
     const isRcloneUpdated = isRcloneSettingsUpdated(config, newConfig);
     const isMaintenanceUpdated = isMaintenanceSettingsUpdated(config, newConfig);
     const isUpdated = iseUsenetUpdated || isSabnzbdUpdated || isWebdavUpdated || isArrsUpdated || isIndexersUpdated || isProfilesUpdated || isRepairsUpdated || isWatchdogUpdated || isRcloneUpdated || isMaintenanceUpdated;
+    const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isMaintenanceUpdated;
     const navigationBlocker = useNavigationBlocker(isUpdated);
 
     const usenetTitle = iseUsenetUpdated ? "✏️ Usenet" : "Usenet";
-    const sabnzbdTitle = isSabnzbdUpdated ? "✏️ SABnzbd " : "SABnzbd";
-    const webdavTitle = isWebdavUpdated ? "✏️ WebDAV" : "WebDAV";
-    const arrsTitle = isArrsUpdated ? "✏️ Radarr/Sonarr" : "Radarr/Sonarr";
     const indexersTitle = isIndexersUpdated ? "✏️ Indexers" : "Indexers";
     const profilesTitle = isProfilesUpdated ? "✏️ Profiles" : "Profiles";
-    const repairsTitle = isRepairsUpdated ? "✏️ Repairs" : "Repairs";
     const watchdogTitle = isWatchdogUpdated ? "✏️ Watchdog" : "Watchdog";
-    const rcloneTitle = isRcloneUpdated ? "✏️ Rclone Server" : "Rclone Server";
-    const maintenanceTitle = isMaintenanceUpdated ? "✏️ Maintenance" : "Maintenance";
+    const advancedTitle = isAdvancedUpdated ? "✏️ Advanced" : "Advanced";
 
     const saveButtonLabel = isSaving ? "Saving..."
         : !isUpdated && isSaved ? "Saved ✅"
@@ -182,23 +178,59 @@ function Body(props: BodyProps) {
                 <Tab eventKey="watchdog" title={watchdogTitle}>
                     <WatchdogSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
-                <Tab eventKey="webdav" title={webdavTitle}>
-                    <WebdavSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="sabnzbd" title={sabnzbdTitle}>
-                    <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
-                </Tab>
-                <Tab eventKey="arrs" title={arrsTitle}>
-                    <ArrsSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="repairs" title={repairsTitle}>
-                    <RepairsSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="rclone" title={rcloneTitle}>
-                    <RcloneSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="maintenance" title={maintenanceTitle}>
-                    <Maintenance savedConfig={config} config={newConfig} setNewConfig={setNewConfig} />
+                <Tab eventKey="advanced" title={advancedTitle}>
+                    <div className={styles.advanced}>
+                        <div className={styles.advancedIntro}>
+                            <div className={styles.advancedTitle}>Advanced Settings</div>
+                            <div className={styles.advancedSubtitle}>
+                                Integrations, server access, and maintenance. Expand a section to view its options.
+                            </div>
+                        </div>
+                        <Accordion className={styles.advancedAccordion} alwaysOpen>
+                            <AdvancedItem
+                                eventKey="webdav"
+                                title="WebDAV"
+                                description="Remote file access — credentials, hidden files, and read-only mode."
+                                isUpdated={isWebdavUpdated}>
+                                <WebdavSettings config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="sabnzbd"
+                                title="SABnzbd"
+                                description="Compatible API for *arr apps — API key, categories, import strategy."
+                                isUpdated={isSabnzbdUpdated}>
+                                <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="arrs"
+                                title="Radarr / Sonarr"
+                                description="Connect Radarr and Sonarr instances and configure queue rules."
+                                isUpdated={isArrsUpdated}>
+                                <ArrsSettings config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="repairs"
+                                title="Repairs"
+                                description="Automatic repair of failed downloads and broken media library entries."
+                                isUpdated={isRepairsUpdated}>
+                                <RepairsSettings config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="rclone"
+                                title="Rclone Server"
+                                description="Remote control protocol settings for mounting nzbdav via rclone."
+                                isUpdated={isRcloneUpdated}>
+                                <RcloneSettings config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="maintenance"
+                                title="Maintenance"
+                                description="Database vacuum, scheduled cleanup, and one-off migration tasks."
+                                isUpdated={isMaintenanceUpdated}>
+                                <Maintenance savedConfig={config} config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                        </Accordion>
+                    </div>
                 </Tab>
             </Tabs>
             <hr />
@@ -226,6 +258,35 @@ function Body(props: BodyProps) {
                 onConfirm={navigationBlocker.onConfirmNavigation}
             />
         </div>
+    );
+}
+
+type AdvancedItemProps = {
+    eventKey: string,
+    title: string,
+    description: string,
+    isUpdated: boolean,
+    children: ReactNode,
+};
+
+function AdvancedItem({ eventKey, title, description, isUpdated, children }: AdvancedItemProps) {
+    return (
+        <Accordion.Item eventKey={eventKey} className={styles.advancedItem}>
+            <Accordion.Header className={styles.advancedItemHeader}>
+                <div className={styles.advancedItemHeaderInner}>
+                    <div className={styles.advancedItemTitleRow}>
+                        <span className={styles.advancedItemTitle}>{title}</span>
+                        {isUpdated && (
+                            <span className={styles.advancedItemBadge}>Unsaved</span>
+                        )}
+                    </div>
+                    <span className={styles.advancedItemDescription}>{description}</span>
+                </div>
+            </Accordion.Header>
+            <Accordion.Body className={styles.advancedItemBody}>
+                {children}
+            </Accordion.Body>
+        </Accordion.Item>
     );
 }
 
