@@ -38,14 +38,16 @@ type ConnectionDetails = {
     BytesUsedResetAt?: number;
 };
 
+// camelCase matches the JSON wire format — ASP.NET Core MVC defaults to
+// camelCase serialization, so we mirror that here instead of fighting it.
 type ProviderUsage = {
-    Index: number;
-    Host: string;
-    BytesUsed: number;
-    ByteLimit: number | null;
-    OverLimit: boolean;
-    BytesPerDay: number;
-    DaysRemaining: number | null;
+    index: number;
+    host: string;
+    bytesUsed: number;
+    byteLimit: number | null;
+    overLimit: boolean;
+    bytesPerDay: number;
+    daysRemaining: number | null;
 };
 
 function formatDaysRemaining(days: number): string {
@@ -238,7 +240,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 const data: { providers?: ProviderUsage[] } = await response.json();
                 if (disposed || !data.providers) return;
                 const next: {[index: number]: ProviderUsage} = {};
-                for (const p of data.providers) next[p.Index] = p;
+                for (const p of data.providers) next[p.index] = p;
                 setUsage(next);
             } catch {
                 // network blips are fine — next tick retries.
@@ -423,7 +425,7 @@ type UsageRowProps = {
 
 function UsageRow({ provider, usage, onReset }: UsageRowProps) {
     const limit = provider.ByteLimit ?? null;
-    const used = usage?.BytesUsed ?? 0;
+    const used = usage?.bytesUsed ?? 0;
     const hasLimit = limit !== null && limit > 0;
     const pct = hasLimit ? Math.min(100, (used / (limit as number)) * 100) : 0;
     // Thresholds match the soft-warning levels the backend would alert on if
@@ -464,12 +466,12 @@ function UsageRow({ provider, usage, onReset }: UsageRowProps) {
                     />
                 </div>
             )}
-            {usage && usage.DaysRemaining !== null && usage.DaysRemaining !== undefined && !usage.OverLimit && (
+            {usage && usage.daysRemaining !== null && usage.daysRemaining !== undefined && !usage.overLimit && (
                 <div className={styles["usage-hint"]}>
-                    {formatDaysRemaining(usage.DaysRemaining)}
+                    {formatDaysRemaining(usage.daysRemaining)}
                 </div>
             )}
-            {usage?.OverLimit && (
+            {usage?.overLimit && (
                 <div className={styles["usage-warning"]}>
                     Data cap reached — this provider is paused to keep in-flight fetches from overshooting. Reset the counter or raise the cap to resume.
                 </div>
