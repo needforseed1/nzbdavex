@@ -82,7 +82,7 @@ jobs:
           echo "${{ steps.build.outputs.digest }}" > /tmp/digests/${{ matrix.suffix }}
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.suffix }}
           path: /tmp/digests/${{ matrix.suffix }}
@@ -96,13 +96,13 @@ jobs:
       packages: write
     steps:
       - name: Download AMD64 digest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: digests-amd64
           path: /tmp/digests
 
       - name: Download ARM64 digest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: digests-arm64
           path: /tmp/digests
