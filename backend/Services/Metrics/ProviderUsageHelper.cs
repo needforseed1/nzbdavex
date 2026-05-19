@@ -51,48 +51,84 @@ public static class ProviderUsageHelper
     }
 
     /// <summary>
-    /// Per-host 7-day rolling average bytes/day, keyed by Host. Distinct hosts
-    /// only — the caller fans out to providers that share a host. Returning a
-    /// dictionary in one round-trip avoids N queries on a settings page that
-    /// polls every 10s.
+    /// Raw ProviderHourly rows over the last 7 days for the supplied hosts,
+    /// grouped by host. Returning rows rather than a pre-aggregated sum lets
+    /// the caller apply each provider's own ResetAt cutoff in memory without
+    /// firing N queries — the settings page polls every 10s.
     /// </summary>
-    public static async Task<Dictionary<string, long>> ReadBytesPerDayAsync(IEnumerable<string> hosts)
+    public static async Task<Dictionary<string, List<(long Hour, long Bytes)>>> ReadRecentHoursAsync(
+        IEnumerable<string> hosts)
     {
         var distinct = hosts.Where(h => !string.IsNullOrEmpty(h)).Distinct().ToArray();
-        if (distinct.Length == 0) return new Dictionary<string, long>();
+        if (distinct.Length == 0) return new Dictionary<string, List<(long, long)>>();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         const long sevenDaysMs = 7L * 24 * 60 * 60 * 1000;
         var since = nowMs - sevenDaysMs;
 
         await using var db = new MetricsDbContext();
-        var groups = await db.ProviderHourly
+        var rows = await db.ProviderHourly
             .Where(x => distinct.Contains(x.Provider) && x.Hour >= since)
-            .GroupBy(x => x.Provider)
-            .Select(g => new { Provider = g.Key, TotalBytes = g.Sum(x => x.BytesFetched) })
+            .Select(x => new { x.Provider, x.Hour, x.BytesFetched })
             .ToListAsync()
             .ConfigureAwait(false);
 
-        return groups.ToDictionary(g => g.Provider, g => g.TotalBytes / 7);
+        return rows
+            .GroupBy(r => r.Provider, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(r => (r.Hour, r.BytesFetched)).ToList(),
+                StringComparer.Ordinal);
     }
 
     /// <summary>
-    /// Days until the cap is hit at the supplied 7-day burn rate. Returns null
-    /// for "no honest projection" — uncapped, no recent activity, or already
-    /// over the cap. The UI suppresses the readout in those cases instead of
-    /// showing "Infinity" or a negative number.
+    /// Per-provider burn rate (bytes/day) and projected days-until-cap,
+    /// computed against the same time window as the live usage gauge.
+    ///
+    /// Window = [max(ResetAt, now − 7d), now]. This is the fix for the
+    /// "0 used / 1h left" paradox: never fold pre-reset history into a
+    /// post-reset projection. A freshly-reset counter shouldn't display
+    /// a runout inherited from last week's downloads.
+    ///
+    /// Returns (rate, null) — honest rate, no projection — when any of:
+    ///   - no cap configured,
+    ///   - nothing used since reset (no signal to project from),
+    ///   - window shorter than 1h (a few minutes of data inflates the rate
+    ///     into nonsense like "1h left" after a tiny burst),
+    ///   - already at/over the cap (nothing to extrapolate).
     /// </summary>
-    public static double? ProjectDaysRemaining(
+    public static (long BytesPerDay, double? DaysRemaining) ComputeBurnRate(
         UsenetProviderConfig.ConnectionDetails provider,
         long bytesUsed,
-        long bytesPerDay)
+        List<(long Hour, long Bytes)>? recentHours)
     {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        const long sevenDaysMs = 7L * 24 * 60 * 60 * 1000;
+        const long oneHourMs = 60L * 60 * 1000;
+        const double msPerDay = 86_400_000d;
+
+        var effectiveStart = Math.Max(provider.BytesUsedResetAt, nowMs - sevenDaysMs);
+        var windowMs = nowMs - effectiveStart;
+
+        long bytesInWindow = 0;
+        if (recentHours != null)
+        {
+            foreach (var (hour, bytes) in recentHours)
+                if (hour >= effectiveStart) bytesInWindow += bytes;
+        }
+
+        var bytesPerDay = windowMs > 0
+            ? (long)(bytesInWindow / (windowMs / msPerDay))
+            : 0;
+
         var limit = provider.ByteLimit;
-        if (!limit.HasValue || limit.Value <= 0) return null;
-        if (bytesPerDay <= 0) return null;
+        if (!limit.HasValue || limit.Value <= 0) return (bytesPerDay, null);
+        if (bytesUsed <= 0) return (bytesPerDay, null);
+        if (windowMs < oneHourMs) return (bytesPerDay, null);
+        if (bytesPerDay <= 0) return (bytesPerDay, null);
         var remaining = limit.Value - bytesUsed;
-        if (remaining <= 0) return null;
-        return (double)remaining / bytesPerDay;
+        if (remaining <= 0) return (bytesPerDay, null);
+        return (bytesPerDay, (double)remaining / bytesPerDay);
     }
 
     /// <summary>

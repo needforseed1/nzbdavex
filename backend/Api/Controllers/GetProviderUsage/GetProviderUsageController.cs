@@ -14,15 +14,16 @@ public class GetProviderUsageController(
     private async Task<GetProviderUsageResponse> GetUsageAsync()
     {
         var providerConfig = configManager.GetUsenetProviderConfig();
-        var bytesPerDayByHost = await ProviderUsageHelper
-            .ReadBytesPerDayAsync(providerConfig.Providers.Select(p => p.Host))
+        var recentHoursByHost = await ProviderUsageHelper
+            .ReadRecentHoursAsync(providerConfig.Providers.Select(p => p.Host))
             .ConfigureAwait(false);
 
         var items = providerConfig.Providers
             .Select((provider, index) =>
             {
                 var used = ProviderUsageHelper.ComputeUsage(bytesTracker, provider);
-                bytesPerDayByHost.TryGetValue(provider.Host, out var bytesPerDay);
+                recentHoursByHost.TryGetValue(provider.Host, out var recentHours);
+                var (bytesPerDay, daysRemaining) = ProviderUsageHelper.ComputeBurnRate(provider, used, recentHours);
                 return new GetProviderUsageResponse.ProviderUsageItem
                 {
                     Index = index,
@@ -31,7 +32,7 @@ public class GetProviderUsageController(
                     ByteLimit = provider.ByteLimit,
                     OverLimit = ProviderUsageHelper.IsOverLimit(bytesTracker, provider),
                     BytesPerDay = bytesPerDay,
-                    DaysRemaining = ProviderUsageHelper.ProjectDaysRemaining(provider, used, bytesPerDay),
+                    DaysRemaining = daysRemaining,
                 };
             })
             .ToList();
