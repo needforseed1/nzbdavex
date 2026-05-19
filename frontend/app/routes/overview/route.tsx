@@ -116,18 +116,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
             <LiveTiles tiles={liveTiles} />
 
-            <LifetimeBlock lifetime={stats.lifetime} />
-
-            <div className={styles.twoCol}>
-                <RecordsBlock records={stats.records} />
-                <CatalogueBlock catalogue={stats.catalogue} />
-            </div>
-
             <LiveReadsPanel />
-
-            {!isLongWindow && (
-                <ActivityHeatmap maxCell={stats.heatmap.maxCell} cells={stats.heatmap.cells} />
-            )}
 
             <ThroughputChart
                 points={stats.throughput}
@@ -136,6 +125,10 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
                 totalBytesServed={stats.sessions.totalBytesServed}
                 window={window}
             />
+
+            {!isLongWindow && (
+                <ActivityHeatmap maxCell={stats.heatmap.maxCell} cells={stats.heatmap.cells} />
+            )}
 
             {!isLongWindow && (
                 <LatencyHistogram
@@ -155,6 +148,13 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             <ProviderScoreboard providers={stats.providers} window={window} />
 
             <IndexerScoreboard indexers={stats.indexers} />
+
+            <div className={styles.twoCol}>
+                <RecordsBlock records={stats.records} />
+                <CatalogueBlock catalogue={stats.catalogue} />
+            </div>
+
+            <LifetimeBlock lifetime={stats.lifetime} />
         </div>
     );
 }
