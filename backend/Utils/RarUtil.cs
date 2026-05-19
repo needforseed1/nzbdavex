@@ -20,6 +20,46 @@ public static class RarUtil
         return await Task.Run(() => GetRarHeaders(cancellableStream, password), ct).ConfigureAwait(false);
     }
 
+    // Stops iterating as soon as `predicate` matches a file header. Critical
+    // for LazyRarResolver: walking past the matching header would trigger
+    // SharpCompress's `Position += compressedSize` seek, which on
+    // NzbFileStream costs ~log2(segments) STAT calls per seek — turning a
+    // sub-100ms parse into a 500ms+ pause at every volume boundary.
+    public static async Task<IRarHeader?> FindFirstFileHeaderAsync
+    (
+        Stream stream,
+        string? password,
+        Func<IRarHeader, bool> predicate,
+        CancellationToken ct
+    )
+    {
+        await using var cancellableStream = new CancellableStream(stream, ct);
+        return await Task.Run(() => FindFirstFileHeader(cancellableStream, password, predicate), ct)
+            .ConfigureAwait(false);
+    }
+
+    private static IRarHeader? FindFirstFileHeader(Stream stream, string? password, Func<IRarHeader, bool> predicate)
+    {
+        try
+        {
+            var readerOptions = new ReaderOptions { Password = password };
+            var headerFactory = new RarHeaderFactory(StreamingMode.Seekable, readerOptions);
+            foreach (var header in headerFactory.ReadHeaders(stream))
+            {
+                if (header.HeaderType != HeaderType.File || header.IsDirectory()) continue;
+                if (header.GetCompressionMethod() != 0)
+                    throw new UnsupportedRarCompressionMethodException(
+                        "Only rar files with compression method m0 are supported.");
+                if (predicate(header)) return header;
+            }
+            return null;
+        }
+        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException missingArticleException))
+        {
+            throw missingArticleException;
+        }
+    }
+
     private static List<IRarHeader> GetRarHeaders(Stream stream, string? password)
     {
         try
