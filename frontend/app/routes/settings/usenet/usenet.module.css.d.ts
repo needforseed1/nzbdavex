@@ -76,6 +76,7 @@ declare const styles: {
   readonly "usage-bar-danger": string;
   readonly "usage-bar-neutral": string;
   readonly "usage-warning": string;
+  readonly "usage-hint": string;
 };
 export = styles;
 

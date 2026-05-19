@@ -581,6 +581,13 @@
     line-height: 1.4;
 }
 
+.usage-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 600px) {
     .form-grid {
         grid-template-columns: 1fr;

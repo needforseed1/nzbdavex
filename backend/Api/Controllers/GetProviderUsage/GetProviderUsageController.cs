@@ -11,17 +11,28 @@ public class GetProviderUsageController(
     ProviderBytesTracker bytesTracker
 ) : BaseApiController
 {
-    private GetProviderUsageResponse GetUsage()
+    private async Task<GetProviderUsageResponse> GetUsageAsync()
     {
         var providerConfig = configManager.GetUsenetProviderConfig();
+        var bytesPerDayByHost = await ProviderUsageHelper
+            .ReadBytesPerDayAsync(providerConfig.Providers.Select(p => p.Host))
+            .ConfigureAwait(false);
+
         var items = providerConfig.Providers
-            .Select((provider, index) => new GetProviderUsageResponse.ProviderUsageItem
+            .Select((provider, index) =>
             {
-                Index = index,
-                Host = provider.Host,
-                BytesUsed = ProviderUsageHelper.ComputeUsage(bytesTracker, provider),
-                ByteLimit = provider.ByteLimit,
-                OverLimit = ProviderUsageHelper.IsOverLimit(bytesTracker, provider),
+                var used = ProviderUsageHelper.ComputeUsage(bytesTracker, provider);
+                bytesPerDayByHost.TryGetValue(provider.Host, out var bytesPerDay);
+                return new GetProviderUsageResponse.ProviderUsageItem
+                {
+                    Index = index,
+                    Host = provider.Host,
+                    BytesUsed = used,
+                    ByteLimit = provider.ByteLimit,
+                    OverLimit = ProviderUsageHelper.IsOverLimit(bytesTracker, provider),
+                    BytesPerDay = bytesPerDay,
+                    DaysRemaining = ProviderUsageHelper.ProjectDaysRemaining(provider, used, bytesPerDay),
+                };
             })
             .ToList();
 
@@ -32,8 +43,9 @@ public class GetProviderUsageController(
         };
     }
 
-    protected override Task<IActionResult> HandleRequest()
+    protected override async Task<IActionResult> HandleRequest()
     {
-        return Task.FromResult<IActionResult>(Ok(GetUsage()));
+        var response = await GetUsageAsync().ConfigureAwait(false);
+        return Ok(response);
     }
 }

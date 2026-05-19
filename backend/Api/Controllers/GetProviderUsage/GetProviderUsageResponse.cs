@@ -14,5 +14,13 @@ public class GetProviderUsageResponse : BaseApiResponse
         public long BytesUsed { get; set; }
         public long? ByteLimit { get; set; }
         public bool OverLimit { get; set; }
+        // Average bytes downloaded per day over the last 7 days for this host.
+        // Zero when there's no recent activity (or no data yet).
+        public long BytesPerDay { get; set; }
+        // Projected days until the cap is hit at the current 7-day burn rate.
+        // Null when the user hasn't set a cap, when burn rate is zero, or when
+        // the cap is already exceeded — in any of those cases there's no
+        // honest number to display.
+        public double? DaysRemaining { get; set; }
     }
 }

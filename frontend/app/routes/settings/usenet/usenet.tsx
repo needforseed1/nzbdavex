@@ -44,7 +44,22 @@ type ProviderUsage = {
     BytesUsed: number;
     ByteLimit: number | null;
     OverLimit: boolean;
+    BytesPerDay: number;
+    DaysRemaining: number | null;
 };
+
+function formatDaysRemaining(days: number): string {
+    // Friendlier than "0.3 days" or "847 days" — round to the unit that's
+    // actually useful at this horizon.
+    if (days < 1) {
+        const hours = Math.max(1, Math.round(days * 24));
+        return `~${hours}h left at this pace`;
+    }
+    if (days < 60) return `~${Math.round(days)} days left at this pace`;
+    const months = days / 30;
+    if (months < 24) return `~${Math.round(months)} months left at this pace`;
+    return `~${Math.round(months / 12)} years left at this pace`;
+}
 
 const BYTE_UNITS = [
     { label: "MB", multiplier: 1_000_000 },
@@ -449,6 +464,11 @@ function UsageRow({ provider, usage, onReset }: UsageRowProps) {
                     />
                 </div>
             )}
+            {usage && usage.DaysRemaining !== null && usage.DaysRemaining !== undefined && !usage.OverLimit && (
+                <div className={styles["usage-hint"]}>
+                    {formatDaysRemaining(usage.DaysRemaining)}
+                </div>
+            )}
             {usage?.OverLimit && (
                 <div className={styles["usage-warning"]}>
                     Data cap reached — this provider is paused to keep in-flight fetches from overshooting. Reset the counter or raise the cap to resume.
@@ -756,7 +776,7 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
                                 </select>
                             </div>
                             <div className={styles["form-hint"]}>
-                                For block accounts: total bytes you've purchased. The provider stops being used once the counter reaches this value.
+                                For block accounts: total bytes you've purchased. The provider auto-pauses at ~95% of this value to absorb in-flight requests, so set the cap to your full block size — the 5% headroom keeps you from overshooting.
                             </div>
                         </div>
 

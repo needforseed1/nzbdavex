@@ -265,6 +265,12 @@ public class MultiProviderNntpClient(
             .Where(x => x.ProviderType != ProviderType.Disabled)
             .Where(x => !IsOverLimit(x))
             .OrderBy(x => x.ProviderType)
+            // Within the same tier, prefer the provider with the most remaining
+            // bytes. Uncapped providers report long.MaxValue and so are always
+            // preferred over a capped one that's been chewed down. The net
+            // effect: when a primary misses and we fall through to two blocks,
+            // the fresher block is picked first — no user effort required.
+            .ThenByDescending(x => GetRemainingBytes(x))
             .ThenByDescending(x => x.AvailableConnections)
             .ToList();
 
@@ -286,6 +292,14 @@ public class MultiProviderNntpClient(
         // See ProviderUsageHelper.EffectiveLimitFraction for the rationale.
         var effective = (long)(limit.Value * ProviderUsageHelper.EffectiveLimitFraction);
         return used >= effective;
+    }
+
+    private long GetRemainingBytes(MultiConnectionNntpClient client)
+    {
+        var limit = client.ByteLimit;
+        if (bytesTracker == null || !limit.HasValue || limit.Value <= 0) return long.MaxValue;
+        var used = bytesTracker.GetLifetime(client.Host) + client.BytesUsedOffset;
+        return Math.Max(0, limit.Value - used);
     }
 
     public override void Dispose()

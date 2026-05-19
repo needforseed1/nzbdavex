@@ -51,6 +51,51 @@ public static class ProviderUsageHelper
     }
 
     /// <summary>
+    /// Per-host 7-day rolling average bytes/day, keyed by Host. Distinct hosts
+    /// only — the caller fans out to providers that share a host. Returning a
+    /// dictionary in one round-trip avoids N queries on a settings page that
+    /// polls every 10s.
+    /// </summary>
+    public static async Task<Dictionary<string, long>> ReadBytesPerDayAsync(IEnumerable<string> hosts)
+    {
+        var distinct = hosts.Where(h => !string.IsNullOrEmpty(h)).Distinct().ToArray();
+        if (distinct.Length == 0) return new Dictionary<string, long>();
+
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        const long sevenDaysMs = 7L * 24 * 60 * 60 * 1000;
+        var since = nowMs - sevenDaysMs;
+
+        await using var db = new MetricsDbContext();
+        var groups = await db.ProviderHourly
+            .Where(x => distinct.Contains(x.Provider) && x.Hour >= since)
+            .GroupBy(x => x.Provider)
+            .Select(g => new { Provider = g.Key, TotalBytes = g.Sum(x => x.BytesFetched) })
+            .ToListAsync()
+            .ConfigureAwait(false);
+
+        return groups.ToDictionary(g => g.Provider, g => g.TotalBytes / 7);
+    }
+
+    /// <summary>
+    /// Days until the cap is hit at the supplied 7-day burn rate. Returns null
+    /// for "no honest projection" — uncapped, no recent activity, or already
+    /// over the cap. The UI suppresses the readout in those cases instead of
+    /// showing "Infinity" or a negative number.
+    /// </summary>
+    public static double? ProjectDaysRemaining(
+        UsenetProviderConfig.ConnectionDetails provider,
+        long bytesUsed,
+        long bytesPerDay)
+    {
+        var limit = provider.ByteLimit;
+        if (!limit.HasValue || limit.Value <= 0) return null;
+        if (bytesPerDay <= 0) return null;
+        var remaining = limit.Value - bytesUsed;
+        if (remaining <= 0) return null;
+        return (double)remaining / bytesPerDay;
+    }
+
+    /// <summary>
     /// Walks every provider in <paramref name="config"/> and writes its
     /// since-reset byte total into <paramref name="tracker"/>. Best-effort —
     /// failures are logged but never thrown, since a metrics DB hiccup must
