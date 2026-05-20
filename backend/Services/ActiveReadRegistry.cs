@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace NzbWebDAV.Services;
 
@@ -12,6 +10,15 @@ namespace NzbWebDAV.Services;
 public class ActiveReadRegistry
 {
     private static readonly TimeSpan ActivityWindow = TimeSpan.FromSeconds(15);
+
+    // Two indexes. _keyToId dedupes successive range requests from the same
+    // (path, clientKey) onto a single session id while the session is active.
+    // Each new session gets a fresh Guid so its terminal ReadSession row never
+    // collides with a previously-pruned session for the same player and file —
+    // a hash-derived id would re-insert a duplicate primary key the second
+    // time the same player opens the same file and trip the SQLite UNIQUE
+    // constraint on the metrics flush.
+    private readonly ConcurrentDictionary<string, Guid> _keyToId = new();
     private readonly ConcurrentDictionary<Guid, Entry> _entries = new();
 
     // Process-lifetime monotonic counter of every byte served downstream. The
@@ -22,27 +29,39 @@ public class ActiveReadRegistry
 
     public Guid GetOrCreate(string path, string clientKey, string fileName, long? fileSize)
     {
-        var id = DeriveId(path, clientKey);
+        var key = BuildKey(path, clientKey);
         var now = DateTimeOffset.UtcNow;
-        _entries.AddOrUpdate(
-            id,
-            _ => new Entry
+
+        while (true)
+        {
+            if (_keyToId.TryGetValue(key, out var existingId)
+                && _entries.TryGetValue(existingId, out var existing))
             {
-                Id = id,
+                existing.LastActivityAt = now;
+                if (fileSize is { } size) existing.FileSize = size;
+                return existingId;
+            }
+
+            var newId = Guid.NewGuid();
+            var newEntry = new Entry
+            {
+                Id = newId,
                 Path = path,
                 FileName = fileName,
                 FileSize = fileSize,
                 ClientKey = clientKey,
                 StartedAt = now,
                 LastActivityAt = now,
-            },
-            (_, existing) =>
+            };
+
+            if (_keyToId.TryAdd(key, newId))
             {
-                existing.LastActivityAt = now;
-                if (fileSize is { } size) existing.FileSize = size;
-                return existing;
-            });
-        return id;
+                _entries[newId] = newEntry;
+                return newId;
+            }
+            // Lost the race against another GetOrCreate for the same key;
+            // loop and reuse whichever id the winner published.
+        }
     }
 
     public void Touch(Guid id, long bytesRead, long? currentOffset = null)
@@ -93,21 +112,23 @@ public class ActiveReadRegistry
             .Where(kv => kv.Value.LastActivityAt < cutoff)
             .Select(kv => kv.Value)
             .ToList();
-        foreach (var entry in expired) _entries.TryRemove(entry.Id, out _);
+        foreach (var entry in expired)
+        {
+            // Clear the dedup mapping first, and only if it still points to
+            // this expired entry — a fresh session for the same player and
+            // file may have already claimed the key, in which case we leave
+            // the new mapping intact.
+            var key = BuildKey(entry.Path, entry.ClientKey);
+            ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
+                .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
+            _entries.TryRemove(entry.Id, out _);
+        }
         return expired;
     }
 
     public int Count => _entries.Count;
 
-    // (path, clientKey) -> stable Guid so successive range requests from the
-    // same player on the same file share a single session id.
-    private static Guid DeriveId(string path, string clientKey)
-    {
-        var bytes = Encoding.UTF8.GetBytes($"{path}\n{clientKey}");
-        Span<byte> hash = stackalloc byte[16];
-        MD5.HashData(bytes, hash);
-        return new Guid(hash);
-    }
+    private static string BuildKey(string path, string clientKey) => path + "\n" + clientKey;
 
     public sealed class Entry
     {

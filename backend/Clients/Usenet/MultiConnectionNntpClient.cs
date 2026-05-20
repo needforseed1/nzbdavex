@@ -221,6 +221,20 @@ public class MultiConnectionNntpClient(
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
+            catch (Exception e) when (name is "BODY" or "ARTICLE" && e.TryGetCausingException(out TimeoutException _))
+            {
+                // Read-timeout on BODY/ARTICLE means the provider stopped responding
+                // mid-command. A fresh socket to the same provider is unlikely to fare
+                // any better, and burning another timeout retrying here just doubles
+                // the wait before MultiProviderNntpClient can fall over to the next
+                // provider. Replace the socket (the read may have left partial bytes
+                // on the wire) and propagate so the outer provider loop moves on.
+                circuitBreaker.RecordFailure();
+                LogException(() => connectionLock?.Replace());
+                LogException(() => connectionLock?.Dispose());
+                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                throw;
+            }
             catch (Exception e)
             {
                 circuitBreaker.RecordFailure();
