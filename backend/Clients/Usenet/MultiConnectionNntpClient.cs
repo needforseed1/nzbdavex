@@ -147,13 +147,11 @@ public class MultiConnectionNntpClient(
 
     // Cap on how long we'll wait for a BODY/ARTICLE provider to send its
     // initial response line. Healthy providers reply in well under a second;
-    // anything past ~3s is almost certainly a mid-command stall. The previous
-    // 5s value left ~15s of cumulative wait when all providers stalled in
-    // serial — 3s drops that to ~9s before the hedge layer in
-    // MultiProviderNntpClient further parallelises. Body bytes that follow
-    // the initial response stream under the caller's original cancellation
-    // token — this deadline only governs first-response latency.
-    private static readonly TimeSpan FirstResponseDeadline = TimeSpan.FromSeconds(3);
+    // anything past a few seconds is almost certainly a mid-command stall.
+    // Body bytes that follow the initial response stream under the caller's
+    // original cancellation token — this deadline only governs first-response
+    // latency.
+    private static readonly TimeSpan FirstResponseDeadline = TimeSpan.FromSeconds(5);
 
     private async Task<T> RunWithConnection<T>
     (

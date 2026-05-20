@@ -58,12 +58,12 @@ public class MultiProviderNntpClient(
 
     public override Task<UsenetStatResponse> StatAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
-        return RunFromPoolWithBackup((x, ct) => x.StatAsync(segmentId, ct), cancellationToken);
+        return RunFromPoolWithBackup(x => x.StatAsync(segmentId, cancellationToken), cancellationToken);
     }
 
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
-        return RunFromPoolWithBackup((x, ct) => x.HeadAsync(segmentId, ct), cancellationToken);
+        return RunFromPoolWithBackup(x => x.HeadAsync(segmentId, cancellationToken), cancellationToken);
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync
@@ -72,7 +72,7 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken
     )
     {
-        return RunFromPoolWithBackup((x, ct) => x.DecodedBodyAsync(segmentId, ct), cancellationToken);
+        return RunFromPoolWithBackup(x => x.DecodedBodyAsync(segmentId, cancellationToken), cancellationToken);
     }
 
     public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync
@@ -81,12 +81,12 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken
     )
     {
-        return RunFromPoolWithBackup((x, ct) => x.DecodedArticleAsync(segmentId, ct), cancellationToken);
+        return RunFromPoolWithBackup(x => x.DecodedArticleAsync(segmentId, cancellationToken), cancellationToken);
     }
 
     public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
     {
-        return RunFromPoolWithBackup((x, ct) => x.DateAsync(ct), cancellationToken);
+        return RunFromPoolWithBackup(x => x.DateAsync(cancellationToken), cancellationToken);
     }
 
     public override async Task<UsenetDecodedBodyResponse> DecodedBodyAsync
@@ -100,7 +100,7 @@ public class MultiProviderNntpClient(
         try
         {
             result = await RunFromPoolWithBackup(
-                (x, ct) => x.DecodedBodyAsync(segmentId, OnConnectionReadyAgain, ct),
+                x => x.DecodedBodyAsync(segmentId, OnConnectionReadyAgain, cancellationToken),
                 cancellationToken
             ).ConfigureAwait(false);
         }
@@ -133,7 +133,7 @@ public class MultiProviderNntpClient(
         try
         {
             result = await RunFromPoolWithBackup(
-                (x, ct) => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, ct),
+                x => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, cancellationToken),
                 cancellationToken
             ).ConfigureAwait(false);
         }
@@ -155,30 +155,9 @@ public class MultiProviderNntpClient(
         }
     }
 
-    // How long we wait for the in-flight provider to start producing a response
-    // before firing the next provider in parallel. Healthy providers reply in
-    // well under a second so the hedge rarely fires; when the first provider
-    // is stalled, the next attempt is already underway by the time
-    // FirstResponseDeadline (inside MultiConnectionNntpClient) trips the first.
-    // Only applied to BODY/ARTICLE — STAT/HEAD/DATE are too cheap to hedge.
-    private static readonly TimeSpan HedgeDelay = TimeSpan.FromSeconds(1);
-
-    private Task<T> RunFromPoolWithBackup<T>
+    private async Task<T> RunFromPoolWithBackup<T>
     (
-        Func<INntpClient, CancellationToken, Task<T>> task,
-        CancellationToken cancellationToken
-    ) where T : UsenetResponse
-    {
-        var isHedgeable = typeof(T) == typeof(UsenetDecodedBodyResponse)
-                          || typeof(T) == typeof(UsenetDecodedArticleResponse);
-        return isHedgeable
-            ? RunHedged(task, cancellationToken)
-            : RunSerial(task, cancellationToken);
-    }
-
-    private async Task<T> RunSerial<T>
-    (
-        Func<INntpClient, CancellationToken, Task<T>> task,
+        Func<INntpClient, Task<T>> task,
         CancellationToken cancellationToken
     ) where T : UsenetResponse
     {
@@ -202,7 +181,7 @@ public class MultiProviderNntpClient(
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var result = await task.Invoke(provider, cancellationToken).ConfigureAwait(false);
+                var result = await task.Invoke(provider).ConfigureAwait(false);
                 stopwatch.Stop();
 
                 // if no article with that message-id is found, try again with the next provider.
@@ -212,10 +191,25 @@ public class MultiProviderNntpClient(
                     continue;
                 }
 
+                // attribute the response to this provider, unless it was a "missing" hit
+                // from the last provider (in which case nobody actually answered).
                 if (attribution != null && result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId)
                     attribution.Host = provider.Host;
 
-                RecordFetch(provider.Host, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
+                // record per-queue-item attribution only for bytes-bearing responses (BODY/ARTICLE).
+                if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse
+                    && result.ResponseType is UsenetResponseType.ArticleRetrievedBodyFollows
+                                          or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
+                {
+                    usageTracker.RecordSuccess(provider.Host);
+                    RecordFetch(provider.Host, SegmentFetch.FetchStatus.Ok, stopwatch.ElapsedMilliseconds, i);
+                    result = WrapStreamForByteCounting(result, provider.Host);
+                }
+                else
+                {
+                    RecordFetch(provider.Host, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
+                }
+
                 return result;
             }
             catch (Exception e) when (!e.IsCancellationException())
@@ -229,216 +223,6 @@ public class MultiProviderNntpClient(
         lastException?.Throw();
         throw new Exception("There are no usenet providers configured.");
     }
-
-    // Staggered hedge for BODY/ARTICLE. Fires provider 0 immediately; if it
-    // hasn't completed within HedgeDelay, fires provider 1 in parallel; etc.
-    // First task to return a usable response wins — losers are cancelled to
-    // free their connections. A NoArticleWithThatMessageId is treated as
-    // "missing" and we keep waiting on the rest. If every provider fails or
-    // reports missing, the last exception (or last NoArticle response) is
-    // returned, matching the serial path's behaviour.
-    private async Task<T> RunHedged<T>
-    (
-        Func<INntpClient, CancellationToken, Task<T>> task,
-        CancellationToken cancellationToken
-    ) where T : UsenetResponse
-    {
-        var attribution = AttributionContext.Value;
-        if (attribution != null) attribution.Host = null;
-        var orderedProviders = GetOrderedProviders();
-        if (orderedProviders.Count == 0)
-            throw new Exception("There are no usenet providers configured.");
-
-        var inFlight = new List<HedgeAttempt<T>>();
-        ExceptionDispatchInfo? lastException = null;
-        T? lastMissingResult = default;
-        var lastMissingIdx = -1;
-        var spawned = 0;
-
-        void Spawn()
-        {
-            if (spawned >= orderedProviders.Count) return;
-            var idx = spawned++;
-            var provider = orderedProviders[idx];
-            if (idx > 0)
-            {
-                Log.Information("NNTP hedge: first provider still pending after {Delay}ms, racing {Host}.",
-                    (int)HedgeDelay.TotalMilliseconds, provider.Host);
-            }
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var sw = Stopwatch.StartNew();
-            var t = task.Invoke(provider, cts.Token);
-            inFlight.Add(new HedgeAttempt<T>(t, provider, idx, cts, sw));
-        }
-
-        try
-        {
-            Spawn();
-
-            while (inFlight.Count > 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                Task settled;
-                CancellationTokenSource? hedgeTimerCts = null;
-                Task? hedgeTimer = null;
-                try
-                {
-                    var anyCompleted = Task.WhenAny(inFlight.Select(a => a.Task));
-                    if (spawned < orderedProviders.Count)
-                    {
-                        hedgeTimerCts = new CancellationTokenSource();
-                        hedgeTimer = Task.Delay(HedgeDelay, hedgeTimerCts.Token);
-                        settled = await Task.WhenAny(anyCompleted, hedgeTimer).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        settled = await anyCompleted.ConfigureAwait(false);
-                    }
-                }
-                finally
-                {
-                    hedgeTimerCts?.Cancel();
-                    hedgeTimerCts?.Dispose();
-                }
-
-                if (settled == hedgeTimer)
-                {
-                    // Hedge delay elapsed before any in-flight settled — fire next provider.
-                    Spawn();
-                    continue;
-                }
-
-                // An in-flight task completed.
-                var completedTask = (Task<T>)settled;
-                var attempt = inFlight.First(a => a.Task == completedTask);
-                inFlight.Remove(attempt);
-                attempt.Sw.Stop();
-
-                if (completedTask.IsCompletedSuccessfully)
-                {
-                    var result = completedTask.Result;
-                    var hasMoreCandidates = inFlight.Count > 0 || spawned < orderedProviders.Count;
-
-                    if (hasMoreCandidates && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
-                    {
-                        // Missing from this provider — keep waiting on the others. Spawn
-                        // an additional provider immediately (no need to wait the hedge
-                        // delay; we already know one provider didn't have the article).
-                        RecordFetch(attempt.Provider.Host, SegmentFetch.FetchStatus.Missing,
-                            attempt.Sw.ElapsedMilliseconds, attempt.Idx);
-                        attempt.Cts.Dispose();
-                        lastMissingResult = result;
-                        lastMissingIdx = attempt.Idx;
-                        if (spawned < orderedProviders.Count) Spawn();
-                        continue;
-                    }
-
-                    if (attribution != null && result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId)
-                        attribution.Host = attempt.Provider.Host;
-
-                    if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse
-                        && result.ResponseType is UsenetResponseType.ArticleRetrievedBodyFollows
-                                              or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
-                    {
-                        usageTracker.RecordSuccess(attempt.Provider.Host);
-                        RecordFetch(attempt.Provider.Host, SegmentFetch.FetchStatus.Ok,
-                            attempt.Sw.ElapsedMilliseconds, attempt.Idx);
-                        result = WrapStreamForByteCounting(result, attempt.Provider.Host);
-                    }
-                    else
-                    {
-                        RecordFetch(attempt.Provider.Host, SegmentFetch.FetchStatus.Missing,
-                            attempt.Sw.ElapsedMilliseconds, attempt.Idx);
-                    }
-
-                    attempt.Cts.Dispose();
-                    CancelAndObserveLosers(inFlight);
-                    return result;
-                }
-
-                // Faulted — capture exception and try next provider.
-                try
-                {
-                    await completedTask.ConfigureAwait(false);
-                }
-                catch (Exception e) when (!e.IsCancellationException())
-                {
-                    RecordFetch(attempt.Provider.Host, ClassifyException(e),
-                        attempt.Sw.ElapsedMilliseconds, attempt.Idx);
-                    lastException = ExceptionDispatchInfo.Capture(e);
-                    Log.Information("NNTP hedge: {Host} failed with `{Msg}`.",
-                        attempt.Provider.Host, e.Message);
-                }
-                catch (Exception)
-                {
-                    // Outer-CT cancellation observed via this attempt's linked CT — just
-                    // record the elapsed time, no fetch entry needed.
-                }
-
-                attempt.Cts.Dispose();
-
-                // Spawn next provider immediately (one provider failed — no point waiting
-                // for the hedge delay before trying another).
-                if (spawned < orderedProviders.Count) Spawn();
-            }
-
-            // Every in-flight completed without a winner. If at least one returned
-            // NoArticle, surface that response (matches serial path's "return missing
-            // from last provider" behaviour). Each NoArticle was already recorded by
-            // RecordFetch in the missing branch, so no extra record here. Otherwise,
-            // rethrow the last exception observed.
-            if (lastMissingResult is not null)
-            {
-                _ = lastMissingIdx; // silence unused warning; idx already recorded
-                return lastMissingResult;
-            }
-
-            lastException?.Throw();
-            throw new Exception("There are no usenet providers configured.");
-        }
-        catch
-        {
-            // Ensure in-flight attempts are cancelled before propagating.
-            CancelAndObserveLosers(inFlight);
-            throw;
-        }
-    }
-
-    private static void CancelAndObserveLosers<T>(List<HedgeAttempt<T>> losers) where T : UsenetResponse
-    {
-        foreach (var loser in losers)
-        {
-            try { loser.Cts.Cancel(); } catch { /* already disposed */ }
-            // Observe the loser's task to suppress unobserved-exception warnings,
-            // and dispose any streaming response we won't be using.
-            _ = loser.Task.ContinueWith(t =>
-            {
-                if (t.IsCompletedSuccessfully && t.Result is { } r)
-                {
-                    switch (r)
-                    {
-                        case UsenetDecodedBodyResponse b:
-                            try { b.Stream?.Dispose(); } catch { }
-                            break;
-                        case UsenetDecodedArticleResponse a:
-                            try { a.Stream?.Dispose(); } catch { }
-                            break;
-                    }
-                }
-                if (t.IsFaulted) _ = t.Exception; // observe
-                try { loser.Cts.Dispose(); } catch { }
-            }, TaskScheduler.Default);
-        }
-    }
-
-    private sealed record HedgeAttempt<T>(
-        Task<T> Task,
-        MultiConnectionNntpClient Provider,
-        int Idx,
-        CancellationTokenSource Cts,
-        Stopwatch Sw
-    ) where T : UsenetResponse;
 
     private void RecordFetch(string host, SegmentFetch.FetchStatus status, long durationMs, int retries)
     {
