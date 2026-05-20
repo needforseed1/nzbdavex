@@ -9,6 +9,260 @@
     position: absolute;
 }
 
+/* ---------- toolbar ---------- */
+
+.toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.toolbar-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.select-all {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+    flex-shrink: 0;
+}
+
+.select-all:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--border-default);
+}
+
+.select-all input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--text-primary);
+    width: 14px;
+    height: 14px;
+    margin: 0;
+}
+
+.search-wrap {
+    position: relative;
+    flex: 1 1 240px;
+    min-width: 200px;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 12px;
+    pointer-events: none;
+    color: var(--text-muted);
+}
+
+.search-input {
+    width: 100%;
+    height: 38px;
+    padding: 0 36px 0 36px;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.search-input::placeholder {
+    color: var(--text-muted);
+}
+
+.search-input:hover {
+    border-color: var(--border-default);
+}
+
+.search-input:focus {
+    border-color: var(--border-strong);
+    background-color: var(--bg-surface);
+}
+
+.search-input::-webkit-search-cancel-button {
+    display: none;
+}
+
+.search-clear {
+    position: absolute;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 18px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+
+.search-clear:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.sort {
+    height: 38px;
+    padding: 0 32px 0 12px;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 14px;
+    transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.sort:hover {
+    border-color: var(--border-default);
+}
+
+.sort:focus {
+    border-color: var(--border-strong);
+}
+
+.refresh {
+    height: 38px;
+    width: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.refresh:hover:not(:disabled) {
+    background-color: var(--bg-hover);
+    border-color: var(--border-default);
+    color: var(--text-primary);
+}
+
+.refresh:active:not(:disabled) {
+    background-color: var(--bg-active);
+}
+
+.refresh:disabled {
+    cursor: default;
+    opacity: 0.7;
+}
+
+.refresh-spinning svg {
+    animation: explore-spin 700ms linear infinite;
+}
+
+@keyframes explore-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.stats {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding-left: 2px;
+}
+
+/* ---------- selection bar ---------- */
+
+.selection-bar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    gap: 10px;
+}
+
+.selection-count {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.selection-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+}
+
+.selection-clear,
+.selection-delete {
+    height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
+    font-family: inherit;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.selection-clear {
+    background-color: transparent;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+}
+
+.selection-clear:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+.selection-delete {
+    background-color: var(--danger);
+    border: 1px solid var(--danger);
+    color: #ffffff;
+}
+
+.selection-delete:hover {
+    background-color: var(--danger-muted);
+    border-color: var(--danger-muted);
+}
+
+/* ---------- list / items ---------- */
+
+.list {
+    display: flex;
+    flex-direction: column;
+}
+
 .item {
     position: relative;
     display: flex;
@@ -41,11 +295,23 @@
     border-radius: var(--radius-md);
 }
 
+.item-selected {
+    background-color: var(--bg-selected);
+    border-color: var(--border-default);
+}
+
+.item-selected + .item {
+    border-top: 1px solid var(--border-default);
+}
+
 @media not (pointer: coarse),
 (min-width: 900px) {
     .item:has(.item-content:hover) {
         background-color: var(--bg-surface);
         cursor: pointer;
+    }
+    .item-selected:has(.item-content:hover) {
+        background-color: var(--bg-surface);
     }
 }
 
@@ -68,6 +334,11 @@
 /* set it's right padding to 0 */
 .item:has(.item-menu) .item-content {
     padding-right: 5px;
+}
+
+/* when there's a check-cell, trim the left padding of .item-content */
+.item:has(.check-cell) .item-content {
+    padding-left: 0;
 }
 
 .item-info {
@@ -99,6 +370,29 @@
 .hidden * {
     opacity: 50%;
 }
+
+/* ---------- check cell ---------- */
+
+.check-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px 0 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.check-cell input[type="checkbox"] {
+    accent-color: var(--text-primary);
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    cursor: pointer;
+}
+
+/* ---------- menu ---------- */
 
 .item-menu {
     padding: 15px 20px;
@@ -133,6 +427,53 @@
         background-color: var(--bg-active);
     }
 }
+
+/* ---------- empty state ---------- */
+
+.empty {
+    background-color: var(--bg-elevated);
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 36px 24px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.empty-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 500;
+}
+
+.empty-subtitle {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.empty-action {
+    margin-top: 10px;
+    height: 32px;
+    padding: 0 14px;
+    background-color: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.empty-action:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+}
+
+/* ---------- icons ---------- */
 
 .directory-icon {
     flex-shrink: 0;
