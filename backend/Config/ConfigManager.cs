@@ -264,6 +264,39 @@ public class ConfigManager
         return patterns;
     }
 
+    public string GetPreflightMode()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("preflight.mode"));
+        return v switch
+        {
+            "off" => "off",
+            "light" => "light",
+            "full" => "full",
+            _ => "standard",
+        };
+    }
+
+    public int GetPreflightCandidateCount()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("preflight.candidate-count"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 3;
+    }
+
+    public int GetPreflightTtlSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("preflight.ttl-seconds"));
+        if (v == null) return 120;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 10, 1800) : 120;
+    }
+
+    public int GetPreflightIndexerMaxWaitSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("preflight.indexer-max-wait-seconds"));
+        if (v == null) return 5;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 0, 120) : 5;
+    }
+
     public bool IsPreviewPar2FilesEnabled()
     {
         var defaultValue = false;

@@ -30,7 +30,8 @@ public class ProfilePlayController(
     QueueManager queueManager,
     WebsocketManager websocketManager,
     QueueItemSourceTracker sourceTracker,
-    LazyRarResolver lazyRarResolver
+    LazyRarResolver lazyRarResolver,
+    PreflightCache preflightCache
 ) : ControllerBase
 {
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(8) };
@@ -542,6 +543,12 @@ public class ProfilePlayController(
     {
         try
         {
+            var preflighted = preflightCache.Get(candidate.NzbUrl);
+            if (preflighted is { Verdict: PlaybackFastVerifier.Verdict.Available, NzbBytes: { } cachedBytes })
+            {
+                return new PreVerifyResult(candidate, cachedBytes, preflighted.Verdict, preflighted.ResponderHost);
+            }
+
             var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
             if (nzbBytes is null)
                 return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
@@ -565,6 +572,9 @@ public class ProfilePlayController(
     {
         try
         {
+            var preflighted = preflightCache.Get(c.NzbUrl);
+            if (preflighted?.NzbBytes is { } cachedBytes) return cachedBytes;
+
             // Throttle NZB downloads to respect each indexer's configured rate limit
             // (MaxRequestsPerMinute). Candidates from a saturated indexer wait their turn while
             // candidates from other indexers in the same batch proceed in parallel.

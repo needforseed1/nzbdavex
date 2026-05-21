@@ -14,7 +14,8 @@ public class ProfileReadController(
     ConfigManager configManager,
     NzbResolutionCache cache,
     NewznabRateLimiter rateLimiter,
-    TvdbIdResolver tvdbResolver
+    TvdbIdResolver tvdbResolver,
+    PreflightOrchestrator preflightOrchestrator
 ) : ControllerBase
 {
     [HttpOptions]
@@ -133,6 +134,9 @@ public class ProfileReadController(
             .ToList();
 
         var tokens = cache.AddGroup(candidates, type);
+
+        preflightOrchestrator.Start(token, type, id, candidates);
+
         var streams = candidates
             .Select((c, i) =>
             {

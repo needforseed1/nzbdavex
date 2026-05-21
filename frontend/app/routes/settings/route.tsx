@@ -11,6 +11,7 @@ import { isProfilesSettingsUpdated, isProfilesSettingsValid, ProfilesSettings } 
 import { isMaintenanceSettingsUpdated, Maintenance } from "./maintenance/maintenance";
 import { isRepairsSettingsUpdated, RepairsSettings } from "./repairs/repairs";
 import { isWatchdogSettingsUpdated, isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
+import { isPreflightSettingsUpdated, PreflightSettings } from "./preflight/preflight";
 import { isRcloneSettingsUpdated, RcloneSettings } from "./rclone/rclone";
 import { useCallback, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
@@ -55,6 +56,10 @@ const defaultConfig = {
     "play.verify-mode": "none",
     "play.candidate-negative-cache-minutes": "5",
     "play.exclude-patterns": "",
+    "preflight.mode": "standard",
+    "preflight.candidate-count": "3",
+    "preflight.ttl-seconds": "120",
+    "preflight.indexer-max-wait-seconds": "5",
     "repair.enable": "false",
     "db.is-startup-vacuum-enabled": "false",
     "maintenance.remove-orphaned-schedule-enabled": "false",
@@ -107,9 +112,10 @@ function Body(props: BodyProps) {
     const isProfilesUpdated = isProfilesSettingsUpdated(config, newConfig);
     const isRepairsUpdated = isRepairsSettingsUpdated(config, newConfig);
     const isWatchdogUpdated = isWatchdogSettingsUpdated(config, newConfig);
+    const isPreflightUpdated = isPreflightSettingsUpdated(config, newConfig);
     const isRcloneUpdated = isRcloneSettingsUpdated(config, newConfig);
     const isMaintenanceUpdated = isMaintenanceSettingsUpdated(config, newConfig);
-    const isUpdated = iseUsenetUpdated || isSabnzbdUpdated || isWebdavUpdated || isArrsUpdated || isIndexersUpdated || isProfilesUpdated || isRepairsUpdated || isWatchdogUpdated || isRcloneUpdated || isMaintenanceUpdated;
+    const isUpdated = iseUsenetUpdated || isSabnzbdUpdated || isWebdavUpdated || isArrsUpdated || isIndexersUpdated || isProfilesUpdated || isRepairsUpdated || isWatchdogUpdated || isPreflightUpdated || isRcloneUpdated || isMaintenanceUpdated;
     const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isMaintenanceUpdated;
     const navigationBlocker = useNavigationBlocker(isUpdated);
 
@@ -117,6 +123,7 @@ function Body(props: BodyProps) {
     const indexersTitle = tabTitle("Indexers", isIndexersUpdated);
     const profilesTitle = tabTitle("Profiles", isProfilesUpdated);
     const watchdogTitle = tabTitle("Watchdog", isWatchdogUpdated);
+    const preflightTitle = tabTitle("Preflight", isPreflightUpdated);
     const advancedTitle = tabTitle("Advanced", isAdvancedUpdated);
 
     const saveButtonLabel = isSaving ? "Saving..."
@@ -177,6 +184,9 @@ function Body(props: BodyProps) {
                 </Tab>
                 <Tab eventKey="watchdog" title={watchdogTitle}>
                     <WatchdogSettings config={newConfig} setNewConfig={setNewConfig} />
+                </Tab>
+                <Tab eventKey="preflight" title={preflightTitle}>
+                    <PreflightSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
                 <Tab eventKey="advanced" title={advancedTitle}>
                     <div className={styles.advanced}>
