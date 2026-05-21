@@ -86,3 +86,43 @@
     font-size: 12px;
     margin-top: 6px;
 }
+
+.adapterGroup {
+    margin-top: 8px;
+}
+
+.adapterRow {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm, 6px);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background-color: var(--bg-base);
+}
+
+.adapterRow.disabled {
+    opacity: 0.55;
+}
+
+.adapterHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.adapterTitle {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.adapterName {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.adapterDescription {
+    color: var(--text-muted);
+    font-size: 12px;
+}

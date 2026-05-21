@@ -12,6 +12,7 @@ interface Profile {
     Token: string;
     Name: string;
     IndexerNames: string[];
+    EnabledAdapters?: string[] | null;
 }
 
 interface ProfileConfig {
@@ -22,6 +23,31 @@ interface IndexerSummary {
     Name: string;
     Enabled: boolean;
 }
+
+type AdapterKey = "json" | "addon" | "newznab";
+
+const ADAPTERS: { key: AdapterKey; name: string; description: string; buildUrl: (origin: string, token: string) => string }[] = [
+    {
+        key: "json",
+        name: "JSON Search API",
+        description: "Vendor-neutral JSON results. Use from custom clients or scripts.",
+        buildUrl: (origin, token) => `${origin}/api/search/${token}/lookup?type=movie&id=tt0111161`,
+    },
+    {
+        key: "newznab",
+        name: "Newznab",
+        description: "Newznab-protocol meta-indexer endpoint. Add to Prowlarr / Sonarr / Radarr.",
+        buildUrl: (origin, token) => `${origin}/adapters/newznab/${token}/api`,
+    },
+    {
+        key: "addon",
+        name: "Addon",
+        description: "Manifest-based addon endpoint. Install the URL in a compatible client to query this Search Profile.",
+        buildUrl: (origin, token) => `${origin}/adapters/addon/${token}/manifest.json`,
+    },
+];
+
+const ALL_ADAPTER_KEYS: AdapterKey[] = ADAPTERS.map(a => a.key);
 
 function parseProfileConfig(raw: string): ProfileConfig {
     try {
@@ -48,6 +74,12 @@ function makeToken(): string {
     return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 
+function isAdapterEnabled(profile: Profile, key: AdapterKey): boolean {
+    const list = profile.EnabledAdapters;
+    if (list === null || list === undefined || list.length === 0) return true;
+    return list.some(x => x?.toLowerCase() === key);
+}
+
 export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps) {
     const profileConfig = useMemo(() => parseProfileConfig(config["profiles.instances"]), [config]);
     const availableIndexers = useMemo(() => parseIndexerNames(config["indexers.instances"]), [config]);
@@ -60,7 +92,7 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
         update({
             Profiles: [
                 ...profileConfig.Profiles,
-                { Token: makeToken(), Name: "", IndexerNames: [] }
+                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS] }
             ]
         });
     }, [profileConfig, update]);
@@ -86,7 +118,7 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
                 </div>
                 {profileConfig.Profiles.length === 0 ? (
                     <p className={styles.alertMessage}>
-                        No search profiles configured. Each profile gets its own search-API URL with a custom indexer selection, usable by any compatible client.
+                        No search profiles configured. Each profile exposes a token-scoped search API over its own indexer selection. Enable one or more output adapters (JSON / Newznab / Addon) to make it consumable by external clients.
                     </p>
                 ) : (
                     profileConfig.Profiles.map((profile, index) => (
@@ -114,22 +146,19 @@ interface ProfileFormProps {
 }
 
 function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: ProfileFormProps) {
-    const [copied, setCopied] = useState(false);
-
-    const installUrl = useMemo(() => {
-        if (typeof window === "undefined") return "";
-        return `${window.location.origin}/p/${profile.Token}/manifest.json`;
-    }, [profile.Token]);
-
-    const onCopy = useCallback(async () => {
-        try {
-            await navigator.clipboard.writeText(installUrl);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-        } catch {}
-    }, [installUrl]);
-
+    const origin = typeof window === "undefined" ? "" : window.location.origin;
     const indexersCsv = profile.IndexerNames.join(", ");
+
+    const enabledKeys = useMemo(() => {
+        return ADAPTERS.filter(a => isAdapterEnabled(profile, a.key)).map(a => a.key);
+    }, [profile]);
+
+    const setAdapterEnabled = useCallback((key: AdapterKey, enabled: boolean) => {
+        const next = new Set<AdapterKey>(enabledKeys);
+        if (enabled) next.add(key); else next.delete(key);
+        const list = ALL_ADAPTER_KEYS.filter(k => next.has(k));
+        onChange(index, { EnabledAdapters: list });
+    }, [enabledKeys, index, onChange]);
 
     return (
         <Card className={styles.instanceCard}>
@@ -159,23 +188,73 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
                     )}
                 </Form.Group>
                 <Form.Group>
-                    <Form.Label>Install URL</Form.Label>
-                    <div className={styles.urlBox}>
-                        <Form.Control
-                            className={styles.urlInput}
-                            type="text"
-                            readOnly
-                            value={installUrl}
-                            onFocus={e => e.currentTarget.select()}
-                        />
-                        <Button variant={copied ? "success" : "secondary"} size="sm" onClick={onCopy}>
-                            {copied ? "Copied" : "Copy"}
-                        </Button>
+                    <Form.Label>Output adapters <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(toggle the protocols this profile exposes)</span></Form.Label>
+                    <div className={styles.adapterGroup}>
+                        {ADAPTERS.map(adapter => (
+                            <AdapterRow
+                                key={adapter.key}
+                                token={profile.Token}
+                                origin={origin}
+                                adapter={adapter}
+                                enabled={isAdapterEnabled(profile, adapter.key)}
+                                onToggle={enabled => setAdapterEnabled(adapter.key, enabled)}
+                            />
+                        ))}
                     </div>
-                    <p className={styles.hint}>Search-API endpoint URL. Use it from any compatible external client to query your configured indexers under this profile.</p>
                 </Form.Group>
             </Card.Body>
         </Card>
+    );
+}
+
+interface AdapterRowProps {
+    token: string;
+    origin: string;
+    adapter: typeof ADAPTERS[number];
+    enabled: boolean;
+    onToggle: (enabled: boolean) => void;
+}
+
+function AdapterRow({ token, origin, adapter, enabled, onToggle }: AdapterRowProps) {
+    const [copied, setCopied] = useState(false);
+    const url = useMemo(() => adapter.buildUrl(origin, token), [origin, token, adapter]);
+
+    const onCopy = useCallback(async () => {
+        try {
+            await navigator.clipboard.writeText(url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch {}
+    }, [url]);
+
+    return (
+        <div className={`${styles.adapterRow} ${enabled ? "" : styles.disabled}`}>
+            <div className={styles.adapterHeader}>
+                <div className={styles.adapterTitle}>
+                    <span className={styles.adapterName}>{adapter.name}</span>
+                    <span className={styles.adapterDescription}>{adapter.description}</span>
+                </div>
+                <Form.Check
+                    type="switch"
+                    id={`adapter-${token}-${adapter.key}`}
+                    checked={enabled}
+                    onChange={e => onToggle(e.target.checked)} />
+            </div>
+            {enabled && (
+                <div className={styles.urlBox}>
+                    <Form.Control
+                        className={styles.urlInput}
+                        type="text"
+                        readOnly
+                        value={url}
+                        onFocus={e => e.currentTarget.select()}
+                    />
+                    <Button variant={copied ? "success" : "secondary"} size="sm" onClick={onCopy}>
+                        {copied ? "Copied" : "Copy"}
+                    </Button>
+                </div>
+            )}
+        </div>
     );
 }
 

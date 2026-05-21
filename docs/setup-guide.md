@@ -9,17 +9,17 @@ NzbDav can be used in two complementary paths. Configure whichever paths fit you
 1. **Radarr** sends an `.nzb` file to NzbDav (acting as a download client) to "download".
 2. **NzbDav** mounts the nzb onto the webdav without actually downloading it.
 3. **NzbDav** tells Radarr the "download" is finished and points to a folder of **Symlinks** at `/mnt/remote/nzbdav/completed-symlinks`.
-    * The **Symlinks** always point to the `/mnt/remote/nzbdav/.ids` folder which contains the streamable content.
+    * The **Symlinks** always point to the `/mnt/remote/nzbdav/.ids` folder which contains the on-demand file content.
 4. **Radarr** imports these Symlinks into your library. For eg: `/mnt/media/movies`.
-5. **Plex** reads the Symlink -> Rclone Mount -> WebDAV Stream -> Usenet Provider.
-    * **RClone** will make the nzb contents available to your filesystem by streaming, without using any storage space on your server.
+5. **Plex** reads the Symlink → Rclone Mount → WebDAV → Usenet Provider — fetching ranges on demand.
+    * **RClone** exposes the nzb contents to your filesystem via on-demand reads, without using any storage space on your server.
 
 ### Path B: The On-Demand Flow (External Search Clients)
-NzbDav exposes a per-profile search-API endpoint (Search Profiles) that any compatible external client can query and then trigger playback through NzbDav's mount. One concrete client setup using AIOStreams is documented in [Phase 5](#phase-5-on-demand-search-clients-example-aiostreams) below; the flow is:
+NzbDav exposes a per-profile search-API endpoint (Search Profiles) that any compatible external client can query and then trigger playback through NzbDav's mount. See [Phase 5](#phase-5-search-profiles--on-demand-search-adapters) for adapter details; the flow is:
 1. **The external client** searches your indexers via the Search Profile endpoint and finds a release.
 2. **The client** sends the `.nzb` to NzbDav's API to mount it.
 3. **NzbDav** mounts the file instantly via WebDAV.
-4. **The client** generates a streamable URL.
+4. **The client** generates a playable URL.
    * *Note: If using the recommended Proxy setup, this URL points back through the client, which tunnels the traffic from NzbDav.*
 5. **The client** plays the video from that URL (bypassing Rclone/Symlinks entirely).
 
@@ -211,7 +211,7 @@ nzbdav_rclone:
     nzbdav:
       condition: service_healthy
       restart: true
-  # Optimized mounting flags for streaming
+  # Optimized mounting flags for on-demand playback
   # 0M buffer size prevents double-caching (Kernel + RClone)
   # 512M read-ahead ensures smooth playback
   command: >
@@ -256,7 +256,7 @@ ls -la /mnt/remote/nzbdav
 * **`--vfs-cache-max-size=20G`**: **Disk Management**. Limits the local disk space used by the cache. Adjust based on your available storage.
 * **`--dir-cache-time=20s`**: **Responsiveness**. Keeps the directory cache short so new downloads/links appear quickly in the mount.
 
-These flags are optimized for streaming. 
+These flags are optimized for on-demand playback. 
 
 Remember: `unnecessary flags = potential pitfalls`.
 
@@ -323,43 +323,69 @@ Go to NzbDav `Settings` > `Radarr/Sonarr`.
 
 ---
 
-## Phase 5: On-demand search clients (example: AIOStreams)
+## Phase 5: Search Profiles — on-demand search adapters
 
-NzbDav's **Search Profiles** feature exposes a token-scoped search-API endpoint that any compatible external client can use to query your indexers and trigger on-demand playback through NzbDav. The protocol shape is compatible with several search-driven media clients.
+NzbDav's **Search Profiles** feature exposes a token-scoped search-API endpoint that external clients can query for releases across your configured indexers, optionally triggering on-demand playback through NzbDav.
 
-Below is a walkthrough using [AIOStreams](https://github.com/Viren070/AIOStreams) as one concrete example. The same NzbDav endpoint can be consumed by other compatible clients; AIOStreams is documented here because its setup is well-known. For its own documentation see the [AIOStreams Usenet Wiki](https://github.com/Viren070/AIOStreams/wiki/Usenet).
+Each profile gets its own random token. The same profile is reachable through multiple protocol adapters; each adapter can be individually toggled in `Settings → Search Profiles → Output adapters`:
+
+| Adapter | URL shape                                                  | What it's for                                                                 |
+|---------|------------------------------------------------------------|-------------------------------------------------------------------------------|
+| JSON    | `GET /api/search/{token}/lookup?type=movie&id=tt1234567`   | Vendor-neutral JSON. Suits custom clients and scripts.                        |
+| Newznab | `GET /adapters/newznab/{token}/api?t=...`                  | Newznab-protocol meta-indexer. Add to Prowlarr / Sonarr / Radarr.             |
+| Addon   | `GET /adapters/addon/{token}/manifest.json`                | Manifest-based addon endpoint. Compatible clients install via the URL.        |
+
+All three adapters share the same underlying indexer search, deduping, filter, and strict-match logic. They differ only in response format. The legacy `/p/{token}/...` URLs continue to resolve to the Addon adapter for backwards compatibility with previously-installed clients.
 
 > **Note:** NzbDav itself does not host, ship, or recommend specific indexers, providers, or third-party clients. The choice and lawful use of all such services is the responsibility of the operator.
 
-### 1. Configure NzbDav Service in the client
+### 5.1 Example: Newznab adapter with Prowlarr / Sonarr / Radarr
 
-In the AIOStreams UI:
+The Newznab adapter lets your existing automation stack consume a Search Profile as if it were another Newznab indexer — useful when you want NzbDav's per-profile indexer selection and filtering to act as a single aggregated meta-indexer.
 
-1. Go to the **Services** menu and select **NzbDav**.
-2. Enter the details:
-   * **NzbDAV URL:** `http://nzbdav:3000` (Use your public URL if accessing remotely).
-   * **NzbDAV API Key:** (From NzbDav `Settings` > `SABnzbd`).
-   * **NzbDAV WebDAV Username:** (From NzbDav `Settings` > `WebDAV`).
-   * **NzbDAV WebDAV Password:** (From NzbDav `Settings` > `WebDAV`).
-   * **AIOStreams Auth Token (Recommended):** Get it from your self-hosted AIOStreams' `.env` file's `AIOSTREAMS_AUTH` environment variable. (e.g., `user:pass`).
+In Prowlarr (or directly in Sonarr/Radarr):
 
-### 2. Configure the client's Newznab addon
+1. **Add Indexer → Custom → Newznab.**
+2. **URL:** `http://nzbdav:3000/adapters/newznab/{token}` (substitute your profile's token; do **not** include `/api` here — Prowlarr appends it).
+3. **API Key:** Any non-empty value. Auth is via the URL token; the API Key field is accepted but its content is ignored.
+4. **Categories:** `2000` (Movies), `5000` (TV).
+5. **Test** — Prowlarr will call `/api?t=caps` and confirm the adapter responds.
 
-In the AIOStreams UI:
+Releases returned by the Search Profile are surfaced as standard Newznab items. The enclosure URL on each item points to NzbDav's in-process NZB proxy (`/api/search/{token}/nzb/{playToken}.nzb`), so the source indexer URL and API key never leave the server — Sonarr/Radarr download the NZB through NzbDav.
 
-1. Go to **Addons** > **Marketplace** > From the Types dropdown, select **Usenet**.
-2. Find the **Newznab** addon and click **Configure**.
-3. Add your indexers (repeat for each one):
-   * **Name:** Your indexer's name.
-   * **Newznab URL:** Your indexer's Newznab URL (from your indexer's account page).
-   * **API Key:** Your indexer's API key.
-   * **AIOStreams Proxy Auth (Recommended):** Get it from your self-hosted AIOStreams' `.env` file's `AIOSTREAMS_AUTH` environment variable. (e.g., `user:pass`).
-   * **Search Mode:** **Forced Query** (was `Auto` by default)
-   * **Timeout:** `5000` ms (was `7000` by default)
-4. Leave everything else as default and click **Install**
+### 5.2 Example: Addon adapter from a compatible client
 
-### 3. Install in your client
+The Addon adapter exposes a token-scoped manifest endpoint. Any compatible client installs it directly via the manifest URL:
 
-In AIOStreams, go to the **Save & Install** tab, click **Save**, and then install the addon into your preferred compatible player.
+```
+http://nzbdav:3000/adapters/addon/{token}/manifest.json
+```
+
+The manifest advertises the resources the client may request for `movie` and `series` types (keyed by IMDB ids). When the user picks a title in the client, the client calls back into NzbDav and receives a list of release candidates with an `url` field that, when followed, triggers on-demand fetch + mount and redirects to a playable URL served by NzbDav's WebDAV mount.
+
+### 5.3 Example: JSON Search API from a custom client
+
+`GET /api/search/{token}/lookup?type=movie&id=tt0111161` returns vendor-neutral JSON of the form:
+
+```json
+{
+  "profile": "Movies",
+  "type": "movie",
+  "id": "tt0111161",
+  "count": 3,
+  "results": [
+    {
+      "title": "...",
+      "indexer": "...",
+      "sizeBytes": 123456789,
+      "postedAt": "2024-01-01T00:00:00Z",
+      "grabs": 42,
+      "playUrl": "http://nzbdav:3000/api/search/{token}/play/{playToken}.mkv"
+    }
+  ]
+}
+```
+
+For series, pass `type=series&id=tt0944947&season=1&episode=1`. Hitting the `playUrl` triggers the same on-demand mount + playback redirect flow used by the Addon adapter.
 
 

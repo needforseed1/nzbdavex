@@ -9,5 +9,6 @@ public class ProfileConfig
         public required string Token { get; set; }
         public required string Name { get; set; }
         public List<string> IndexerNames { get; set; } = [];
+        public List<string>? EnabledAdapters { get; set; }
     }
 }

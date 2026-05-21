@@ -19,6 +19,8 @@ namespace NzbWebDAV.Api.Controllers.Profiles;
 
 [ApiController]
 [Route("p/{token}/play/{nzbToken}.mkv")]
+[Route("adapters/addon/{token}/play/{nzbToken}.mkv")]
+[Route("api/search/{token}/play/{nzbToken}.mkv")]
 public class ProfilePlayController(
     ConfigManager configManager,
     NzbResolutionCache cache,
@@ -66,7 +68,7 @@ public class ProfilePlayController(
         if (profile is null) return NotFound();
 
         var entry = cache.Get(nzbToken);
-        if (entry is null) return NotFound("Stream link expired. Re-search in your player.");
+        if (entry is null) return NotFound("Link expired. Re-search in your client.");
 
         preflightSessions.Cancel(entry.ProfileToken, entry.Type, entry.Id);
 

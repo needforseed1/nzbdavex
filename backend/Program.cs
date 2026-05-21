@@ -121,6 +121,7 @@ class Program
             .AddSingleton<PreflightOrchestrator>()
             .AddSingleton<NewznabRateLimiter>()
             .AddSingleton<TvdbIdResolver>()
+            .AddSingleton<SearchProfileService>()
             .AddSingleton<VariantResolver>()
             .AddSingleton<MetricsWriter>()
             .AddHostedService(sp => sp.GetRequiredService<MetricsWriter>())

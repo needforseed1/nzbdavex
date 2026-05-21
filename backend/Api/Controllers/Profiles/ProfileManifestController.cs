@@ -1,12 +1,14 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Config;
+using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.Controllers.Profiles;
 
 [ApiController]
 [Route("p/{token}/manifest.json")]
-public class ProfileManifestController(ConfigManager configManager) : ControllerBase
+[Route("adapters/addon/{token}/manifest.json")]
+public class ProfileManifestController(SearchProfileService searchService) : ControllerBase
 {
     [HttpOptions]
     public IActionResult Preflight()
@@ -19,8 +21,9 @@ public class ProfileManifestController(ConfigManager configManager) : Controller
     public IActionResult Get(string token)
     {
         SetCors(Response);
-        var profile = configManager.GetProfileConfig().Profiles.FirstOrDefault(x => x.Token == token);
+        var profile = searchService.GetProfile(token);
         if (profile is null) return NotFound();
+        if (!searchService.IsAdapterEnabled(token, "addon")) return NotFound();
 
         return new JsonResult(new
         {
