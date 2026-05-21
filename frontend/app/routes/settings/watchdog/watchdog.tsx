@@ -32,6 +32,10 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
     const excludePatterns = config["play.exclude-patterns"] ?? "";
     const patternIssues = useMemo(() => validateExcludePatterns(excludePatterns), [excludePatterns]);
 
+    const variantsMode = config["variants.mode"] ?? "off";
+    const variantsEnabled = variantsMode !== "off";
+    const variantsFallback = (config["variants.fallback-on-failure"] ?? "true") === "true";
+
     return (
         <div className={styles.container}>
             <div className={styles.section}>
@@ -157,6 +161,130 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                 </p>
             </Form.Group>
 
+            <div className={styles.section}>
+                <div className={styles.sectionTitle}>Variants</div>
+                <div className={styles.sectionDescription}>
+                    Keep multiple size copies of the same item. When you click a different
+                    size, nzbdav can fetch and stash that one too, then on future clicks
+                    serve the copy closest to whatever you just picked. Off by default.
+                </div>
+            </div>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Mode</Form.Label>
+                <Form.Select
+                    className={styles.input}
+                    value={variantsMode}
+                    onChange={e => set("variants.mode", e.target.value)}>
+                    <option value="off">off — always reuse existing, play biggest (today's behavior)</option>
+                    <option value="smart">smart — reuse if size is close enough, else fetch the new variant</option>
+                    <option value="collect-all">collect-all — every meaningfully different click fetches a new copy</option>
+                </Form.Select>
+                <p className={styles.hint}>
+                    `smart` is the GOATED default once you flip it on. `collect-all` is
+                    storage-hungry — every click that isn't a near-exact size match adds another copy.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Size tolerance (%)</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={0}
+                    max={100}
+                    disabled={variantsMode !== "smart"}
+                    value={config["variants.tolerance-pct"] ?? "25"}
+                    onChange={e => set("variants.tolerance-pct", e.target.value)} />
+                <p className={styles.hint}>
+                    `smart` mode only. Existing copy is reused if its size is within ±N% of
+                    what you just clicked. Outside that → fetch the new variant and keep both.
+                    Default 25 (generous to absorb indexer-vs-actual size drift).
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Max copies per group</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={0}
+                    max={50}
+                    disabled={!variantsEnabled}
+                    value={config["variants.max-per-group"] ?? "3"}
+                    onChange={e => set("variants.max-per-group", e.target.value)} />
+                <p className={styles.hint}>
+                    Storage cap per content group. When exceeded, the eviction strategy below
+                    decides which to drop. Set to 0 for unlimited (hoarder mode). Default 3.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Replay selection</Form.Label>
+                <Form.Select
+                    className={styles.input}
+                    disabled={!variantsEnabled}
+                    value={config["variants.replay-strategy"] ?? "closest-to-click"}
+                    onChange={e => set("variants.replay-strategy", e.target.value)}>
+                    <option value="closest-to-click">closest-to-click — match the size of what I clicked (recommended)</option>
+                    <option value="largest">largest — always pick the biggest copy, ignore what I clicked</option>
+                    <option value="smallest">smallest — always pick the smallest copy, ignore what I clicked</option>
+                </Form.Select>
+                <p className={styles.hint}>
+                    When multiple copies exist for the same group, which one to play. `closest-to-click`
+                    uses what you just picked as the intent signal — the GOATED choice.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Check
+                    type="switch"
+                    id="variants-fallback-on-failure"
+                    label="Fallback to closest existing on watchdog failure"
+                    disabled={!variantsEnabled}
+                    checked={variantsFallback}
+                    onChange={e => set("variants.fallback-on-failure", String(e.target.checked))} />
+                <p className={styles.hint}>
+                    When you click a size we don't have AND the watchdog can't fetch any working
+                    source, play the closest existing copy instead of returning an error. Strictly
+                    safer than today's behavior. On by default.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Eviction strategy</Form.Label>
+                <Form.Select
+                    className={styles.input}
+                    disabled={!variantsEnabled}
+                    value={config["variants.eviction-strategy"] ?? "lru"}
+                    onChange={e => set("variants.eviction-strategy", e.target.value)}>
+                    <option value="lru">lru — least recently played first (recommended)</option>
+                    <option value="largest-first">largest-first — drop biggest first, keep small copies</option>
+                    <option value="smallest-first">smallest-first — drop smallest first, keep big copies</option>
+                    <option value="never">never — never auto-delete; new downloads exceed cap and stay</option>
+                </Form.Select>
+                <p className={styles.hint}>
+                    Decides which copy is removed when `max copies per group` is hit. LRU is the
+                    safe default. `never` means you delete copies manually from the History view.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Active-stream grace (seconds)</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={0}
+                    max={300}
+                    disabled={!variantsEnabled}
+                    value={config["variants.eviction-active-grace-seconds"] ?? "60"}
+                    onChange={e => set("variants.eviction-active-grace-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    Eviction skips any copy played within the last N seconds. Safety net so we
+                    never delete what you're watching right now. Default 60.
+                </p>
+            </Form.Group>
+
             <Form.Group className={styles.section}>
                 <Form.Label>Exclude result patterns</Form.Label>
                 <Form.Control
@@ -198,7 +326,14 @@ export function isWatchdogSettingsUpdated(config: Record<string, string>, newCon
         || config["play.max-attempts"] !== newConfig["play.max-attempts"]
         || config["play.verify-mode"] !== newConfig["play.verify-mode"]
         || config["play.candidate-negative-cache-minutes"] !== newConfig["play.candidate-negative-cache-minutes"]
-        || (config["play.exclude-patterns"] ?? "") !== (newConfig["play.exclude-patterns"] ?? "");
+        || (config["play.exclude-patterns"] ?? "") !== (newConfig["play.exclude-patterns"] ?? "")
+        || config["variants.mode"] !== newConfig["variants.mode"]
+        || config["variants.tolerance-pct"] !== newConfig["variants.tolerance-pct"]
+        || config["variants.max-per-group"] !== newConfig["variants.max-per-group"]
+        || config["variants.replay-strategy"] !== newConfig["variants.replay-strategy"]
+        || config["variants.fallback-on-failure"] !== newConfig["variants.fallback-on-failure"]
+        || config["variants.eviction-strategy"] !== newConfig["variants.eviction-strategy"]
+        || config["variants.eviction-active-grace-seconds"] !== newConfig["variants.eviction-active-grace-seconds"];
 }
 
 export function isWatchdogSettingsValid(config: Record<string, string>) {

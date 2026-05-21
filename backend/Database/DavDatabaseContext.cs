@@ -266,6 +266,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.IndexerName)
                 .IsRequired(false);
 
+            e.Property(i => i.ContentGroupKey)
+                .IsRequired(false);
+
             e.HasIndex(i => new { i.Category, i.FileName })
                 .IsUnique();
 
@@ -282,6 +285,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
                 .IsUnique(false);
 
             e.HasIndex(i => new { i.Category, i.Priority, i.CreatedAt })
+                .IsUnique(false);
+
+            e.HasIndex(i => i.ContentGroupKey)
                 .IsUnique(false);
         });
 
@@ -329,6 +335,16 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.IndexerName)
                 .IsRequired(false);
 
+            e.Property(i => i.ContentGroupKey)
+                .IsRequired(false);
+
+            e.Property(i => i.LastPlayedAt)
+                .ValueGeneratedNever()
+                .HasConversion(
+                    x => x.HasValue ? x.Value.ToUnixTimeSeconds() : (long?)null,
+                    x => x.HasValue ? DateTimeOffset.FromUnixTimeSeconds(x.Value) : null
+                );
+
             e.HasIndex(i => new { i.CreatedAt })
                 .IsUnique(false);
 
@@ -342,6 +358,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
                 .IsUnique(false);
 
             e.HasIndex(i => i.NzbBlobId)
+                .IsUnique(false);
+
+            e.HasIndex(i => new { i.ContentGroupKey, i.DownloadStatus })
                 .IsUnique(false);
         });
 

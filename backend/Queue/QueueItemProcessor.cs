@@ -369,6 +369,7 @@ public class QueueItemProcessor(
             DownloadDirId = mountFolder?.Id,
             NzbBlobId = queueItem.Id,
             IndexerName = queueItem.IndexerName,
+            ContentGroupKey = queueItem.ContentGroupKey,
         };
     }
 

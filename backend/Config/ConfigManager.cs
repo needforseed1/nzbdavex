@@ -264,6 +264,70 @@ public class ConfigManager
         return patterns;
     }
 
+    // Variants — keeps multiple size copies of the same content group keyed by
+    // (entry.Type, entry.Id). The key is opaque to nzbdav: it never inspects what
+    // the strings mean, only whether two clicks resolve to the same identifier.
+    public string GetVariantsMode()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.mode"));
+        return v switch
+        {
+            "smart" => "smart",
+            "collect-all" => "collect-all",
+            _ => "off",
+        };
+    }
+
+    public int GetVariantsTolerancePct()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.tolerance-pct"));
+        if (v == null) return 25;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 0, 100) : 25;
+    }
+
+    public int GetVariantsMaxPerGroup()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.max-per-group"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Max(0, n) : 3;
+    }
+
+    public string GetVariantsReplayStrategy()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.replay-strategy"));
+        return v switch
+        {
+            "largest" => "largest",
+            "smallest" => "smallest",
+            _ => "closest-to-click",
+        };
+    }
+
+    public bool IsVariantsFallbackOnFailureEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.fallback-on-failure"));
+        return v == null || bool.Parse(v);
+    }
+
+    public string GetVariantsEvictionStrategy()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.eviction-strategy"));
+        return v switch
+        {
+            "largest-first" => "largest-first",
+            "smallest-first" => "smallest-first",
+            "never" => "never",
+            _ => "lru",
+        };
+    }
+
+    public int GetVariantsEvictionActiveGraceSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("variants.eviction-active-grace-seconds"));
+        if (v == null) return 60;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 0, 300) : 60;
+    }
+
     public string GetPreflightMode()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("preflight.mode"));
