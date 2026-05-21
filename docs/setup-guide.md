@@ -1,8 +1,8 @@
 # Comprehensive NzbDav Setup Guide
 
-This guide is an opinionated, step-by-step walkthrough to setting up NzbDav for a self-hosted Usenet-backed personal media library, integrated with media managers (Radarr/Sonarr), media servers (Plex/Jellyfin), and external search clients.
+This guide walks through setting up NzbDav (a self-hosted Usenet-backed WebDAV mount with on-demand reads) and integrating it with common adjacent tooling: Radarr/Sonarr, Plex/Jellyfin, and external search clients.
 
-## How the personal-library flow works
+## How the workflow operates
 NzbDav can be used in two complementary paths. Configure whichever paths fit your setup.
 
 ### Path A: The Automation Flow (Radarr/Sonarr + Plex/Jellyfin)
@@ -21,7 +21,7 @@ NzbDav exposes a per-profile search-API endpoint (Search Profiles) that any comp
 3. **NzbDav** mounts the file instantly via WebDAV.
 4. **The client** generates a playable URL.
    * *Note: If using the recommended Proxy setup, this URL points back through the client, which tunnels the traffic from NzbDav.*
-5. **The client** plays the video from that URL (bypassing Rclone/Symlinks entirely).
+5. **The client** plays the file from that URL (bypassing Rclone/Symlinks entirely).
 
 ## Phase 1: Prerequisites
 
