@@ -9,7 +9,7 @@ type PreflightSettingsProps = {
 
 export function PreflightSettings({ config, setNewConfig }: PreflightSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
-    const mode = config["preflight.mode"] ?? "off";
+    const mode = config["preflight.mode"] ?? "standard";
     const enabled = mode !== "off";
 
     return (
