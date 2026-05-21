@@ -397,7 +397,7 @@ public class QueueItemProcessor(
 
     // Emits a Watchdog attempt entry for queue items that didn't come through
     // ProfilePlayController (which writes its own attempts already). Lets users
-    // see service-mode AIOStreams / Sonarr enqueues with provider attribution
+    // see third-party SAB-compatible client / Sonarr enqueues with provider attribution
     // on the /watchdog page.
     private void RecordWatchdogAttemptIfExternal(
         DateTime startTime,

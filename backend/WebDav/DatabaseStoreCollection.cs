@@ -129,7 +129,7 @@ public class DatabaseStoreCollection(
 
     // After deleting a DavItem, if no other DavItems still reference its HistoryItem,
     // remove the HistoryItem too. Without this, external tools polling /api?mode=history
-    // (AIOStreams as a SAB service, Sonarr, etc.) see the entry as Completed and hand the
+    // (third-party SAB-compatible clients, Sonarr, etc.) see the entry as Completed and hand the
     // player a URL pointing at the file we just deleted — re-clicking never re-enqueues.
     private async Task PruneEmptyHistoryAsync(Guid? historyItemId, CancellationToken ct)
     {
