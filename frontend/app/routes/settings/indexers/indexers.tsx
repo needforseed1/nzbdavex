@@ -169,29 +169,31 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                         </div>
                     </div>
                 </div>
-                <div className={styles["form-group"]}>
-                    <label htmlFor="indexers-default-proxy" className={styles["form-label"]}>HTTP(S) Proxy URL</label>
-                    <input
-                        type="text"
-                        id="indexers-default-proxy"
-                        className={`${styles["form-input"]} ${!proxyValid ? styles.error : ""}`}
-                        placeholder="http://proxy:8888"
-                        value={proxyUrl}
-                        onChange={e => handleProxyChange(e.target.value)}
-                    />
-                </div>
-                <div className={styles["form-group"]}>
-                    <label htmlFor="indexers-default-timeout" className={styles["form-label"]}>
-                        Request timeout (seconds) <span className={styles["label-hint"]}>(leave blank for {DEFAULT_TIMEOUT_SECONDS}s default)</span>
-                    </label>
-                    <input
-                        type="text"
-                        id="indexers-default-timeout"
-                        className={`${styles["form-input"]} ${!isTimeoutValid(globalTimeoutRaw) ? styles.error : ""}`}
-                        placeholder={DEFAULT_TIMEOUT_SECONDS.toString()}
-                        value={globalTimeoutRaw}
-                        onChange={e => handleTimeoutChange(e.target.value)}
-                    />
+                <div className={styles["form-grid"]}>
+                    <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <label htmlFor="indexers-default-proxy" className={styles["form-label"]}>HTTP(S) Proxy URL</label>
+                        <input
+                            type="text"
+                            id="indexers-default-proxy"
+                            className={`${styles["form-input"]} ${!proxyValid ? styles.error : ""}`}
+                            placeholder="http://proxy:8888"
+                            value={proxyUrl}
+                            onChange={e => handleProxyChange(e.target.value)}
+                        />
+                    </div>
+                    <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <label htmlFor="indexers-default-timeout" className={styles["form-label"]}>
+                            Request timeout (seconds) <span className={styles["label-hint"]}>(leave blank for {DEFAULT_TIMEOUT_SECONDS}s default)</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="indexers-default-timeout"
+                            className={`${styles["form-input"]} ${!isTimeoutValid(globalTimeoutRaw) ? styles.error : ""}`}
+                            placeholder={DEFAULT_TIMEOUT_SECONDS.toString()}
+                            value={globalTimeoutRaw}
+                            onChange={e => handleTimeoutChange(e.target.value)}
+                        />
+                    </div>
                 </div>
             </div>
 
