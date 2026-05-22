@@ -293,8 +293,14 @@ public class ProfilePlayController(
         foreach (var c in pool) startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
 
         // Phase 1 — pre-verify (parallel, hedged): fetch NZB + verify first segment exists.
+        // Track each task's candidate so that if a task throws before producing a result
+        // (rare, but possible — see CancelRemainingAndRecord), we can still record a
+        // watchdog entry for that candidate instead of dropping it silently.
         var preVerifies = new List<Task<PreVerifyResult>>();
-        preVerifies.Add(PreVerifyAsync(pool[0], verifyMode, totalCts.Token));
+        var taskCandidates = new Dictionary<Task<PreVerifyResult>, NzbResolutionCache.Candidate>();
+        var primaryTask = PreVerifyAsync(pool[0], verifyMode, totalCts.Token);
+        preVerifies.Add(primaryTask);
+        taskCandidates[primaryTask] = pool[0];
 
         if (pool.Count > 1)
         {
@@ -310,7 +316,9 @@ public class ProfilePlayController(
                 for (var i = 1; i < pool.Count; i++)
                 {
                     startsAt[pool[i].NzbUrl] = DateTimeOffset.UtcNow;
-                    preVerifies.Add(PreVerifyAsync(pool[i], verifyMode, totalCts.Token));
+                    var t = PreVerifyAsync(pool[i], verifyMode, totalCts.Token);
+                    preVerifies.Add(t);
+                    taskCandidates[t] = pool[i];
                 }
             }
         }
@@ -367,7 +375,7 @@ public class ProfilePlayController(
                     // Winner found. Cancel in-flight losers so they stop holding
                     // indexer/NNTP connections, and log them in /watchdog as Cancelled.
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
-                        rankIndex, startsAt, remaining, ready, totalCts,
+                        rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
                         "Winner found; loser cancelled to free provider connections",
                         contentGroupKey);
                     return (BatchOutcome.Winner, action);
@@ -377,7 +385,7 @@ public class ProfilePlayController(
                 if (reason == CommitReason.Cancelled)
                 {
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
-                        rankIndex, startsAt, remaining, ready, totalCts,
+                        rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
                         "Client disconnected; loser cancelled",
                         contentGroupKey);
                     return (BatchOutcome.Cancelled, new EmptyResult());
@@ -388,7 +396,7 @@ public class ProfilePlayController(
                     // don't keep downloading a UHD release that the player gave up on.
                     if (newNzoId.HasValue) ScheduleOrphanCleanup(newNzoId.Value);
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
-                        rankIndex, startsAt, remaining, ready, totalCts,
+                        rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
                         "Budget exhausted; loser cancelled",
                         contentGroupKey);
                     // HandleAsync converts this to a 503 + Retry-After (or a 302 if
@@ -403,7 +411,14 @@ public class ProfilePlayController(
             await Task.WhenAny(remaining).ConfigureAwait(false);
         }
 
-        // All candidates in this batch failed (dead or commit-failed). Caller may try another batch.
+        // All candidates in this batch failed (dead or commit-failed). Record any
+        // pre-verified-but-unused candidates (ready) and any in-flight tasks
+        // (remaining) so the watchdog reflects every attempt that was tried —
+        // including the ones the deadline cut short. Caller may try another batch.
+        CancelRemainingAndRecord(clickId, contentType, requestedTitle,
+            rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
+            "Batch exited without a winner; remaining verifies cancelled",
+            contentGroupKey);
         return (BatchOutcome.AllFailed, null);
     }
 
@@ -417,6 +432,7 @@ public class ProfilePlayController(
         Dictionary<string, int> rankIndex,
         Dictionary<string, DateTimeOffset> startsAt,
         List<Task<PreVerifyResult>> remaining,
+        Dictionary<Task<PreVerifyResult>, NzbResolutionCache.Candidate> taskCandidates,
         SortedList<int, PreVerifyResult> ready,
         CancellationTokenSource totalCts,
         string reason,
@@ -441,24 +457,32 @@ public class ProfilePlayController(
         // Don't await synchronously; the response should return immediately.
         if (remaining.Count == 0) return;
         var pending = remaining.ToList();
+        var localTaskCandidates = new Dictionary<Task<PreVerifyResult>, NzbResolutionCache.Candidate>(taskCandidates);
         var localStarts = new Dictionary<string, DateTimeOffset>(startsAt);
         var localRanks = new Dictionary<string, int>(rankIndex);
         _ = Task.Run(async () =>
         {
             foreach (var t in pending)
             {
+                NzbResolutionCache.Candidate? candidate = null;
+                string failReason = reason;
                 try
                 {
                     var r = await t.ConfigureAwait(false);
-                    RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
-                        localRanks[r.Candidate.NzbUrl],
-                        WatchdogEntry.Outcome.Cancelled, reason, localStarts, isWinner: false,
-                        contentGroupKey: contentGroupKey);
+                    candidate = r.Candidate;
                 }
-                catch
+                catch (Exception e)
                 {
-                    // Task didn't produce a result we can identify — skip silently.
+                    // Fall back to the task→candidate map so the entry still shows up
+                    // — previously this was silently dropped.
+                    localTaskCandidates.TryGetValue(t, out candidate);
+                    failReason = $"Pre-verify task faulted: {e.GetType().Name}: {e.Message}";
                 }
+                if (candidate is null) continue;
+                RecordAttempt(clickId, candidate, contentType, requestedTitle,
+                    localRanks.GetValueOrDefault(candidate.NzbUrl, 0),
+                    WatchdogEntry.Outcome.Cancelled, failReason, localStarts, isWinner: false,
+                    contentGroupKey: contentGroupKey);
             }
         });
     }
