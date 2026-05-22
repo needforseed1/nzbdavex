@@ -23,6 +23,14 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
     // FileParts.Length snapshots (which the old (Guid,int) key broke).
     private readonly ConcurrentDictionary<(Guid, string), Task<DavMultipartFile.FilePart>> _inFlight = new();
 
+    private readonly ConcurrentDictionary<Guid, Persistor> _persistors = new();
+
+    private sealed class Persistor
+    {
+        public readonly SemaphoreSlim Sem = new(1, 1);
+        public long LatestStamp;
+    }
+
     // Resolve enough trailing volumes to cover targetByteOffset and return
     // the updated Meta. All needed volumes run in parallel (capped by
     // MaxDownloadConnections) — critical for the end-of-file metadata read
@@ -221,7 +229,7 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             };
 
             mpf.Metadata = newMeta;
-            _ = PersistAsync(mpf);
+            _ = SchedulePersistAsync(mpf);
             return newMeta;
         }
     }
@@ -233,10 +241,15 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         return sum;
     }
 
-    private static async Task PersistAsync(DavMultipartFile mpf)
+    private async Task SchedulePersistAsync(DavMultipartFile mpf)
     {
+        var p = _persistors.GetOrAdd(mpf.Id, _ => new Persistor());
+        var myStamp = Interlocked.Increment(ref p.LatestStamp);
+
+        await p.Sem.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (Volatile.Read(ref p.LatestStamp) != myStamp) return;
             await BlobStore.WriteBlob(mpf.Id, mpf).ConfigureAwait(false);
         }
         catch (Exception e)
@@ -244,6 +257,10 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             Log.Warning(e,
                 "Failed to persist lazy-resolved RAR multipart {Id}; will re-resolve on next restart",
                 mpf.Id);
+        }
+        finally
+        {
+            p.Sem.Release();
         }
     }
 }
