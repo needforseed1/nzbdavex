@@ -260,6 +260,17 @@ class BackendClient {
         return data.entries ?? [];
     }
 
+    public async clearWatchdogEntries(): Promise<number> {
+        const url = process.env.BACKEND_URL + `/api/clear-watchdog-entries`;
+        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to clear watchdog entries: ${(await response.json()).error}`);
+        }
+        const data = await response.json();
+        return data.deleted ?? 0;
+    }
+
     public async getHealthCheckHistory(pageSize?: number): Promise<HealthCheckHistoryResponse> {
         let url = process.env.BACKEND_URL + "/api/get-health-check-history";
 

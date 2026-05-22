@@ -1,7 +1,6 @@
 import { redirect } from "react-router";
 import type { Route } from "./+types/route";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Form } from "react-bootstrap";
 import styles from "./route.module.css";
 import { backendClient, type WatchdogEntry, type WatchdogOutcome } from "~/clients/backend-client.server";
 
@@ -26,8 +25,8 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
     const [attempts, setAttempts] = useState<WatchdogEntry[]>(loaderData.entries);
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [filter, setFilter] = useState<FilterKey>("all");
-    const [hiddenBefore, setHiddenBefore] = useState<number>(0);
     const [refreshing, setRefreshing] = useState(false);
+    const [clearing, setClearing] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const refresh = useCallback(async (silent: boolean = false) => {
@@ -43,6 +42,21 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
             setError(e?.message ?? String(e));
         } finally {
             if (!silent) setRefreshing(false);
+        }
+    }, []);
+
+    const clearAll = useCallback(async () => {
+        if (!window.confirm("Permanently delete all watchdog entries? This can't be undone.")) return;
+        setClearing(true);
+        try {
+            const r = await fetch("/settings/watchdog-attempts", { method: "POST" });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            setAttempts([]);
+            setError(null);
+        } catch (e: any) {
+            setError(e?.message ?? String(e));
+        } finally {
+            setClearing(false);
         }
     }, []);
 
@@ -63,7 +77,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
         };
     }, [autoRefresh, refresh]);
 
-    const groups = useMemo(() => groupByClick(attempts, hiddenBefore), [attempts, hiddenBefore]);
+    const groups = useMemo(() => groupByClick(attempts), [attempts]);
     const filteredGroups = useMemo(() => groups.filter(g => matchesFilter(g, filter)), [groups, filter]);
     const stats = useMemo(() => computeStats(groups), [groups]);
 
@@ -78,23 +92,46 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                         </div>
                     </div>
                     <div className={styles.controls}>
-                        <Form.Check
-                            type="switch"
-                            id="watchdog-autorefresh"
-                            label={refreshing ? "Refreshing…" : "Live"}
-                            checked={autoRefresh}
-                            onChange={e => setAutoRefresh(e.target.checked)} />
-                        <Button variant="outline-secondary" size="sm" onClick={() => refresh()} disabled={refreshing}>
+                        <button
+                            type="button"
+                            className={`${styles.toolbarBtn} ${styles.liveBtn} ${autoRefresh ? styles.liveBtnOn : ""}`}
+                            onClick={() => setAutoRefresh(v => !v)}
+                            title={autoRefresh ? "Auto-refresh on. Click to pause." : "Auto-refresh paused. Click to resume."}>
+                            <span className={`${styles.liveDot} ${autoRefresh ? styles.liveDotOn : ""}`} />
+                            {autoRefresh ? (refreshing ? "Refreshing…" : "Live") : "Paused"}
+                        </button>
+                        <button
+                            type="button"
+                            className={styles.toolbarBtn}
+                            onClick={() => refresh()}
+                            disabled={refreshing || clearing}
+                            title="Refresh now.">
+                            <svg
+                                className={`${styles.toolbarIcon} ${refreshing ? styles.spinning : ""}`}
+                                viewBox="0 0 16 16"
+                                fill="currentColor"
+                                aria-hidden="true">
+                                <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z" />
+                                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z" />
+                            </svg>
                             Refresh
-                        </Button>
-                        <Button
-                            variant="outline-secondary"
-                            size="sm"
-                            onClick={() => setHiddenBefore(Math.floor(Date.now() / 1000))}
-                            disabled={groups.length === 0}
-                            title="Hide everything currently visible. New attempts still appear.">
-                            Clear view
-                        </Button>
+                        </button>
+                        <button
+                            type="button"
+                            className={`${styles.toolbarBtn} ${styles.toolbarBtnDanger}`}
+                            onClick={clearAll}
+                            disabled={groups.length === 0 || clearing}
+                            title="Permanently delete all watchdog entries.">
+                            <svg
+                                className={styles.toolbarIcon}
+                                viewBox="0 0 16 16"
+                                fill="currentColor"
+                                aria-hidden="true">
+                                <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z" />
+                                <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3v-1h11v1h-11z" />
+                            </svg>
+                            {clearing ? "Clearing…" : "Clear log"}
+                        </button>
                     </div>
                 </div>
 
@@ -319,10 +356,9 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
     return true;
 }
 
-function groupByClick(list: WatchdogEntry[], hiddenBefore: number): ClickGroup[] {
+function groupByClick(list: WatchdogEntry[]): ClickGroup[] {
     const map = new Map<string, ClickGroup>();
     for (const a of list) {
-        if (a.attemptedAtUnix < hiddenBefore) continue;
         const g = map.get(a.clickId);
         if (g) {
             g.attempts.push(a);

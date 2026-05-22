@@ -49,18 +49,110 @@
 .controls {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
 }
 
-.controls :global(.form-check) {
-    margin-bottom: 0;
-    color: var(--text-secondary);
+/* ---------- Toolbar buttons (Live / Refresh / Clear log) ---------- */
+
+.toolbarBtn {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border-radius: 6px;
     font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+    user-select: none;
+    white-space: nowrap;
 }
 
-.controls :global(.form-check-label) {
-    cursor: pointer;
+.toolbarBtn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-default);
+}
+
+.toolbarBtn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.toolbarBtn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.toolbarBtn:active:not(:disabled) {
+    transform: translateY(0.5px);
+}
+
+.toolbarIcon {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+.spinning {
+    animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Live toggle: green when on, neutral when off. The dot pulses while live. */
+.liveBtn {
+    color: var(--text-muted);
+}
+
+.liveBtnOn {
+    color: var(--success);
+    background: rgba(52, 211, 153, 0.06);
+    border-color: rgba(52, 211, 153, 0.25);
+}
+
+.liveBtnOn:hover {
+    background: rgba(52, 211, 153, 0.1);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: var(--success);
+}
+
+.liveDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    flex-shrink: 0;
+}
+
+.liveDotOn {
+    background: var(--success);
+    animation: livePulse 1.8s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+    50%      { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+}
+
+/* Danger variant: red accent for destructive actions. */
+.toolbarBtnDanger {
+    color: var(--danger-muted);
+    border-color: rgba(239, 68, 68, 0.2);
+}
+
+.toolbarBtnDanger:hover:not(:disabled) {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.4);
 }
 
 /* ---------- Stats strip ---------- */
@@ -531,8 +623,9 @@
         width: 100%;
     }
 
-    .controls :global(.btn) {
+    .toolbarBtn {
         flex: 1 1 0;
+        justify-content: center;
     }
 
     .attemptTable {
