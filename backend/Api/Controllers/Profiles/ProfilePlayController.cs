@@ -468,7 +468,13 @@ public class ProfilePlayController(
         string reason,
         string? contentGroupKey)
     {
-        if (!totalCts.IsCancellationRequested)
+        // Only cancel totalCts when there are in-flight verify tasks to abort.
+        // totalCts is shared with the outer batch-retry loop in HandleAsync; cancelling
+        // it unconditionally here turned the multi-batch fallback into a single-batch
+        // run, because the next outer iteration's IsCancellationRequested check would
+        // exit immediately. When remaining is empty (typical AllFailed path) there is
+        // nothing to cancel — leave totalCts alive so the next batch can run.
+        if (remaining.Count > 0 && !totalCts.IsCancellationRequested)
         {
             try { totalCts.Cancel(); }
             catch (ObjectDisposedException) { /* race with using disposal — already done */ }
