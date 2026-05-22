@@ -249,15 +249,15 @@ class BackendClient {
         return data;
     }
 
-    public async getPlaybackAttempts(limit: number = 200): Promise<PlaybackAttempt[]> {
-        const url = process.env.BACKEND_URL + `/api/get-playback-attempts?limit=${limit}`;
+    public async getWatchdogEntries(limit: number = 200): Promise<WatchdogEntry[]> {
+        const url = process.env.BACKEND_URL + `/api/get-watchdog-entries?limit=${limit}`;
         const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
         const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
-            throw new Error(`Failed to get playback attempts: ${(await response.json()).error}`);
+            throw new Error(`Failed to get watchdog entries: ${(await response.json()).error}`);
         }
         const data = await response.json();
-        return data.attempts ?? [];
+        return data.entries ?? [];
     }
 
     public async getHealthCheckHistory(pageSize?: number): Promise<HealthCheckHistoryResponse> {
@@ -341,7 +341,7 @@ export type HistorySlot = {
     providers?: ProviderUsage[] | null,
 }
 
-export type PlaybackAttemptOutcome =
+export type WatchdogOutcome =
     | "PreVerifyAvailable"
     | "PreVerifyDead"
     | "PreVerifyTimeout"
@@ -352,7 +352,7 @@ export type PlaybackAttemptOutcome =
     | "BudgetTimeout"
     | "ExcludedByPattern";
 
-export type PlaybackAttempt = {
+export type WatchdogEntry = {
     clickId: string,
     attemptedAtUnix: number,
     contentType: string,
@@ -361,7 +361,7 @@ export type PlaybackAttempt = {
     indexerName: string,
     size: number,
     rankIndex: number,
-    outcome: PlaybackAttemptOutcome,
+    outcome: WatchdogOutcome,
     failReason: string | null,
     durationMs: number,
     isWinner: boolean,

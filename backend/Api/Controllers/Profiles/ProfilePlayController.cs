@@ -26,7 +26,7 @@ public class ProfilePlayController(
     NzbResolutionCache cache,
     CandidateNegativeCache negativeCache,
     PlaybackFastVerifier fastVerifier,
-    PlaybackAttemptLog attemptLog,
+    WatchdogLog watchdogLog,
     NewznabRateLimiter rateLimiter,
     DavDatabaseClient dbClient,
     QueueManager queueManager,
@@ -120,6 +120,8 @@ public class ProfilePlayController(
         var requestedTitle = entry.Primary.Title;
         var contentType = entry.Type;
         var startsAt = new Dictionary<string, DateTimeOffset>();
+        // Compute once so every attempt logged below carries the cascade-cleanup link.
+        var contentGroupKey = VariantResolver.BuildContentGroupKey(entry);
 
         // Watchdog OFF → simple single-candidate flow (no auto-fallback, no pre-verify, no negative cache).
         if (!watchdogEnabled)
@@ -129,8 +131,9 @@ public class ProfilePlayController(
             {
                 startsAt[entry.Primary.NzbUrl] = DateTimeOffset.UtcNow;
                 RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
-                    PlaybackAttemptLog.Outcome.ExcludedByPattern,
-                    $"Matched exclude pattern: {primaryExcludeMatch}", startsAt, isWinner: false);
+                    WatchdogEntry.Outcome.ExcludedByPattern,
+                    $"Matched exclude pattern: {primaryExcludeMatch}", startsAt, isWinner: false,
+                    contentGroupKey: contentGroupKey);
                 return await ResolveExistingOrErrorAsync(entry, 503,
                     "Release excluded by your filter. Adjust patterns in Settings → Watchdog.",
                     60, HttpContext.RequestAborted).ConfigureAwait(false);
@@ -140,14 +143,16 @@ public class ProfilePlayController(
             if (nzbBytes is null)
             {
                 RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
-                    PlaybackAttemptLog.Outcome.EnqueueFailed, "Indexer NZB fetch failed", startsAt, isWinner: false);
+                    WatchdogEntry.Outcome.EnqueueFailed, "Indexer NZB fetch failed", startsAt, isWinner: false,
+                    contentGroupKey: contentGroupKey);
                 return await ResolveExistingOrErrorAsync(entry, 502,
                     "Failed to fetch NZB from indexer.", 10, HttpContext.RequestAborted).ConfigureAwait(false);
             }
             var single = new PreVerifyResult(entry.Primary, nzbBytes, PlaybackFastVerifier.Verdict.Available, null);
             var (result, reason, newNzoId) = await CommitAsync(nzbToken, single, deadline, totalCts.Token).ConfigureAwait(false);
             RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
-                MapCommitReason(reason), CommitReasonToMessage(reason), startsAt, isWinner: reason == CommitReason.Completed);
+                MapCommitReason(reason), CommitReasonToMessage(reason), startsAt, isWinner: reason == CommitReason.Completed,
+                contentGroupKey: contentGroupKey);
             if (reason == CommitReason.BudgetTimeout && newNzoId.HasValue)
                 ScheduleOrphanCleanup(newNzoId.Value);
             if (result is not null) return result;
@@ -185,8 +190,9 @@ public class ProfilePlayController(
                     rankIndex[c.NzbUrl] = excludedRank;
                     startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
                     RecordAttempt(clickId, c, contentType, requestedTitle, excludedRank,
-                        PlaybackAttemptLog.Outcome.ExcludedByPattern,
-                        $"Matched exclude pattern: {excludeMatch}", startsAt, isWinner: false);
+                        WatchdogEntry.Outcome.ExcludedByPattern,
+                        $"Matched exclude pattern: {excludeMatch}", startsAt, isWinner: false,
+                        contentGroupKey: contentGroupKey);
                     excludedCount++;
                     continue;
                 }
@@ -199,7 +205,7 @@ public class ProfilePlayController(
             attemptsUsed += pool.Count;
 
             var batch = await RunBatchAsync(pool, rankIndex, nzbToken, contentType, requestedTitle,
-                clickId, startsAt, verifyMode, hedgeDelay, deadline, totalCts).ConfigureAwait(false);
+                clickId, startsAt, verifyMode, hedgeDelay, deadline, totalCts, contentGroupKey).ConfigureAwait(false);
 
             switch (batch.Outcome)
             {
@@ -281,7 +287,8 @@ public class ProfilePlayController(
         string verifyMode,
         TimeSpan hedgeDelay,
         DateTimeOffset deadline,
-        CancellationTokenSource totalCts)
+        CancellationTokenSource totalCts,
+        string? contentGroupKey)
     {
         foreach (var c in pool) startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
 
@@ -331,8 +338,9 @@ public class ProfilePlayController(
                         negativeCache.MarkFailed(r.Candidate.NzbUrl);
                         RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                             rankIndex[r.Candidate.NzbUrl],
-                            PlaybackAttemptLog.Outcome.PreVerifyDead,
+                            WatchdogEntry.Outcome.PreVerifyDead,
                             "STAT/HEAD reported article missing on every provider", startsAt, isWinner: false,
+                            contentGroupKey: contentGroupKey,
                             providerHost: AllConfiguredProvidersDisplay());
                         break;
                     case PlaybackFastVerifier.Verdict.Timeout:
@@ -352,6 +360,7 @@ public class ProfilePlayController(
                     rankIndex[best.Candidate.NzbUrl],
                     MapCommitReason(reason), CommitReasonToMessage(reason), startsAt,
                     isWinner: reason == CommitReason.Completed,
+                    contentGroupKey: contentGroupKey,
                     providerHost: best.ResponderHost);
                 if (action is not null)
                 {
@@ -359,7 +368,8 @@ public class ProfilePlayController(
                     // indexer/NNTP connections, and log them in /watchdog as Cancelled.
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
                         rankIndex, startsAt, remaining, ready, totalCts,
-                        "Winner found; loser cancelled to free provider connections");
+                        "Winner found; loser cancelled to free provider connections",
+                        contentGroupKey);
                     return (BatchOutcome.Winner, action);
                 }
                 if (reason == CommitReason.QueueFailed || reason == CommitReason.EnqueueFailed)
@@ -368,7 +378,8 @@ public class ProfilePlayController(
                 {
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
                         rankIndex, startsAt, remaining, ready, totalCts,
-                        "Client disconnected; loser cancelled");
+                        "Client disconnected; loser cancelled",
+                        contentGroupKey);
                     return (BatchOutcome.Cancelled, new EmptyResult());
                 }
                 if (reason == CommitReason.BudgetTimeout)
@@ -378,7 +389,8 @@ public class ProfilePlayController(
                     if (newNzoId.HasValue) ScheduleOrphanCleanup(newNzoId.Value);
                     CancelRemainingAndRecord(clickId, contentType, requestedTitle,
                         rankIndex, startsAt, remaining, ready, totalCts,
-                        "Budget exhausted; loser cancelled");
+                        "Budget exhausted; loser cancelled",
+                        contentGroupKey);
                     // HandleAsync converts this to a 503 + Retry-After (or a 302 if
                     // another click finished the same group in the meantime).
                     return (BatchOutcome.BudgetTimeout, null);
@@ -407,7 +419,8 @@ public class ProfilePlayController(
         List<Task<PreVerifyResult>> remaining,
         SortedList<int, PreVerifyResult> ready,
         CancellationTokenSource totalCts,
-        string reason)
+        string reason,
+        string? contentGroupKey)
     {
         if (!totalCts.IsCancellationRequested)
         {
@@ -420,7 +433,8 @@ public class ProfilePlayController(
         {
             RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                 rankIndex[r.Candidate.NzbUrl],
-                PlaybackAttemptLog.Outcome.Cancelled, reason, startsAt, isWinner: false);
+                WatchdogEntry.Outcome.Cancelled, reason, startsAt, isWinner: false,
+                contentGroupKey: contentGroupKey);
         }
 
         // Still in flight — record their cancellation in the background once they observe it.
@@ -438,7 +452,8 @@ public class ProfilePlayController(
                     var r = await t.ConfigureAwait(false);
                     RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                         localRanks[r.Candidate.NzbUrl],
-                        PlaybackAttemptLog.Outcome.Cancelled, reason, localStarts, isWinner: false);
+                        WatchdogEntry.Outcome.Cancelled, reason, localStarts, isWinner: false,
+                        contentGroupKey: contentGroupKey);
                 }
                 catch
                 {
@@ -502,14 +517,15 @@ public class ProfilePlayController(
         string contentType,
         string requestedTitle,
         int rankIndex,
-        PlaybackAttemptLog.Outcome outcome,
+        WatchdogEntry.Outcome outcome,
         string? failReason,
         Dictionary<string, DateTimeOffset> startsAt,
         bool isWinner,
+        string? contentGroupKey,
         string? providerHost = null)
     {
         var attemptedAt = startsAt.GetValueOrDefault(c.NzbUrl, DateTimeOffset.UtcNow);
-        attemptLog.Record(new PlaybackAttemptLog.Attempt
+        watchdogLog.Record(new WatchdogEntry
         {
             ClickId = clickId,
             AttemptedAt = attemptedAt,
@@ -524,6 +540,7 @@ public class ProfilePlayController(
             DurationMs = (int)Math.Max(0, (DateTimeOffset.UtcNow - attemptedAt).TotalMilliseconds),
             IsWinner = isWinner,
             ProviderHost = providerHost,
+            ContentGroupKey = contentGroupKey,
         });
     }
 
@@ -537,14 +554,14 @@ public class ProfilePlayController(
         return hosts.Count == 0 ? "—" : string.Join(", ", hosts);
     }
 
-    private static PlaybackAttemptLog.Outcome MapCommitReason(CommitReason r) => r switch
+    private static WatchdogEntry.Outcome MapCommitReason(CommitReason r) => r switch
     {
-        CommitReason.Completed => PlaybackAttemptLog.Outcome.QueueCompleted,
-        CommitReason.QueueFailed => PlaybackAttemptLog.Outcome.QueueFailed,
-        CommitReason.EnqueueFailed => PlaybackAttemptLog.Outcome.EnqueueFailed,
-        CommitReason.BudgetTimeout => PlaybackAttemptLog.Outcome.BudgetTimeout,
-        CommitReason.Cancelled => PlaybackAttemptLog.Outcome.Cancelled,
-        _ => PlaybackAttemptLog.Outcome.QueueFailed,
+        CommitReason.Completed => WatchdogEntry.Outcome.QueueCompleted,
+        CommitReason.QueueFailed => WatchdogEntry.Outcome.QueueFailed,
+        CommitReason.EnqueueFailed => WatchdogEntry.Outcome.EnqueueFailed,
+        CommitReason.BudgetTimeout => WatchdogEntry.Outcome.BudgetTimeout,
+        CommitReason.Cancelled => WatchdogEntry.Outcome.Cancelled,
+        _ => WatchdogEntry.Outcome.QueueFailed,
     };
 
     private static string? CommitReasonToMessage(CommitReason r) => r switch

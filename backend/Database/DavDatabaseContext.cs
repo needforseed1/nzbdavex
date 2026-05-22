@@ -41,6 +41,7 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
     public DbSet<DavCleanupItem> DavCleanupItems => Set<DavCleanupItem>();
     public DbSet<NzbName> NzbNames => Set<NzbName>();
     public DbSet<NzbBlobCleanupItem> NzbBlobCleanupItems => Set<NzbBlobCleanupItem>();
+    public DbSet<WatchdogEntry> WatchdogEntries => Set<WatchdogEntry>();
 
     // blob items
     public List<DavNzbFile> BlobNzbFiles = [];
@@ -525,6 +526,48 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
 
             e.Property(i => i.Id)
                 .ValueGeneratedNever();
+        });
+
+        // WatchdogEntry
+        b.Entity<WatchdogEntry>(e =>
+        {
+            e.ToTable("WatchdogEntries");
+            e.HasKey(i => i.Id);
+
+            e.Property(i => i.Id)
+                .ValueGeneratedOnAdd();
+
+            e.Property(i => i.ClickId)
+                .IsRequired();
+
+            e.Property(i => i.AttemptedAt)
+                .IsRequired()
+                .HasConversion(
+                    x => x.ToUnixTimeSeconds(),
+                    x => DateTimeOffset.FromUnixTimeSeconds(x)
+                );
+
+            e.Property(i => i.ContentType).IsRequired();
+            e.Property(i => i.RequestedTitle).IsRequired();
+            e.Property(i => i.CandidateTitle).IsRequired();
+            e.Property(i => i.IndexerName).IsRequired();
+            e.Property(i => i.Size).IsRequired();
+            e.Property(i => i.RankIndex).IsRequired();
+
+            e.Property(i => i.Result)
+                .HasConversion<int>()
+                .IsRequired();
+
+            e.Property(i => i.FailReason).IsRequired(false);
+            e.Property(i => i.DurationMs).IsRequired();
+            e.Property(i => i.IsWinner).IsRequired();
+            e.Property(i => i.ProviderHost).IsRequired(false);
+            e.Property(i => i.QueueItemId).IsRequired(false);
+            e.Property(i => i.ContentGroupKey).IsRequired(false);
+
+            e.HasIndex(i => i.AttemptedAt);
+            e.HasIndex(i => i.QueueItemId);
+            e.HasIndex(i => i.ContentGroupKey);
         });
     }
 

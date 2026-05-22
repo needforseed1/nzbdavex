@@ -3,27 +3,27 @@ import type { Route } from "./+types/route";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Form } from "react-bootstrap";
 import styles from "./route.module.css";
-import { backendClient, type PlaybackAttempt, type PlaybackAttemptOutcome } from "~/clients/backend-client.server";
+import { backendClient, type WatchdogEntry, type WatchdogOutcome } from "~/clients/backend-client.server";
 
 const POLL_INTERVAL_MS = 3000;
 
 export async function loader() {
-    const [config, attempts] = await Promise.all([
+    const [config, entries] = await Promise.all([
         backendClient.getConfig(["play.watchdog-enabled"]),
-        backendClient.getPlaybackAttempts(200),
+        backendClient.getWatchdogEntries(200),
     ]);
     const enabledRaw = config.find(x => x.configName === "play.watchdog-enabled")?.configValue ?? "true";
     const isEnabled = enabledRaw.toLowerCase() === "true";
     if (!isEnabled) {
         return redirect("/queue");
     }
-    return { attempts };
+    return { entries };
 }
 
 type FilterKey = "all" | "live" | "resolved" | "failed" | "excluded";
 
 export default function Watchdog({ loaderData }: Route.ComponentProps) {
-    const [attempts, setAttempts] = useState<PlaybackAttempt[]>(loaderData.attempts);
+    const [attempts, setAttempts] = useState<WatchdogEntry[]>(loaderData.entries);
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [filter, setFilter] = useState<FilterKey>("all");
     const [hiddenBefore, setHiddenBefore] = useState<number>(0);
@@ -36,7 +36,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
             const r = await fetch("/settings/watchdog-attempts?limit=200");
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const data = await r.json();
-            const next: PlaybackAttempt[] = data.attempts ?? [];
+            const next: WatchdogEntry[] = data.entries ?? [];
             setAttempts(prev => attemptsEqual(prev, next) ? prev : next);
             setError(null);
         } catch (e: any) {
@@ -74,7 +74,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                     <div>
                         <h2 className={styles.title}>Watchdog</h2>
                         <div className={styles.subtitle}>
-                            Live playback resolution log. Held in memory; cleared on app restart.
+                            Live playback resolution log. Persisted across restarts.
                         </div>
                     </div>
                     <div className={styles.controls}>
@@ -119,7 +119,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
             {filteredGroups.length === 0 ? (
                 <div className={styles.emptyState}>
                     {groups.length === 0
-                        ? "No playback attempts recorded yet. Click Play in your client to see live activity here."
+                        ? "No watchdog entries recorded yet. Click Play in your client to see live activity here."
                         : "No clicks match this filter."}
                 </div>
             ) : (
@@ -254,7 +254,7 @@ function StatusPill({ status }: { status: "win" | "loss" | "inflight" }) {
     return <span className={`${styles.statusPill} ${cls}`}>{label}</span>;
 }
 
-function OutcomeBadge({ outcome, winner }: { outcome: PlaybackAttemptOutcome, winner: boolean }) {
+function OutcomeBadge({ outcome, winner }: { outcome: WatchdogOutcome, winner: boolean }) {
     if (winner) return <span className={`${styles.outcomeBadge} ${styles.outcomeWin}`}>winner</span>;
     const tone = outcomeToTone(outcome);
     const cls = tone === "ok" ? styles.outcomeOk
@@ -263,7 +263,7 @@ function OutcomeBadge({ outcome, winner }: { outcome: PlaybackAttemptOutcome, wi
     return <span className={`${styles.outcomeBadge} ${cls}`}>{shortOutcome(outcome)}</span>;
 }
 
-function outcomeToTone(o: PlaybackAttemptOutcome): "ok" | "warn" | "bad" {
+function outcomeToTone(o: WatchdogOutcome): "ok" | "warn" | "bad" {
     switch (o) {
         case "QueueCompleted":
         case "PreVerifyAvailable":
@@ -277,7 +277,7 @@ function outcomeToTone(o: PlaybackAttemptOutcome): "ok" | "warn" | "bad" {
     }
 }
 
-function shortOutcome(o: PlaybackAttemptOutcome): string {
+function shortOutcome(o: WatchdogOutcome): string {
     switch (o) {
         case "QueueCompleted": return "completed";
         case "QueueFailed": return "queue failed";
@@ -299,10 +299,10 @@ type ClickGroup = {
     contentType: string,
     hasWinner: boolean,
     allResolved: boolean,
-    attempts: PlaybackAttempt[],
+    attempts: WatchdogEntry[],
 };
 
-function attemptsEqual(a: PlaybackAttempt[], b: PlaybackAttempt[]): boolean {
+function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
     if (a === b) return true;
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -319,7 +319,7 @@ function attemptsEqual(a: PlaybackAttempt[], b: PlaybackAttempt[]): boolean {
     return true;
 }
 
-function groupByClick(list: PlaybackAttempt[], hiddenBefore: number): ClickGroup[] {
+function groupByClick(list: WatchdogEntry[], hiddenBefore: number): ClickGroup[] {
     const map = new Map<string, ClickGroup>();
     for (const a of list) {
         if (a.attemptedAtUnix < hiddenBefore) continue;
@@ -349,7 +349,7 @@ function groupByClick(list: PlaybackAttempt[], hiddenBefore: number): ClickGroup
     return arr;
 }
 
-function isTerminal(a: PlaybackAttempt): boolean {
+function isTerminal(a: WatchdogEntry): boolean {
     switch (a.outcome) {
         case "QueueCompleted":
         case "QueueFailed":

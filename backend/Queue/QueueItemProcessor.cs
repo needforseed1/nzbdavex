@@ -29,7 +29,7 @@ public class QueueItemProcessor(
     ConfigManager configManager,
     WebsocketManager websocketManager,
     ProviderUsageTracker providerUsageTracker,
-    PlaybackAttemptLog playbackAttemptLog,
+    WatchdogLog watchdogLog,
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
     CancellationToken ct
@@ -410,11 +410,11 @@ public class QueueItemProcessor(
         var attemptedAt = new DateTimeOffset(startTime.ToUniversalTime(), TimeSpan.Zero);
         var durationMs = (int)Math.Max(0, (DateTime.Now - startTime).TotalMilliseconds);
         var outcome = error == null
-            ? PlaybackAttemptLog.Outcome.QueueCompleted
-            : PlaybackAttemptLog.Outcome.QueueFailed;
+            ? WatchdogEntry.Outcome.QueueCompleted
+            : WatchdogEntry.Outcome.QueueFailed;
         var providerHost = FormatProviders(providerUsage);
 
-        playbackAttemptLog.Record(new PlaybackAttemptLog.Attempt
+        watchdogLog.Record(new WatchdogEntry
         {
             ClickId = queueItem.Id,
             AttemptedAt = attemptedAt,
@@ -429,6 +429,8 @@ public class QueueItemProcessor(
             DurationMs = durationMs,
             IsWinner = error == null,
             ProviderHost = providerHost,
+            QueueItemId = queueItem.Id,
+            ContentGroupKey = queueItem.ContentGroupKey,
         });
     }
 

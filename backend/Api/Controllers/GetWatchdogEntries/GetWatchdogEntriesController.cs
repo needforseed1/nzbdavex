@@ -1,19 +1,19 @@
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Services;
 
-namespace NzbWebDAV.Api.Controllers.GetPlaybackAttempts;
+namespace NzbWebDAV.Api.Controllers.GetWatchdogEntries;
 
 [ApiController]
-[Route("api/get-playback-attempts")]
-public class GetPlaybackAttemptsController(PlaybackAttemptLog attemptLog) : BaseApiController
+[Route("api/get-watchdog-entries")]
+public class GetWatchdogEntriesController(WatchdogLog watchdogLog) : BaseApiController
 {
-    protected override Task<IActionResult> HandleRequest()
+    protected override async Task<IActionResult> HandleRequest()
     {
         var limitStr = HttpContext.Request.Query["limit"].ToString();
         var limit = int.TryParse(limitStr, out var n) ? Math.Clamp(n, 1, 500) : 200;
 
-        var recent = attemptLog.GetRecent(limit);
-        var dtos = recent.Select(a => new GetPlaybackAttemptsResponse.AttemptDto
+        var recent = await watchdogLog.GetRecentAsync(limit, HttpContext.RequestAborted).ConfigureAwait(false);
+        var dtos = recent.Select(a => new GetWatchdogEntriesResponse.EntryDto
         {
             ClickId = a.ClickId.ToString(),
             AttemptedAtUnix = a.AttemptedAt.ToUnixTimeSeconds(),
@@ -30,11 +30,10 @@ public class GetPlaybackAttemptsController(PlaybackAttemptLog attemptLog) : Base
             ProviderHost = a.ProviderHost,
         }).ToList();
 
-        IActionResult result = Ok(new GetPlaybackAttemptsResponse
+        return Ok(new GetWatchdogEntriesResponse
         {
             Status = true,
-            Attempts = dtos,
+            Entries = dtos,
         });
-        return Task.FromResult(result);
     }
 }

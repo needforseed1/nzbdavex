@@ -183,8 +183,68 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
 
     public async Task RemoveQueueItemsAsync(List<Guid> ids, CancellationToken ct = default)
     {
+        // Capture group keys before delete so we can cascade-clean orphaned
+        // watchdog attempts whose only link was via the now-gone queue item.
+        var groupKeys = await Ctx.QueueItems
+            .Where(x => ids.Contains(x.Id) && x.ContentGroupKey != null)
+            .Select(x => x.ContentGroupKey!)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+
         await Ctx.QueueItems
             .Where(x => ids.Contains(x.Id))
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+
+        await CascadeWatchdogEntriesAsync(ids, groupKeys, ct).ConfigureAwait(false);
+    }
+
+    // Delete watchdog attempts that were tied to the deleted queue/history items.
+    // - QueueItemId match: direct link (queue-processor flow).
+    // - ContentGroupKey match: orphaned group — no remaining queue or history item
+    //   still references it. Skips groups that other items still reference so we
+    //   don't nuke unrelated history when only one of several queue items is removed.
+    //
+    // excludeHistoryIds: history rows that are tracked for removal but not yet
+    // committed; they'd otherwise appear "still referenced" and block cleanup.
+    private async Task CascadeWatchdogEntriesAsync(
+        List<Guid> queueItemIds,
+        List<string> contentGroupKeys,
+        CancellationToken ct,
+        List<Guid>? excludeHistoryIds = null)
+    {
+        if (queueItemIds.Count > 0)
+        {
+            await Ctx.WatchdogEntries
+                .Where(x => x.QueueItemId != null && queueItemIds.Contains(x.QueueItemId!.Value))
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        }
+
+        if (contentGroupKeys.Count == 0) return;
+
+        var stillReferencedInQueue = await Ctx.QueueItems
+            .Where(x => x.ContentGroupKey != null && contentGroupKeys.Contains(x.ContentGroupKey!))
+            .Select(x => x.ContentGroupKey!)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var historyQuery = Ctx.HistoryItems
+            .Where(x => x.ContentGroupKey != null && contentGroupKeys.Contains(x.ContentGroupKey!));
+        if (excludeHistoryIds is { Count: > 0 })
+            historyQuery = historyQuery.Where(x => !excludeHistoryIds.Contains(x.Id));
+
+        var stillReferencedInHistory = await historyQuery
+            .Select(x => x.ContentGroupKey!)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var stillReferenced = new HashSet<string>(stillReferencedInQueue);
+        stillReferenced.UnionWith(stillReferencedInHistory);
+
+        var orphanedKeys = contentGroupKeys.Where(k => !stillReferenced.Contains(k)).ToList();
+        if (orphanedKeys.Count == 0) return;
+
+        await Ctx.WatchdogEntries
+            .Where(x => x.ContentGroupKey != null && orphanedKeys.Contains(x.ContentGroupKey!))
             .ExecuteDeleteAsync(ct).ConfigureAwait(false);
     }
 
@@ -196,6 +256,15 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
 
     public async Task RemoveHistoryItemsAsync(List<Guid> ids, bool deleteFiles, CancellationToken ct = default)
     {
+        // Capture group keys before delete so we can cascade-clean orphaned watchdog
+        // attempts below. Done up front because the deleteFiles=false path doesn't
+        // load the HistoryItem rows otherwise.
+        var groupKeys = await Ctx.HistoryItems
+            .Where(x => ids.Contains(x.Id) && x.ContentGroupKey != null)
+            .Select(x => x.ContentGroupKey!)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+
         if (deleteFiles)
         {
             var results = await (
@@ -215,15 +284,22 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
                 Id = x.Id,
                 DeleteMountedFiles = deleteFiles
             }));
-            return;
+        }
+        else
+        {
+            Ctx.HistoryItems.RemoveRange(ids.Select(id => new HistoryItem() { Id = id }));
+            Ctx.HistoryCleanupItems.AddRange(ids.Select(x => new HistoryCleanupItem
+            {
+                Id = x,
+                DeleteMountedFiles = deleteFiles
+            }));
         }
 
-        Ctx.HistoryItems.RemoveRange(ids.Select(id => new HistoryItem() { Id = id }));
-        Ctx.HistoryCleanupItems.AddRange(ids.Select(x => new HistoryCleanupItem
-        {
-            Id = x,
-            DeleteMountedFiles = deleteFiles
-        }));
+        await CascadeWatchdogEntriesAsync(
+            queueItemIds: [],
+            contentGroupKeys: groupKeys,
+            ct: ct,
+            excludeHistoryIds: ids).ConfigureAwait(false);
     }
 
     private class FileSizeResult

@@ -1,14 +1,14 @@
 using System.Text.Json.Serialization;
-using NzbWebDAV.Services;
+using NzbWebDAV.Database.Models;
 
-namespace NzbWebDAV.Api.Controllers.GetPlaybackAttempts;
+namespace NzbWebDAV.Api.Controllers.GetWatchdogEntries;
 
-public class GetPlaybackAttemptsResponse : BaseApiResponse
+public class GetWatchdogEntriesResponse : BaseApiResponse
 {
-    [JsonPropertyName("attempts")]
-    public required List<AttemptDto> Attempts { get; init; }
+    [JsonPropertyName("entries")]
+    public required List<EntryDto> Entries { get; init; }
 
-    public class AttemptDto
+    public class EntryDto
     {
         [JsonPropertyName("clickId")] public required string ClickId { get; init; }
         [JsonPropertyName("attemptedAtUnix")] public required long AttemptedAtUnix { get; init; }
@@ -20,7 +20,7 @@ public class GetPlaybackAttemptsResponse : BaseApiResponse
         [JsonPropertyName("rankIndex")] public required int RankIndex { get; init; }
         [JsonPropertyName("outcome")]
         [JsonConverter(typeof(JsonStringEnumConverter))]
-        public required PlaybackAttemptLog.Outcome Outcome { get; init; }
+        public required WatchdogEntry.Outcome Outcome { get; init; }
         [JsonPropertyName("failReason")] public string? FailReason { get; init; }
         [JsonPropertyName("durationMs")] public required int DurationMs { get; init; }
         [JsonPropertyName("isWinner")] public required bool IsWinner { get; init; }
