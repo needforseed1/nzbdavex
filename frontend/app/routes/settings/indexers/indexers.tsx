@@ -39,19 +39,26 @@ interface ConnectionDetails {
     MaxRequestsPerMinute?: number;
     EnableStrictMatching?: boolean;
     ProxyUrl?: string;
+    TimeoutSeconds?: number;
     Filter?: ResultFilter;
 }
 
 interface IndexerConfig {
     ProxyUrl?: string;
+    TimeoutSeconds?: number;
     Indexers: ConnectionDetails[];
 }
+
+// Hard fallback when neither the indexer nor the global override sets a timeout.
+// Mirrors IndexerConfig.DefaultTimeoutSeconds in the backend.
+const DEFAULT_TIMEOUT_SECONDS = 30;
 
 function parseConfig(raw: string): IndexerConfig {
     try {
         const parsed = JSON.parse(raw || "{}");
         return {
             ProxyUrl: parsed.ProxyUrl ?? "",
+            TimeoutSeconds: typeof parsed.TimeoutSeconds === "number" ? parsed.TimeoutSeconds : undefined,
             Indexers: parsed.Indexers ?? [],
         };
     } catch {
@@ -62,7 +69,15 @@ function parseConfig(raw: string): IndexerConfig {
 function serializeConfig(c: IndexerConfig): string {
     const out: IndexerConfig = { Indexers: c.Indexers };
     if (c.ProxyUrl && c.ProxyUrl.trim()) out.ProxyUrl = c.ProxyUrl.trim();
+    if (typeof c.TimeoutSeconds === "number" && c.TimeoutSeconds > 0) out.TimeoutSeconds = c.TimeoutSeconds;
     return JSON.stringify(out);
+}
+
+// Positive integer (or empty string = "use fallback"). Rejects decimals and negatives.
+function isTimeoutValid(raw: string): boolean {
+    if (!raw.trim()) return true;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 && raw.trim() === n.toString();
 }
 
 // http://host:port, https://..., optionally with user:pass@. Empty string = no proxy.
@@ -130,17 +145,27 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
         setNewConfig({ ...config, "indexers.instances": serializeConfig(next) });
     }, [config, indexerConfig, setNewConfig]);
 
+    const handleTimeoutChange = useCallback((value: string) => {
+        const trimmed = value.replace(/[^0-9]/g, "");
+        const n = trimmed === "" ? undefined : parseInt(trimmed, 10);
+        const next: IndexerConfig = { ...indexerConfig, TimeoutSeconds: n && n > 0 ? n : undefined };
+        setNewConfig({ ...config, "indexers.instances": serializeConfig(next) });
+    }, [config, indexerConfig, setNewConfig]);
+
     const proxyUrl = indexerConfig.ProxyUrl ?? "";
     const proxyValid = isProxyUrlValid(proxyUrl);
+    const globalTimeoutRaw = typeof indexerConfig.TimeoutSeconds === "number" && indexerConfig.TimeoutSeconds > 0
+        ? indexerConfig.TimeoutSeconds.toString()
+        : "";
 
     return (
         <div className={styles.container}>
             <div className={styles.section}>
                 <div className={styles.sectionHeader}>
                     <div>
-                        <div>Default Proxy</div>
+                        <div>Defaults</div>
                         <div className={styles["section-description"]}>
-                            Global HTTP(S) proxy used by indexers when a per-indexer proxy is not set.
+                            Global settings used by indexers when no per-indexer override is set.
                         </div>
                     </div>
                 </div>
@@ -153,6 +178,19 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                         placeholder="http://proxy:8888"
                         value={proxyUrl}
                         onChange={e => handleProxyChange(e.target.value)}
+                    />
+                </div>
+                <div className={styles["form-group"]}>
+                    <label htmlFor="indexers-default-timeout" className={styles["form-label"]}>
+                        Request timeout (seconds) <span className={styles["label-hint"]}>(leave blank for {DEFAULT_TIMEOUT_SECONDS}s default)</span>
+                    </label>
+                    <input
+                        type="text"
+                        id="indexers-default-timeout"
+                        className={`${styles["form-input"]} ${!isTimeoutValid(globalTimeoutRaw) ? styles.error : ""}`}
+                        placeholder={DEFAULT_TIMEOUT_SECONDS.toString()}
+                        value={globalTimeoutRaw}
+                        onChange={e => handleTimeoutChange(e.target.value)}
                     />
                 </div>
             </div>
@@ -210,6 +248,9 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
         : "Unlimited";
     const userAgent = indexer.UserAgent?.trim() ? indexer.UserAgent : "Default";
     const proxy = indexer.ProxyUrl?.trim() ? indexer.ProxyUrl : "Default";
+    const timeout = indexer.TimeoutSeconds && indexer.TimeoutSeconds > 0
+        ? `${indexer.TimeoutSeconds}s`
+        : "Default";
 
     return (
         <div className={`${styles["indexer-card"]} ${isDisabled ? styles["indexer-card-disabled"] : ""}`}>
@@ -340,6 +381,19 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
                                 <span className={styles["indexer-detail-value"]} title={indexer.ProxyUrl ?? ""}>{proxy}</span>
                             </div>
                         </div>
+
+                        <div className={styles["indexer-detail-item"]}>
+                            <div className={styles["indexer-detail-icon"]}>
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <circle cx="12" cy="12" r="10" />
+                                    <polyline points="12 6 12 12 16 14" />
+                                </svg>
+                            </div>
+                            <div className={styles["indexer-detail-content"]}>
+                                <span className={styles["indexer-detail-label"]}>Timeout</span>
+                                <span className={styles["indexer-detail-value"]}>{timeout}</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -360,6 +414,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
     const [apiKey, setApiKey] = useState("");
     const [userAgent, setUserAgent] = useState("");
     const [proxyUrl, setProxyUrl] = useState("");
+    const [timeoutSeconds, setTimeoutSeconds] = useState("");
     const [maxRpm, setMaxRpm] = useState("0");
     const [enabled, setEnabled] = useState(true);
     const [strict, setStrict] = useState(false);
@@ -389,6 +444,11 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             setApiKey(indexer?.ApiKey || "");
             setUserAgent(indexer?.UserAgent || "");
             setProxyUrl(indexer?.ProxyUrl || "");
+            setTimeoutSeconds(
+                indexer?.TimeoutSeconds && indexer.TimeoutSeconds > 0
+                    ? indexer.TimeoutSeconds.toString()
+                    : ""
+            );
             setMaxRpm((indexer?.MaxRequestsPerMinute ?? 0).toString());
             setEnabled(indexer?.Enabled ?? true);
             setStrict(indexer?.EnableStrictMatching ?? false);
@@ -404,7 +464,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         }
     }, [show, indexer]);
 
-    useEffect(() => { setTestState('idle'); }, [url, apiKey, userAgent, proxyUrl]);
+    useEffect(() => { setTestState('idle'); }, [url, apiKey, userAgent, proxyUrl, timeoutSeconds]);
 
     useEffect(() => {
         const handleEscape = (e: KeyboardEvent) => {
@@ -425,16 +485,18 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             fd.append('apiKey', apiKey);
             if (userAgent.trim()) fd.append('userAgent', userAgent);
             if (proxyUrl.trim()) fd.append('proxyUrl', proxyUrl);
+            if (timeoutSeconds.trim()) fd.append('timeoutSeconds', timeoutSeconds);
             const r = await fetch('/api/test-indexer-connection', { method: 'POST', body: fd });
             const data = await r.json();
             setTestState(data.status && data.connected ? 'success' : 'error');
         } catch {
             setTestState('error');
         }
-    }, [url, apiKey, userAgent, proxyUrl]);
+    }, [url, apiKey, userAgent, proxyUrl, timeoutSeconds]);
 
     const handleSave = useCallback(() => {
         const rpm = parseInt(maxRpm || "0", 10);
+        const timeout = parseInt(timeoutSeconds || "0", 10);
         const clampNonNegInt = (raw: string, fallback: number) => {
             const n = parseInt(raw || "0", 10);
             return Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -452,6 +514,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             Enabled: enabled,
             UserAgent: userAgent.trim() || undefined,
             ProxyUrl: proxyUrl.trim() || undefined,
+            TimeoutSeconds: Number.isFinite(timeout) && timeout > 0 ? timeout : undefined,
             MaxRequestsPerMinute: Number.isFinite(rpm) && rpm > 0 ? rpm : 0,
             EnableStrictMatching: strict,
             Filter: filterIsClean ? undefined : {
@@ -463,7 +526,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                 PreferDownloaded: filterPreferDownloaded,
             },
         });
-    }, [name, url, apiKey, userAgent, proxyUrl, maxRpm, enabled, strict,
+    }, [name, url, apiKey, userAgent, proxyUrl, timeoutSeconds, maxRpm, enabled, strict,
         filterEnabled, filterSkipPassworded, filterMinGrabs, filterGrabsGraceHours,
         filterMaxAgeDaysWithoutGrabs, filterPreferDownloaded, onSave]);
 
@@ -480,7 +543,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         return Number.isInteger(n) && n >= 0 && maxRpm.trim() === n.toString();
     })();
     const isProxyValid = isProxyUrlValid(proxyUrl);
-    const isFormValid = name.trim() !== "" && isUrlValid && apiKey.trim() !== "" && isRpmValid && isProxyValid;
+    const isTimeoutFieldValid = isTimeoutValid(timeoutSeconds);
+    const isFormValid = name.trim() !== "" && isUrlValid && apiKey.trim() !== "" && isRpmValid && isProxyValid && isTimeoutFieldValid;
 
     if (!show) return null;
 
@@ -570,6 +634,20 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                                 placeholder="0"
                                 value={maxRpm}
                                 onChange={e => setMaxRpm(e.target.value)}
+                            />
+                        </div>
+
+                        <div className={styles["form-group"]}>
+                            <label htmlFor="indexer-timeout" className={styles["form-label"]}>
+                                Request timeout (seconds) <span className={styles["label-hint"]}>(blank = use global default)</span>
+                            </label>
+                            <input
+                                type="text"
+                                id="indexer-timeout"
+                                className={`${styles["form-input"]} ${!isTimeoutFieldValid && timeoutSeconds !== "" ? styles.error : ""}`}
+                                placeholder="Use global default"
+                                value={timeoutSeconds}
+                                onChange={e => setTimeoutSeconds(e.target.value.replace(/[^0-9]/g, ""))}
                             />
                         </div>
 
@@ -784,11 +862,13 @@ export function isIndexersSettingsValid(newConfig: Record<string, string>) {
     try {
         const c = parseConfig(newConfig["indexers.instances"]);
         if (!isProxyUrlValid(c.ProxyUrl ?? "")) return false;
+        if (c.TimeoutSeconds !== undefined && (!Number.isInteger(c.TimeoutSeconds) || c.TimeoutSeconds <= 0)) return false;
         for (const i of c.Indexers) {
             if (!i.Name.trim()) return false;
             if (!i.ApiKey.trim()) return false;
             try { new URL(i.Url); } catch { return false; }
             if (!isProxyUrlValid(i.ProxyUrl ?? "")) return false;
+            if (i.TimeoutSeconds !== undefined && (!Number.isInteger(i.TimeoutSeconds) || i.TimeoutSeconds <= 0)) return false;
         }
         return true;
     } catch {

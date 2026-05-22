@@ -8,6 +8,7 @@ public class TestIndexerConnectionRequest
     public string ApiKey { get; init; }
     public string? UserAgent { get; init; }
     public string? ProxyUrl { get; init; }
+    public int? TimeoutSeconds { get; init; }
 
     public TestIndexerConnectionRequest(HttpContext context)
     {
@@ -19,5 +20,7 @@ public class TestIndexerConnectionRequest
 
         UserAgent = context.Request.Form["userAgent"].FirstOrDefault();
         ProxyUrl = context.Request.Form["proxyUrl"].FirstOrDefault();
+        var rawTimeout = context.Request.Form["timeoutSeconds"].FirstOrDefault();
+        TimeoutSeconds = int.TryParse(rawTimeout, out var t) && t > 0 ? t : null;
     }
 }

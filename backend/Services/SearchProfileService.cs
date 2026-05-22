@@ -97,8 +97,9 @@ public class SearchProfileService(
             {
                 var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
+                var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
-                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy);
+                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
                 var items = await client.QueryAsync(queryParams, ct).ConfigureAwait(false);
                 var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
                 return filtered.Select(i => new IndexerHit(x.Name, ua, i));

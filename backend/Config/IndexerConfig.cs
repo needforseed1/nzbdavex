@@ -2,11 +2,25 @@ namespace NzbWebDAV.Config;
 
 public class IndexerConfig
 {
+    // Hard default applied when neither the indexer nor the global override sets a timeout.
+    public const int DefaultTimeoutSeconds = 30;
+
     // Global HTTP(S) proxy URL applied to every indexer that doesn't set its own ProxyUrl.
     // Empty/null = no proxy. Accepts http://host:port or http://user:pass@host:port.
     public string? ProxyUrl { get; set; }
 
+    // Global per-request HTTP timeout (seconds) applied to indexers that don't set their own.
+    // null or <= 0 = fall back to DefaultTimeoutSeconds.
+    public int? TimeoutSeconds { get; set; }
+
     public List<ConnectionDetails> Indexers { get; set; } = [];
+
+    public int GetEffectiveTimeoutSeconds(ConnectionDetails indexer)
+    {
+        if (indexer.TimeoutSeconds is int per && per > 0) return per;
+        if (TimeoutSeconds is int global && global > 0) return global;
+        return DefaultTimeoutSeconds;
+    }
 
     public class ConnectionDetails
     {
@@ -19,6 +33,9 @@ public class IndexerConfig
         public bool EnableStrictMatching { get; set; } = false;
         // Per-indexer HTTP(S) proxy URL. Overrides the global ProxyUrl. Empty/null = inherit global.
         public string? ProxyUrl { get; set; }
+        // Per-indexer HTTP timeout (seconds). Overrides the global TimeoutSeconds.
+        // null or <= 0 = inherit global.
+        public int? TimeoutSeconds { get; set; }
         public ResultFilter? Filter { get; set; }
     }
 

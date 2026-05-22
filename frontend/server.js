@@ -19,7 +19,8 @@ app.use(compression({
             path.startsWith("/content") ||
             path.startsWith("/completed-symlinks") ||
             path.startsWith("/api") ||
-            path.startsWith("/p/")) {
+            path.startsWith("/p/") ||
+            path.startsWith("/adapters/")) {
             return false;
         }
         return compression.filter(req, res);

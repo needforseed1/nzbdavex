@@ -26,8 +26,9 @@ public class SearchIndexersController(ConfigManager configManager, NewznabRateLi
             {
                 var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
+                var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
-                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy);
+                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
                 var items = await client.SearchAsync(request.Query, request.Limit, ct).ConfigureAwait(false);
                 var mapped = items
                     .Where(i => !x.EnableStrictMatching || FilenameMatcher.Matches(request.Query, i.Title))

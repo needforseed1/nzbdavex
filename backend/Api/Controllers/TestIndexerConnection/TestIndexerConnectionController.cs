@@ -12,11 +12,14 @@ public class TestIndexerConnectionController(NzbWebDAV.Config.ConfigManager conf
         var request = new TestIndexerConnectionRequest(HttpContext);
         try
         {
+            var indexerConfig = configManager.GetIndexerConfig();
             var ua = string.IsNullOrWhiteSpace(request.UserAgent) ? configManager.GetUserAgent() : request.UserAgent;
             var proxy = string.IsNullOrWhiteSpace(request.ProxyUrl)
-                ? configManager.GetIndexerConfig().ProxyUrl
+                ? indexerConfig.ProxyUrl
                 : request.ProxyUrl;
-            var client = new NewznabClient(request.Url, request.ApiKey, ua, proxy);
+            var timeout = request.TimeoutSeconds
+                          ?? (indexerConfig.TimeoutSeconds is int g && g > 0 ? g : NzbWebDAV.Config.IndexerConfig.DefaultTimeoutSeconds);
+            var client = new NewznabClient(request.Url, request.ApiKey, ua, proxy, timeout);
             var ok = await client.TestAsync(HttpContext.RequestAborted).ConfigureAwait(false);
             return Ok(new TestIndexerConnectionResponse { Status = true, Connected = ok });
         }

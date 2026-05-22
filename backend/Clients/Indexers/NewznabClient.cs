@@ -4,16 +4,25 @@ using System.Xml.Linq;
 
 namespace NzbWebDAV.Clients.Indexers;
 
-public class NewznabClient(string baseUrl, string apiKey, string userAgent = "NzbDav", string? proxyUrl = null)
+public class NewznabClient(
+    string baseUrl,
+    string apiKey,
+    string userAgent = "NzbDav",
+    string? proxyUrl = null,
+    int timeoutSeconds = 30)
 {
     // One HttpClient per unique proxy URL (or "" for no proxy). Building a fresh client
     // per request would leak sockets; sharing a single static one prevents proxy changes
     // from taking effect. The cache stays small (one entry per distinct proxy).
+    // Timeout is left infinite at the HttpClient level — the actual per-request budget
+    // is enforced via a linked CancellationToken below, since the cached client is
+    // shared across indexers that may each set a different timeout.
     private static readonly ConcurrentDictionary<string, HttpClient> Clients = new();
     private static readonly XNamespace Newznab = "http://www.newznab.com/DTD/2010/feeds/attributes/";
 
     private readonly string _baseUrl = baseUrl.TrimEnd('/');
     private readonly HttpClient _http = GetClient(proxyUrl);
+    private readonly int _timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 30;
 
     private static HttpClient GetClient(string? proxyUrl)
     {
@@ -30,7 +39,7 @@ public class NewznabClient(string baseUrl, string apiKey, string userAgent = "Nz
             {
                 handler.UseProxy = false;
             }
-            return new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(30) };
+            return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
         });
     }
 
@@ -43,6 +52,20 @@ public class NewznabClient(string baseUrl, string apiKey, string userAgent = "Nz
         return uri.ToString();
     }
 
+    private async Task<T> WithTimeoutAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_timeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        try
+        {
+            return await work(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Indexer request timed out after {_timeoutSeconds}s.");
+        }
+    }
+
     private async Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
@@ -50,13 +73,16 @@ public class NewznabClient(string baseUrl, string apiKey, string userAgent = "Nz
         return await _http.SendAsync(req, ct).ConfigureAwait(false);
     }
 
-    public async Task<bool> TestAsync(CancellationToken ct = default)
+    public Task<bool> TestAsync(CancellationToken ct = default)
     {
-        var url = $"{_baseUrl}/api?t=caps&apikey={Uri.EscapeDataString(apiKey)}";
-        using var resp = await GetAsync(url, ct).ConfigureAwait(false);
-        if (!resp.IsSuccessStatusCode) return false;
-        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        return body.Contains("<caps", StringComparison.OrdinalIgnoreCase);
+        return WithTimeoutAsync(async token =>
+        {
+            var url = $"{_baseUrl}/api?t=caps&apikey={Uri.EscapeDataString(apiKey)}";
+            using var resp = await GetAsync(url, token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return false;
+            var body = await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+            return body.Contains("<caps", StringComparison.OrdinalIgnoreCase);
+        }, ct);
     }
 
     public Task<List<NewznabItem>> SearchAsync(string query, int limit, CancellationToken ct = default)
@@ -69,28 +95,31 @@ public class NewznabClient(string baseUrl, string apiKey, string userAgent = "Nz
         }, ct);
     }
 
-    public async Task<List<NewznabItem>> QueryAsync(IReadOnlyDictionary<string, string> queryParams, CancellationToken ct = default)
+    public Task<List<NewznabItem>> QueryAsync(IReadOnlyDictionary<string, string> queryParams, CancellationToken ct = default)
     {
-        var parts = new List<string>
+        return WithTimeoutAsync(async token =>
         {
-            $"apikey={Uri.EscapeDataString(apiKey)}",
-            "extended=1",
-        };
-        foreach (var (k, v) in queryParams)
-            parts.Add($"{Uri.EscapeDataString(k)}={Uri.EscapeDataString(v)}");
-        var url = $"{_baseUrl}/api?{string.Join("&", parts)}";
-        using var resp = await GetAsync(url, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        var doc = await XDocument.LoadAsync(stream, LoadOptions.None, ct).ConfigureAwait(false);
-        if (doc.Root?.Name.LocalName == "error")
-        {
-            var code = doc.Root.Attribute("code")?.Value;
-            var desc = doc.Root.Attribute("description")?.Value ?? "Indexer returned an error.";
-            throw new Exception(code is null ? desc : $"[{code}] {desc}");
-        }
-        var items = doc.Root?.Element("channel")?.Elements("item") ?? [];
-        return items.Select(ParseItem).ToList();
+            var parts = new List<string>
+            {
+                $"apikey={Uri.EscapeDataString(apiKey)}",
+                "extended=1",
+            };
+            foreach (var (k, v) in queryParams)
+                parts.Add($"{Uri.EscapeDataString(k)}={Uri.EscapeDataString(v)}");
+            var url = $"{_baseUrl}/api?{string.Join("&", parts)}";
+            using var resp = await GetAsync(url, token).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            await using var stream = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+            var doc = await XDocument.LoadAsync(stream, LoadOptions.None, token).ConfigureAwait(false);
+            if (doc.Root?.Name.LocalName == "error")
+            {
+                var code = doc.Root.Attribute("code")?.Value;
+                var desc = doc.Root.Attribute("description")?.Value ?? "Indexer returned an error.";
+                throw new Exception(code is null ? desc : $"[{code}] {desc}");
+            }
+            var items = doc.Root?.Element("channel")?.Elements("item") ?? [];
+            return items.Select(ParseItem).ToList();
+        }, ct);
     }
 
     private static NewznabItem ParseItem(XElement item)
