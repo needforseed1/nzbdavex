@@ -182,7 +182,22 @@ public class ProfilePlayController(
             {
                 var c = fallbackQueue[queueIndex];
                 queueIndex++;
-                if (negativeCache.IsFailed(c.NzbUrl)) continue;
+                if (negativeCache.IsFailed(c.NzbUrl))
+                {
+                    // Surface this in the watchdog so users see every tried candidate,
+                    // including those preflight (or a prior click) already poisoned —
+                    // otherwise the skip is invisible.
+                    var skippedRank = displayRank++;
+                    rankIndex[c.NzbUrl] = skippedRank;
+                    startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
+                    RecordAttempt(clickId, c, contentType, requestedTitle, skippedRank,
+                        WatchdogEntry.Outcome.PreVerifyDead,
+                        "Previously marked dead by preflight or earlier verify — skipped",
+                        startsAt, isWinner: false,
+                        contentGroupKey: contentGroupKey,
+                        providerHost: AllConfiguredProvidersDisplay());
+                    continue;
+                }
                 var excludeMatch = MatchExcludePattern(c.Title, excludePatterns);
                 if (excludeMatch != null)
                 {
