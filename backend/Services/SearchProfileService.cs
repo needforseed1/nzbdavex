@@ -36,7 +36,7 @@ public class SearchProfileService(
                 ["t"] = "movie",
                 ["imdbid"] = imdb,
                 ["cat"] = "2000",
-                ["limit"] = "200",
+                ["limit"] = "100",
             };
         }
         if (type == "series")
@@ -53,7 +53,7 @@ public class SearchProfileService(
                 ["season"] = season.ToString(),
                 ["ep"] = episode.ToString(),
                 ["cat"] = "5000",
-                ["limit"] = "200",
+                ["limit"] = "100",
             };
             var tvdb = await tvdbResolver.GetTvdbIdAsync(imdb, ct).ConfigureAwait(false);
             if (tvdb.HasValue) dict["tvdbid"] = tvdb.Value.ToString();
