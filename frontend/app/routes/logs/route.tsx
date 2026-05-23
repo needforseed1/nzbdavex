@@ -294,7 +294,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
                         </div>
                         <div className={styles.subtitle}>
                             Live application logs from the in-memory ring buffer.
-                            Last {capacity.toLocaleString()} entries are kept (in RAM only — not persisted across restarts).
+                            Last {capacity.toLocaleString()} entries are kept in RAM only, not persisted across restarts.
                         </div>
                     </div>
                     <div className={styles.controls}>
