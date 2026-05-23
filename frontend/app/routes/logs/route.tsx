@@ -8,7 +8,6 @@ import {
     useRef,
     useState,
 } from "react";
-import { useSearchParams } from "react-router";
 import styles from "./route.module.css";
 import { backendClient, type LogEntry, type LogLevel } from "~/clients/backend-client.server";
 import { useLogsWebsocket, type ConnectionStatus } from "./controllers/websocket-controller";
@@ -23,21 +22,28 @@ export async function loader() {
     return data;
 }
 
-export default function Logs({ loaderData }: Route.ComponentProps) {
-    const [searchParams, setSearchParams] = useSearchParams();
+// Opt out of react-router revalidation. The page already fetches its own
+// updates via WebSocket + on-filter-change; loader revalidation would just
+// double-fetch and fight with the live stream.
+export function shouldRevalidate() {
+    return false;
+}
 
-    const initialLevels = parseLevels(searchParams.get("levels"));
-    const initialSearch = searchParams.get("q") ?? "";
-    const initialSource = searchParams.get("src") ?? "";
+export default function Logs({ loaderData }: Route.ComponentProps) {
+    const initialQuery = typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams();
 
     const [entries, setEntries] = useState<LogEntry[]>(loaderData.entries);
     const [counts, setCounts] = useState<Record<string, number>>(loaderData.countsByLevel);
     const [capacity] = useState<number>(loaderData.capacity);
-    const [enabledLevels, setEnabledLevels] = useState<Set<LogLevel>>(new Set(initialLevels));
-    const [searchInput, setSearchInput] = useState<string>(initialSearch);
-    const [sourceInput, setSourceInput] = useState<string>(initialSource);
-    const [search, setSearch] = useState<string>(initialSearch);
-    const [source, setSource] = useState<string>(initialSource);
+    const [enabledLevels, setEnabledLevels] = useState<Set<LogLevel>>(
+        () => new Set(parseLevels(initialQuery.get("levels"))),
+    );
+    const [searchInput, setSearchInput] = useState<string>(initialQuery.get("q") ?? "");
+    const [sourceInput, setSourceInput] = useState<string>(initialQuery.get("src") ?? "");
+    const [search, setSearch] = useState<string>(initialQuery.get("q") ?? "");
+    const [source, setSource] = useState<string>(initialQuery.get("src") ?? "");
     const [paused, setPaused] = useState<boolean>(false);
     const [pendingCount, setPendingCount] = useState<number>(0);
     const [followTail, setFollowTail] = useState<boolean>(true);
@@ -69,20 +75,31 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
         return () => clearTimeout(t);
     }, [sourceInput]);
 
-    // sync URL state
+    // sync URL state — using history.replaceState directly so we don't trigger
+    // react-router navigation/revalidation (which was causing render loops).
+    const didMountRef = useRef(false);
     useEffect(() => {
+        if (typeof window === "undefined") return;
         const next = new URLSearchParams();
         if (enabledLevels.size > 0 && !sameLevels(enabledLevels, DEFAULT_LEVELS)) {
             next.set("levels", [...enabledLevels].join(","));
         }
         if (search) next.set("q", search);
         if (source) next.set("src", source);
-        setSearchParams(next, { replace: true });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        const qs = next.toString();
+        const target = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+        if (target !== `${window.location.pathname}${window.location.search}`) {
+            window.history.replaceState(null, "", target);
+        }
     }, [enabledLevels, search, source]);
 
-    // refetch when filters change
+    // refetch when filters change — but skip the very first render, since the
+    // loader already provided the initial unfiltered set.
     useEffect(() => {
+        if (!didMountRef.current) {
+            didMountRef.current = true;
+            return;
+        }
         let cancelled = false;
         const params = new URLSearchParams();
         params.set("limit", String(INITIAL_LIMIT));
@@ -155,18 +172,26 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
 
     useLogsWebsocket(onBatch, setConnection);
 
-    // smart auto-scroll: detect when the user scrolls up to disengage follow
+    // smart auto-scroll: detect when the user scrolls up to disengage follow.
+    // Programmatic scrolls (scrollToBottom) set a suppression flag so the
+    // resulting scroll event doesn't bounce followTail.
+    const suppressScrollRef = useRef(false);
     const handleScroll = useCallback(() => {
+        if (suppressScrollRef.current) {
+            suppressScrollRef.current = false;
+            return;
+        }
         const el = listRef.current;
         if (!el) return;
         const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        const near = distanceFromBottom < 24;
+        const near = distanceFromBottom < 48;
         setFollowTail(prev => (prev !== near ? near : prev));
     }, []);
 
     function scrollToBottom() {
         const el = listRef.current;
         if (!el) return;
+        suppressScrollRef.current = true;
         el.scrollTop = el.scrollHeight;
     }
 
