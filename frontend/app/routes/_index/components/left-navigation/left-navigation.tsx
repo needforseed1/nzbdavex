@@ -36,6 +36,10 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
                 <div className={styles["health-icon"]} />
                 <div className={styles.title}>Health</div>
             </Item>
+            <Item target="/logs">
+                <div className={styles["logs-icon"]} />
+                <div className={styles.title}>Logs</div>
+            </Item>
             <Item target="/search">
                 <div className={styles["search-icon"]} />
                 <div className={styles.title}>Search</div>

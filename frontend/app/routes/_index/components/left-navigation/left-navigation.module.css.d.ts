@@ -7,6 +7,7 @@ declare const styles: {
   readonly "github-link": string;
   readonly "github-icon": string;
   readonly "health-icon": string;
+  readonly "logs-icon": string;
   readonly "item": string;
   readonly "logout-icon": string;
   readonly "queue-icon": string;

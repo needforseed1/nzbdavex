@@ -304,6 +304,22 @@ class BackendClient {
         }
         return await response.json();
     }
+
+    public async getLogs(params: GetLogsParams = {}): Promise<GetLogsResponse> {
+        const qs = new URLSearchParams();
+        if (params.limit !== undefined) qs.set("limit", String(params.limit));
+        if (params.levels && params.levels.length > 0) qs.set("levels", params.levels.join(","));
+        if (params.source) qs.set("source", params.source);
+        if (params.search) qs.set("search", params.search);
+        if (params.beforeSequence !== undefined) qs.set("beforeSequence", String(params.beforeSequence));
+        const url = `${process.env.BACKEND_URL}/api/get-logs${qs.toString() ? `?${qs.toString()}` : ""}`;
+        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to get logs: ${(await response.json()).error}`);
+        }
+        return await response.json();
+    }
 }
 
 export const backendClient = new BackendClient();
@@ -593,4 +609,37 @@ export type LiveStatsMessage = {
     errorsPerMinute: number,
     bytesServedPerMinute: number,
     ts: number,
+}
+
+export type LogLevel = "Verbose" | "Debug" | "Information" | "Warning" | "Error" | "Fatal";
+
+export type LogEntry = {
+    seq: number,
+    ts: number,
+    level: LogLevel,
+    msg: string,
+    source: string | null,
+    exception: string | null,
+}
+
+export type GetLogsParams = {
+    limit?: number,
+    levels?: LogLevel[],
+    source?: string,
+    search?: string,
+    beforeSequence?: number,
+}
+
+export type GetLogsResponse = {
+    status: boolean,
+    error?: string,
+    entries: LogEntry[],
+    countsByLevel: Record<string, number>,
+    oldestSequence: number,
+    newestSequence: number,
+    capacity: number,
+}
+
+export type LogBroadcastMessage = {
+    entries: LogEntry[],
 }
