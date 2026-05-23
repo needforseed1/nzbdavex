@@ -5,13 +5,6 @@ declare const styles: {
   readonly "sectionDescription": string;
   readonly "input": string;
   readonly "hint": string;
-  readonly "patternInput": string;
-  readonly "patternInputInvalid": string;
-  readonly "patternErrors": string;
-  readonly "patternError": string;
-  readonly "patternErrorLine": string;
-  readonly "patternErrorPattern": string;
-  readonly "patternErrorMessage": string;
   readonly "attemptsHeader": string;
   readonly "errorBox": string;
   readonly "clickGroup": string;

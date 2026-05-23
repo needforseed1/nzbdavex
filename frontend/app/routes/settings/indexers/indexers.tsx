@@ -1,4 +1,4 @@
-import { Button, Spinner } from "react-bootstrap";
+import { Button, Form, Spinner } from "react-bootstrap";
 import styles from "./indexers.module.css";
 import { type Dispatch, type SetStateAction, useState, useCallback, useEffect, useMemo } from "react";
 
@@ -52,6 +52,23 @@ interface IndexerConfig {
 // Hard fallback when neither the indexer nor the global override sets a timeout.
 // Mirrors IndexerConfig.DefaultTimeoutSeconds in the backend.
 const DEFAULT_TIMEOUT_SECONDS = 30;
+
+type PatternIssue = { line: number, pattern: string, error: string };
+
+function validateExcludePatterns(raw: string): PatternIssue[] {
+    const issues: PatternIssue[] = [];
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+        try {
+            new RegExp(trimmed, "i");
+        } catch (e: any) {
+            issues.push({ line: i + 1, pattern: trimmed, error: e?.message ?? "invalid regex" });
+        }
+    }
+    return issues;
+}
 
 function parseConfig(raw: string): IndexerConfig {
     try {
@@ -152,6 +169,12 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
         setNewConfig({ ...config, "indexers.instances": serializeConfig(next) });
     }, [config, indexerConfig, setNewConfig]);
 
+    const excludePatterns = config["search.exclude-patterns"] ?? "";
+    const patternIssues = useMemo(() => validateExcludePatterns(excludePatterns), [excludePatterns]);
+    const handleExcludePatternsChange = useCallback((value: string) => {
+        setNewConfig({ ...config, "search.exclude-patterns": value });
+    }, [config, setNewConfig]);
+
     const proxyUrl = indexerConfig.ProxyUrl ?? "";
     const proxyValid = isProxyUrlValid(proxyUrl);
     const globalTimeoutRaw = typeof indexerConfig.TimeoutSeconds === "number" && indexerConfig.TimeoutSeconds > 0
@@ -193,6 +216,38 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             value={globalTimeoutRaw}
                             onChange={e => handleTimeoutChange(e.target.value)}
                         />
+                    </div>
+
+                    <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <label htmlFor="indexers-exclude-patterns" className={styles["form-label"]}>
+                            Exclude result patterns <span className={styles["label-hint"]}>(applies to every indexer)</span>
+                        </label>
+                        <Form.Control
+                            as="textarea"
+                            id="indexers-exclude-patterns"
+                            rows={6}
+                            spellCheck={false}
+                            className={`${styles["form-input"]} ${styles["pattern-input"]} ${patternIssues.length > 0 ? styles.error : ""}`}
+                            placeholder={"# one regex per line\n# lines starting with # are comments"}
+                            value={excludePatterns}
+                            onChange={e => handleExcludePatternsChange(e.target.value)} />
+                        {patternIssues.length > 0 && (
+                            <div className={styles["pattern-errors"]}>
+                                {patternIssues.map((iss, i) => (
+                                    <div key={i} className={styles["pattern-error"]}>
+                                        <span className={styles["pattern-error-line"]}>Line {iss.line}</span>
+                                        <code className={styles["pattern-error-pattern"]}>{iss.pattern}</code>
+                                        <span className={styles["pattern-error-message"]}>— {iss.error}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <p className={styles["pattern-hint"]}>
+                            One JavaScript-style regex per line. Search results whose title matches any pattern
+                            are dropped before being returned. Case-insensitive by default — use <code>(?-i:Foo)</code> for
+                            case-sensitive. Lines starting with <code>#</code> are comments. Use this to skip
+                            releases your setup can't handle, whatever the reason.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -857,7 +912,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
 }
 
 export function isIndexersSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["indexers.instances"] !== newConfig["indexers.instances"];
+    return config["indexers.instances"] !== newConfig["indexers.instances"]
+        || (config["search.exclude-patterns"] ?? "") !== (newConfig["search.exclude-patterns"] ?? "");
 }
 
 export function isIndexersSettingsValid(newConfig: Record<string, string>) {
@@ -872,6 +928,7 @@ export function isIndexersSettingsValid(newConfig: Record<string, string>) {
             if (!isProxyUrlValid(i.ProxyUrl ?? "")) return false;
             if (i.TimeoutSeconds !== undefined && (!Number.isInteger(i.TimeoutSeconds) || i.TimeoutSeconds <= 0)) return false;
         }
+        if (validateExcludePatterns(newConfig["search.exclude-patterns"] ?? "").length > 0) return false;
         return true;
     } catch {
         return false;

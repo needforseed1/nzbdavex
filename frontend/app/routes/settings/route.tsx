@@ -10,7 +10,7 @@ import { isIndexersSettingsUpdated, isIndexersSettingsValid, IndexersSettings } 
 import { isProfilesSettingsUpdated, isProfilesSettingsValid, ProfilesSettings } from "./profiles/profiles";
 import { isMaintenanceSettingsUpdated, Maintenance } from "./maintenance/maintenance";
 import { isRepairsSettingsUpdated, RepairsSettings } from "./repairs/repairs";
-import { isWatchdogSettingsUpdated, isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
+import { isWatchdogSettingsUpdated, WatchdogSettings } from "./watchdog/watchdog";
 import { isPreflightSettingsUpdated, PreflightSettings } from "./preflight/preflight";
 import { isRcloneSettingsUpdated, RcloneSettings } from "./rclone/rclone";
 import { useCallback, useState, type ReactNode } from "react";
@@ -55,7 +55,7 @@ const defaultConfig = {
     "play.max-attempts": "10",
     "play.verify-mode": "none",
     "play.candidate-negative-cache-minutes": "5",
-    "play.exclude-patterns": "",
+    "search.exclude-patterns": "",
     "variants.mode": "off",
     "variants.tolerance-pct": "25",
     "variants.max-per-group": "3",
@@ -141,7 +141,6 @@ function Body(props: BodyProps) {
         : isArrsUpdated && !isArrsSettingsValid(newConfig) ? "Invalid Arrs settings"
         : isIndexersUpdated && !isIndexersSettingsValid(newConfig) ? "Invalid Indexers settings"
         : isProfilesUpdated && !isProfilesSettingsValid(newConfig) ? "Invalid Search Profiles settings"
-        : isWatchdogUpdated && !isWatchdogSettingsValid(newConfig) ? "Invalid Watchdog regex"
         : "Save";
     const saveButtonVariant = saveButtonLabel === "Save" ? "primary"
         : saveButtonLabel === "Saved ✅" ? "success"

@@ -242,13 +242,10 @@ public class ConfigManager
         return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(30);
     }
 
-    // Newline-separated regex patterns. Candidates whose title matches ANY pattern are
-    // skipped before NZB fetch. Case-insensitive by default — use inline (?-i:...) for
-    // case-sensitive. Lines starting with '#' are comments. Malformed patterns are
-    // dropped (the settings UI rejects them at save time, this is defense in depth).
-    public IReadOnlyList<Regex> GetPlayExcludePatterns()
+    public IReadOnlyList<Regex> GetSearchExcludePatterns()
     {
-        var raw = GetConfigValue("play.exclude-patterns");
+        var raw = GetConfigValue("search.exclude-patterns");
+        if (string.IsNullOrWhiteSpace(raw)) raw = GetConfigValue("play.exclude-patterns");
         if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<Regex>();
 
         var patterns = new List<Regex>();
@@ -265,7 +262,7 @@ public class ConfigManager
             }
             catch (ArgumentException e)
             {
-                Log.Warning("Skipping invalid play.exclude-patterns regex {Pattern}: {Message}", trimmed, e.Message);
+                Log.Warning("Skipping invalid search.exclude-patterns regex {Pattern}: {Message}", trimmed, e.Message);
             }
         }
         return patterns;

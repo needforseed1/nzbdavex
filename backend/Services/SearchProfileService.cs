@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
 using NzbWebDAV.Extensions;
@@ -114,9 +115,12 @@ public class SearchProfileService(
 
         var anyPreferDownloaded = indexers.Any(x => x.Filter is { Enabled: true, PreferDownloaded: true });
 
+        var excludePatterns = configManager.GetSearchExcludePatterns();
+
         var dedupedQuery = perIndexer
             .SelectMany(x => x)
             .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
+            .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
             .GroupBy(x => x.Item.NzbUrl)
             .Select(g => g.First());
 
@@ -196,6 +200,23 @@ public class SearchProfileService(
             Candidates = Array.Empty<NzbResolutionCache.Candidate>(),
             PlayTokens = Array.Empty<string>(),
         };
+
+    private static bool MatchesExcludePattern(string? title, IReadOnlyList<Regex> patterns)
+    {
+        if (patterns.Count == 0 || string.IsNullOrEmpty(title)) return false;
+        foreach (var p in patterns)
+        {
+            try
+            {
+                if (p.IsMatch(title)) return true;
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                Log.Warning("Search exclude pattern {Pattern} timed out matching title {Title}", p, title);
+            }
+        }
+        return false;
+    }
 
     private static string? StripImdbPrefix(string id)
     {

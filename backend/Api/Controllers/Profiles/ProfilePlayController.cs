@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.Controllers.GetWebdavItem;
@@ -110,7 +109,6 @@ public class ProfilePlayController(
         var verifyMode = configManager.GetPlayVerifyMode();
         var verifySampleCount = configManager.GetPlayVerifySampleCount();
         var watchdogEnabled = configManager.IsPlaybackWatchdogEnabled();
-        var excludePatterns = configManager.GetPlayExcludePatterns();
 
         using var totalCts = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
         totalCts.CancelAfter(totalBudget);
@@ -126,18 +124,6 @@ public class ProfilePlayController(
         // Watchdog OFF → simple single-candidate flow (no auto-fallback, no pre-verify, no negative cache).
         if (!watchdogEnabled)
         {
-            var primaryExcludeMatch = MatchExcludePattern(entry.Primary.Title, excludePatterns);
-            if (primaryExcludeMatch != null)
-            {
-                startsAt[entry.Primary.NzbUrl] = DateTimeOffset.UtcNow;
-                RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
-                    WatchdogEntry.Outcome.ExcludedByPattern,
-                    $"Matched exclude pattern: {primaryExcludeMatch}", startsAt, isWinner: false,
-                    contentGroupKey: contentGroupKey);
-                return await ResolveExistingOrErrorAsync(entry, 503,
-                    "Release excluded by your filter. Adjust patterns in Settings → Watchdog.",
-                    60, HttpContext.RequestAborted).ConfigureAwait(false);
-            }
             startsAt[entry.Primary.NzbUrl] = DateTimeOffset.UtcNow;
             var nzbBytes = await FetchNzbBytesAsync(entry.Primary, totalCts.Token).ConfigureAwait(false);
             if (nzbBytes is null)
@@ -169,7 +155,6 @@ public class ProfilePlayController(
         var queueIndex = 0;
         var attemptsUsed = 0;
         var sawAnyBatch = false;
-        var excludedCount = 0;
 
         while (attemptsUsed < maxAttempts && queueIndex < fallbackQueue.Count)
         {
@@ -212,19 +197,6 @@ public class ProfilePlayController(
                         providerHost: AllConfiguredProvidersDisplay());
                     continue;
                 }
-                var excludeMatch = MatchExcludePattern(c.Title, excludePatterns);
-                if (excludeMatch != null)
-                {
-                    var excludedRank = displayRank++;
-                    rankIndex[c.NzbUrl] = excludedRank;
-                    startsAt[c.NzbUrl] = DateTimeOffset.UtcNow;
-                    RecordAttempt(clickId, c, contentType, requestedTitle, excludedRank,
-                        WatchdogEntry.Outcome.ExcludedByPattern,
-                        $"Matched exclude pattern: {excludeMatch}", startsAt, isWinner: false,
-                        contentGroupKey: contentGroupKey);
-                    excludedCount++;
-                    continue;
-                }
                 rankIndex[c.NzbUrl] = displayRank++;
                 pool.Add(c);
             }
@@ -252,10 +224,8 @@ public class ProfilePlayController(
 
         if (!sawAnyBatch)
         {
-            var msg = excludedCount > 0
-                ? "All candidates excluded by your filters. Adjust patterns in Settings → Watchdog."
-                : "All ranked candidates recently failed; try again shortly.";
-            return await ResolveExistingOrErrorAsync(entry, 503, msg, 5,
+            return await ResolveExistingOrErrorAsync(entry, 503,
+                "All ranked candidates recently failed; try again shortly.", 5,
                 HttpContext.RequestAborted).ConfigureAwait(false);
         }
 
@@ -283,24 +253,6 @@ public class ProfilePlayController(
         queue.AddRange(others.Where(c => c.Size > primary.Size).OrderBy(c => c.Size));
 
         return queue;
-    }
-
-    private static string? MatchExcludePattern(string title, IReadOnlyList<Regex> patterns)
-    {
-        if (patterns.Count == 0 || string.IsNullOrEmpty(title)) return null;
-        foreach (var p in patterns)
-        {
-            try
-            {
-                if (p.IsMatch(title)) return p.ToString();
-            }
-            catch (RegexMatchTimeoutException)
-            {
-                // Pathological input; skip this pattern but don't block playback.
-                Log.Warning("Exclude pattern {Pattern} timed out matching title {Title}", p, title);
-            }
-        }
-        return null;
     }
 
     private enum BatchOutcome { Winner, AllFailed, Cancelled, BudgetTimeout }

@@ -32,61 +32,6 @@
     margin-bottom: 0;
 }
 
-.patternInput {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
-    font-size: 12.5px;
-    line-height: 1.45;
-    resize: vertical;
-    min-height: 110px;
-}
-
-.patternInputInvalid {
-    border-color: rgba(239, 68, 68, 0.6);
-}
-
-.patternInputInvalid:focus {
-    border-color: rgba(239, 68, 68, 0.85);
-    box-shadow: 0 0 0 0.15rem rgba(239, 68, 68, 0.18);
-}
-
-.patternErrors {
-    margin-top: 6px;
-    padding: 8px 10px;
-    background-color: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.35);
-    border-radius: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.patternError {
-    font-size: 12px;
-    color: var(--text-primary);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: baseline;
-}
-
-.patternErrorLine {
-    color: #ef4444;
-    font-weight: 600;
-    flex-shrink: 0;
-}
-
-.patternErrorPattern {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    background: rgba(239, 68, 68, 0.12);
-    padding: 1px 5px;
-    border-radius: 3px;
-    color: #ef4444;
-}
-
-.patternErrorMessage {
-    color: var(--text-muted);
-}
-
 .attemptsHeader {
     display: flex;
     justify-content: space-between;

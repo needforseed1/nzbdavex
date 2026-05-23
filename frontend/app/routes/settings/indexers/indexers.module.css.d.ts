@@ -42,6 +42,13 @@ declare const styles: {
   readonly "label-hint": string;
   readonly "form-input": string;
   readonly "error": string;
+  readonly "pattern-input": string;
+  readonly "pattern-errors": string;
+  readonly "pattern-error": string;
+  readonly "pattern-error-line": string;
+  readonly "pattern-error-pattern": string;
+  readonly "pattern-error-message": string;
+  readonly "pattern-hint": string;
   readonly "form-checkbox-wrapper": string;
   readonly "form-checkbox": string;
   readonly "form-checkbox-label": string;
