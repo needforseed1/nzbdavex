@@ -660,7 +660,7 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
                                 type="text"
                                 id="provider-nickname"
                                 className={styles["form-input"]}
-                                placeholder="e.g. Eweka — Main"
+                                placeholder="e.g. Main provider"
                                 value={nickname}
                                 onChange={(e) => setNickname(e.target.value)}
                             />
