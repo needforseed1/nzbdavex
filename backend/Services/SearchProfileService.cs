@@ -204,11 +204,12 @@ public class SearchProfileService(
     private static bool MatchesExcludePattern(string? title, IReadOnlyList<Regex> patterns)
     {
         if (patterns.Count == 0 || string.IsNullOrEmpty(title)) return false;
+        var normalized = title.Replace('_', '.');
         foreach (var p in patterns)
         {
             try
             {
-                if (p.IsMatch(title)) return true;
+                if (p.IsMatch(normalized)) return true;
             }
             catch (RegexMatchTimeoutException)
             {
