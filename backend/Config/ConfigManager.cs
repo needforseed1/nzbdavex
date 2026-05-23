@@ -258,7 +258,7 @@ public class ConfigManager
                 patterns.Add(new Regex(
                     trimmed,
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
-                    TimeSpan.FromMilliseconds(50)));
+                    TimeSpan.FromMilliseconds(250)));
             }
             catch (ArgumentException e)
             {
