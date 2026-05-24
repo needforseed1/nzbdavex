@@ -12,6 +12,7 @@ public class SearchProfileService(
     NzbResolutionCache cache,
     NewznabRateLimiter rateLimiter,
     TvdbIdResolver tvdbResolver,
+    ExternalIdResolver externalResolver,
     PreflightOrchestrator preflightOrchestrator)
 {
     public ProfileConfig.Profile? GetProfile(string token)
@@ -28,8 +29,13 @@ public class SearchProfileService(
     public async Task<IReadOnlyDictionary<string, string>?> BuildImdbQueryAsync(
         string type, string id, CancellationToken ct)
     {
+        var externalProvider = GetExternalProvider(id);
+
         if (type == "movie")
         {
+            if (externalProvider is not null)
+                return await BuildExternalMovieQueryAsync(externalProvider, id, ct).ConfigureAwait(false);
+
             var imdb = StripImdbPrefix(id);
             if (imdb is null) return null;
             return new Dictionary<string, string>
@@ -42,6 +48,9 @@ public class SearchProfileService(
         }
         if (type == "series")
         {
+            if (externalProvider is not null)
+                return await BuildExternalSeriesQueryAsync(externalProvider, id, ct).ConfigureAwait(false);
+
             var parts = id.Split(':');
             if (parts.Length < 3) return null;
             var imdb = StripImdbPrefix(parts[0]);
@@ -61,6 +70,82 @@ public class SearchProfileService(
             else dict["imdbid"] = imdb;
             return dict;
         }
+        return null;
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> BuildExternalMovieQueryAsync(string provider, string id, CancellationToken ct)
+    {
+        var parts = id.Split(':');
+        if (parts.Length < 2) return null;
+        if (!long.TryParse(parts[1], out var externalId)) return null;
+        var mapping = await externalResolver.ResolveAsync(provider, externalId, ct).ConfigureAwait(false);
+        var imdb = mapping?.ImdbId is { } i ? StripImdbPrefix(i) : null;
+        if (imdb is null) return null;
+        return new Dictionary<string, string>
+        {
+            ["t"] = "movie",
+            ["imdbid"] = imdb,
+            ["cat"] = "2000,2070",
+            ["limit"] = "100",
+        };
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> BuildExternalSeriesQueryAsync(string provider, string id, CancellationToken ct)
+    {
+        var parts = id.Split(':');
+        if (parts.Length < 2) return null;
+        if (!long.TryParse(parts[1], out var externalId)) return null;
+        var mapping = await externalResolver.ResolveAsync(provider, externalId, ct).ConfigureAwait(false);
+        if (mapping is null) return null;
+
+        // <provider>:ID, <provider>:ID:EP, <provider>:ID:SEASON:EP
+        int season = mapping.Season;
+        int? episode = null;
+        if (parts.Length == 3 && int.TryParse(parts[2], out var ep))
+        {
+            episode = ep;
+        }
+        else if (parts.Length >= 4 && int.TryParse(parts[2], out var s) && int.TryParse(parts[3], out var ep2))
+        {
+            if (s > 0) season = s;
+            episode = ep2;
+        }
+
+        // films sometimes arrive on the series endpoint — treat as movies regardless of any episode component
+        if (mapping.IsMovie)
+        {
+            var imdb = mapping.ImdbId is { } i ? StripImdbPrefix(i) : null;
+            if (imdb is null) return null;
+            return new Dictionary<string, string>
+            {
+                ["t"] = "movie",
+                ["imdbid"] = imdb,
+                ["cat"] = "2000,2070",
+                ["limit"] = "100",
+            };
+        }
+
+        if (episode is null) return null;
+
+        var dict = new Dictionary<string, string>
+        {
+            ["t"] = "tvsearch",
+            ["season"] = season.ToString(),
+            ["ep"] = episode.Value.ToString(),
+            ["cat"] = "5000,5070",
+            ["limit"] = "100",
+        };
+        if (mapping.TvdbId is { } tvdb) dict["tvdbid"] = tvdb.ToString();
+        else if (mapping.ImdbId is { } imdb && StripImdbPrefix(imdb) is { } imdbDigits) dict["imdbid"] = imdbDigits;
+        else return null;
+        return dict;
+    }
+
+    private static string? GetExternalProvider(string id)
+    {
+        if (id.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase)) return "kitsu";
+        if (id.StartsWith("mal:", StringComparison.OrdinalIgnoreCase)) return "mal";
+        if (id.StartsWith("anilist:", StringComparison.OrdinalIgnoreCase)) return "anilist";
         return null;
     }
 

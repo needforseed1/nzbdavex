@@ -127,6 +127,7 @@ class Program
             .AddSingleton<PreflightOrchestrator>()
             .AddSingleton<NewznabRateLimiter>()
             .AddSingleton<TvdbIdResolver>()
+            .AddSingleton<ExternalIdResolver>()
             .AddSingleton<SearchProfileService>()
             .AddSingleton<VariantResolver>()
             .AddSingleton<MetricsWriter>()
