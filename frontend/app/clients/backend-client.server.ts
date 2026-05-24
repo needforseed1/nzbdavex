@@ -529,6 +529,7 @@ export type OverviewStatsResponse = {
     },
     errors: ErrorSlice[],
     indexers: IndexerRow[],
+    indexerApiUsage: IndexerApiUsageRow[],
     lifetime: {
         bytesFetched: number,
         bytesRead: number,
@@ -588,6 +589,16 @@ export type IndexerRow = {
     bytesCompleted: number,
     avgSeconds: number,
     successRate: number,
+}
+
+export type IndexerApiUsageRow = {
+    name: string,
+    apiHits: number,
+    apiHitLimit: number | null,
+    downloadHits: number,
+    downloadHitLimit: number | null,
+    resetAtMs: number,
+    resetHourUtc: number | null,
 }
 
 export type ActiveReadsMessage = {

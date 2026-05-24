@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Utils;
 using Serilog;
@@ -11,6 +12,7 @@ public class SearchProfileService(
     ConfigManager configManager,
     NzbResolutionCache cache,
     NewznabRateLimiter rateLimiter,
+    IndexerHitTracker hitTracker,
     TvdbIdResolver tvdbResolver,
     ExternalIdResolver externalResolver,
     PreflightOrchestrator preflightOrchestrator)
@@ -181,12 +183,23 @@ public class SearchProfileService(
         {
             try
             {
+                var hitCheck = await hitTracker
+                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                    .ConfigureAwait(false);
+                if (hitCheck is { Allowed: false })
+                {
+                    Log.Information("Indexer {Indexer} skipped: {Reason}",
+                        x.Name, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Search));
+                    return Enumerable.Empty<IndexerHit>();
+                }
+
                 var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
                 var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
                 var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
                 var items = await client.QueryAsync(queryParams, ct).ConfigureAwait(false);
+                _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
                 var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
                 return filtered.Select(i => new IndexerHit(x.Name, ua, proxy, i));
             }

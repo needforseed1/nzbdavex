@@ -1,0 +1,148 @@
+.container {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.tableWrap {
+    overflow-x: auto;
+    margin: 0 -20px;
+    padding: 0 20px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.header {
+    margin-bottom: 14px;
+}
+
+.title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+}
+
+.sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 30px 0;
+}
+
+.table {
+    width: 100%;
+    min-width: 560px;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.table thead th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.table tbody td {
+    padding: 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    vertical-align: middle;
+}
+
+.table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.barCol {
+    width: 30%;
+    min-width: 180px;
+}
+
+.resetCol {
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.nameCell {
+    font-weight: 500;
+    color: var(--text-primary);
+    max-width: 220px;
+}
+
+.nameInner {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.usageRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.usageBar {
+    position: relative;
+    flex: 1;
+    height: 8px;
+    background: var(--bg-surface);
+    border-radius: 4px;
+    overflow: hidden;
+    min-width: 80px;
+}
+
+.usageFill,
+.usageFillNear,
+.usageFillOver {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 4px;
+    transition: width 200ms ease;
+}
+
+.usageFill {
+    background: var(--success);
+    opacity: 0.55;
+}
+
+.usageFillNear {
+    background: var(--warning, #d9a441);
+    opacity: 0.7;
+}
+
+.usageFillOver {
+    background: var(--danger-muted);
+    opacity: 0.8;
+}
+
+.usageText {
+    font-size: 12px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.usageMuted {
+    color: var(--text-muted);
+}

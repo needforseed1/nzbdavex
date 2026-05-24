@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models;
 using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 
@@ -9,7 +10,10 @@ namespace NzbWebDAV.Api.Controllers.SearchIndexers;
 
 [ApiController]
 [Route("api/search-indexers")]
-public class SearchIndexersController(ConfigManager configManager, NewznabRateLimiter rateLimiter) : BaseApiController
+public class SearchIndexersController(
+    ConfigManager configManager,
+    NewznabRateLimiter rateLimiter,
+    IndexerHitTracker hitTracker) : BaseApiController
 {
     protected override async Task<IActionResult> HandleRequest()
     {
@@ -24,12 +28,27 @@ public class SearchIndexersController(ConfigManager configManager, NewznabRateLi
             var sw = Stopwatch.StartNew();
             try
             {
+                var hitCheck = await hitTracker
+                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                    .ConfigureAwait(false);
+                if (hitCheck is { Allowed: false })
+                {
+                    return (Status: new SearchIndexersResponse.IndexerStatus
+                    {
+                        Name = x.Name,
+                        Ok = false,
+                        Error = IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Search),
+                        ElapsedMs = sw.ElapsedMilliseconds,
+                    }, Results: new List<SearchIndexersResponse.Result>());
+                }
+
                 var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
                 var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
                 var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
                 var items = await client.SearchAsync(request.Query, request.Limit, ct).ConfigureAwait(false);
+                _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
                 var mapped = items
                     .Where(i => !x.EnableStrictMatching || FilenameMatcher.Matches(request.Query, i.Title))
                     .Select(i => new SearchIndexersResponse.Result

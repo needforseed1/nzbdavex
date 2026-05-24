@@ -13,6 +13,7 @@ import { LatencyHistogram } from "./components/latency-histogram/latency-histogr
 import { ErrorDonut } from "./components/error-donut/error-donut";
 import { ProviderScoreboard } from "./components/provider-scoreboard/provider-scoreboard";
 import { IndexerScoreboard } from "./components/indexer-scoreboard/indexer-scoreboard";
+import { IndexerApiUsage } from "./components/indexer-api-usage/indexer-api-usage";
 import { SessionsBlock } from "./components/sessions-block/sessions-block";
 import { CatalogueBlock } from "./components/catalogue-block/catalogue-block";
 import { LifetimeBlock } from "./components/lifetime-block/lifetime-block";
@@ -43,6 +44,7 @@ const DEFAULT_ROW_ORDER = [
     "errorsSessions",
     "providers",
     "indexers",
+    "indexerApiUsage",
     "recordsCatalogue",
     "lifetime",
 ] as const;
@@ -151,6 +153,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         ),
         providers: <ProviderScoreboard providers={stats.providers} window={window} />,
         indexers: <IndexerScoreboard indexers={stats.indexers} />,
+        indexerApiUsage: <IndexerApiUsage rows={stats.indexerApiUsage} />,
         recordsCatalogue: (
             <div className={styles.twoCol}>
                 <RecordsBlock records={stats.records} />

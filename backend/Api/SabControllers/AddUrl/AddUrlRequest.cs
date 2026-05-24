@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.Http;
 using NzbWebDAV.Api.SabControllers.AddFile;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
+using Serilog;
 
 namespace NzbWebDAV.Api.SabControllers.AddUrl;
 
@@ -11,13 +14,32 @@ public class AddUrlRequest() : AddFileRequest
     private const int MaxAutomaticRedirections = 10;
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(60);
 
-    public static async Task<AddUrlRequest> New(HttpContext context, ConfigManager configManager)
+    public static async Task<AddUrlRequest> New(HttpContext context, ConfigManager configManager, IndexerHitTracker hitTracker)
     {
         var nzbUrl = context.GetRequestParam("name");
         var nzbName = context.GetRequestParam("nzbname");
         var userAgent = configManager.GetUserAgent();
-        var proxyUrl = configManager.GetIndexerConfig().ProxyUrl;
+        var indexerConfig = configManager.GetIndexerConfig();
+        var proxyUrl = indexerConfig.ProxyUrl;
+
+        var matchedIndexer = MatchIndexerByHost(nzbUrl, indexerConfig);
+        if (matchedIndexer is not null)
+        {
+            var hitCheck = await hitTracker
+                .CheckAsync(matchedIndexer.Name, IndexerApiHit.HitType.Download, matchedIndexer.DownloadLimit, matchedIndexer.HitLimitResetTime, context.RequestAborted)
+                .ConfigureAwait(false);
+            if (hitCheck is { Allowed: false })
+            {
+                var reason = IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download);
+                Log.Warning("AddUrl rejected for {Indexer}: {Reason}", matchedIndexer.Name, reason);
+                throw new BadHttpRequestException($"Indexer {matchedIndexer.Name} {reason}");
+            }
+        }
+
         var nzbFile = await GetNzbFile(nzbUrl, nzbName, userAgent, proxyUrl).ConfigureAwait(false);
+        if (matchedIndexer is not null)
+            _ = hitTracker.RecordAsync(matchedIndexer.Name, IndexerApiHit.HitType.Download, CancellationToken.None);
+
         return new AddUrlRequest()
         {
             FileName = nzbFile.FileName,
@@ -28,6 +50,23 @@ public class AddUrlRequest() : AddFileRequest
             PostProcessing = MapPostProcessingOption(context.GetRequestParam("pp")),
             CancellationToken = context.RequestAborted
         };
+    }
+
+    private static IndexerConfig.ConnectionDetails? MatchIndexerByHost(string? url, IndexerConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var requestUri)) return null;
+        var host = requestUri.Host;
+        if (string.IsNullOrEmpty(host)) return null;
+
+        foreach (var indexer in config.Indexers)
+        {
+            if (!indexer.Enabled) continue;
+            if (!Uri.TryCreate(indexer.Url, UriKind.Absolute, out var indexerUri)) continue;
+            if (string.Equals(indexerUri.Host, host, StringComparison.OrdinalIgnoreCase))
+                return indexer;
+        }
+        return null;
     }
 
     private static async Task<NzbFileResponse> GetNzbFile(string? url, string? nzbName, string userAgent, string? proxyUrl)

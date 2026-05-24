@@ -17,6 +17,7 @@ public class GetOverviewStatsResponse
     public LatencyBlock Latency { get; init; } = new();
     public List<ErrorSlice> Errors { get; init; } = new();
     public List<IndexerRow> Indexers { get; init; } = new();
+    public List<IndexerApiUsageRow> IndexerApiUsage { get; init; } = new();
     public LifetimeBlock Lifetime { get; init; } = new();
     public RecordsBlock Records { get; init; } = new();
 
@@ -117,6 +118,23 @@ public class GetOverviewStatsResponse
         public long BytesCompleted { get; init; }
         public int AvgSeconds { get; init; }
         public double SuccessRate { get; init; }
+    }
+
+    /// <summary>
+    /// Per-indexer hit-limit usage in the current reset window. ApiHitLimit and
+    /// DownloadHitLimit are null when no limit is configured. ResetAtMs is the unix-ms
+    /// timestamp of the next window boundary — either the configured reset hour
+    /// (UTC) or now+24h for the rolling-window case.
+    /// </summary>
+    public class IndexerApiUsageRow
+    {
+        public string Name { get; init; } = "";
+        public int ApiHits { get; init; }
+        public int? ApiHitLimit { get; init; }
+        public int DownloadHits { get; init; }
+        public int? DownloadHitLimit { get; init; }
+        public long ResetAtMs { get; init; }
+        public int? ResetHourUtc { get; init; }
     }
 
     /// <summary>

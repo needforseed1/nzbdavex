@@ -14,6 +14,7 @@ public class PreflightOrchestrator(
     PreflightCache preflightCache,
     PlaybackFastVerifier fastVerifier,
     NewznabRateLimiter rateLimiter,
+    IndexerHitTracker hitTracker,
     LazyRarResolver lazyRarResolver,
     PreflightSessionRegistry sessionRegistry,
     CandidateNegativeCache negativeCache)
@@ -84,6 +85,16 @@ public class PreflightOrchestrator(
 
         if (indexers.TryGetValue(candidate.IndexerName, out var indexer))
         {
+            var hitCheck = await hitTracker
+                .CheckAsync(candidate.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, ct)
+                .ConfigureAwait(false);
+            if (hitCheck is { Allowed: false })
+            {
+                Log.Debug("Preflight skipped for {Indexer}: {Reason}",
+                    candidate.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                return false;
+            }
+
             var reserved = await rateLimiter
                 .TryWaitAsync(candidate.IndexerName, indexer.MaxRequestsPerMinute, maxWait, ct)
                 .ConfigureAwait(false);
@@ -92,6 +103,8 @@ public class PreflightOrchestrator(
 
         var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
         if (nzbBytes is null || ct.IsCancellationRequested) return false;
+
+        _ = hitTracker.RecordAsync(candidate.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
 
         PlaybackFastVerifier.VerifyOutcome outcome;
         using (var ms = new MemoryStream(nzbBytes, writable: false))

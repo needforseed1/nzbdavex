@@ -36,6 +36,13 @@ public class IndexerConfig
         // Per-indexer HTTP timeout (seconds). Overrides the global TimeoutSeconds.
         // null or <= 0 = inherit global.
         public int? TimeoutSeconds { get; set; }
+        // Max API search hits per reset window. null or <= 0 = unlimited.
+        public int? HitLimit { get; set; }
+        // Max NZB download hits per reset window. null or <= 0 = unlimited.
+        public int? DownloadLimit { get; set; }
+        // Hour of day (0-23, UTC) when the hit counters reset. null = use rolling 24h window
+        // (limits hits in the trailing 24 hours from now). Matches NZBHydra2 semantics.
+        public int? HitLimitResetTime { get; set; }
         public ResultFilter? Filter { get; set; }
     }
 

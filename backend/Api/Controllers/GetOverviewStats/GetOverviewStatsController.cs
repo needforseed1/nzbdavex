@@ -15,7 +15,8 @@ public class GetOverviewStatsController(
     DavDatabaseClient davDb,
     ActiveReadRegistry registry,
     LiveStatsBroadcaster liveStats,
-    ConfigManager configManager
+    ConfigManager configManager,
+    IndexerHitTracker hitTracker
 ) : BaseApiController
 {
     private const long OneMinute = 60_000;
@@ -120,6 +121,7 @@ public class GetOverviewStatsController(
         var catalogue = await BuildCatalogueAsync().ConfigureAwait(false);
         var sessionsBlock = BuildSessionsBlock(sessions.Select(s => (s.DurationMs, s.BytesServed)));
         var indexers = await BuildIndexersAsync().ConfigureAwait(false);
+        var indexerApiUsage = await BuildIndexerApiUsageAsync().ConfigureAwait(false);
         var lifetime = await BuildLifetimeAsync(metrics).ConfigureAwait(false);
         var records = await BuildRecordsAsync(metrics).ConfigureAwait(false);
 
@@ -138,9 +140,38 @@ public class GetOverviewStatsController(
             Latency = latency,
             Errors = errors,
             Indexers = indexers,
+            IndexerApiUsage = indexerApiUsage,
             Lifetime = lifetime,
             Records = records,
         };
+    }
+
+    private async Task<List<GetOverviewStatsResponse.IndexerApiUsageRow>> BuildIndexerApiUsageAsync()
+    {
+        var configured = configManager.GetIndexerConfig().Indexers
+            .Where(x => x.Enabled)
+            .Select(x => (x.Name, x.HitLimit, x.DownloadLimit, ResetHourUtc: x.HitLimitResetTime))
+            .ToList();
+        if (configured.Count == 0) return new List<GetOverviewStatsResponse.IndexerApiUsageRow>();
+
+        var snapshots = await hitTracker.GetUsageAsync(configured, HttpContext.RequestAborted).ConfigureAwait(false);
+        var resetHourByName = configured.ToDictionary(x => x.Name, x => x.ResetHourUtc);
+
+        return snapshots
+            .Select(s => new GetOverviewStatsResponse.IndexerApiUsageRow
+            {
+                Name = s.IndexerName,
+                ApiHits = s.ApiHits,
+                ApiHitLimit = s.ApiHitLimit,
+                DownloadHits = s.DownloadHits,
+                DownloadHitLimit = s.DownloadHitLimit,
+                ResetAtMs = s.ResetAt.ToUnixTimeMilliseconds(),
+                ResetHourUtc = resetHourByName.GetValueOrDefault(s.IndexerName),
+            })
+            // Surface indexers with the most usage first, then by name for stability.
+            .OrderByDescending(r => r.ApiHits + r.DownloadHits)
+            .ThenBy(r => r.Name)
+            .ToList();
     }
 
     private static (long WindowMs, long BucketSize, string Label) ResolveWindow(

@@ -26,6 +26,7 @@ public class ProfilePlayController(
     PlaybackFastVerifier fastVerifier,
     WatchdogLog watchdogLog,
     NewznabRateLimiter rateLimiter,
+    IndexerHitTracker hitTracker,
     DavDatabaseClient dbClient,
     QueueManager queueManager,
     WebsocketManager websocketManager,
@@ -641,7 +642,18 @@ public class ProfilePlayController(
             var indexer = configManager.GetIndexerConfig().Indexers
                 .FirstOrDefault(x => x.Name == c.IndexerName);
             if (indexer is not null)
+            {
+                var hitCheck = await hitTracker
+                    .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, ct)
+                    .ConfigureAwait(false);
+                if (hitCheck is { Allowed: false })
+                {
+                    Log.Information("NZB download skipped for {Indexer}: {Reason}",
+                        c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                    return null;
+                }
                 await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, ct).ConfigureAwait(false);
+            }
 
             using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
             req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
@@ -650,7 +662,9 @@ public class ProfilePlayController(
             cts.CancelAfter(NzbFetchTimeout);
             using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+            var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+            _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
+            return bytes;
         }
         catch (Exception e) when (!e.IsCancellationException())
         {

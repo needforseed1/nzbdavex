@@ -126,6 +126,7 @@ class Program
             .AddSingleton<PreflightSessionRegistry>()
             .AddSingleton<PreflightOrchestrator>()
             .AddSingleton<NewznabRateLimiter>()
+            .AddSingleton<IndexerHitTracker>()
             .AddSingleton<TvdbIdResolver>()
             .AddSingleton<ExternalIdResolver>()
             .AddSingleton<SearchProfileService>()

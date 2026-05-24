@@ -27,7 +27,8 @@ public class SabApiController(
     ConfigManager configManager,
     QueueManager queueManager,
     WebsocketManager websocketManager,
-    NzbWebDAV.Services.ProviderUsageTracker providerUsageTracker
+    NzbWebDAV.Services.ProviderUsageTracker providerUsageTracker,
+    NzbWebDAV.Services.IndexerHitTracker hitTracker
 ) : ControllerBase
 {
     [HttpGet]
@@ -89,7 +90,7 @@ public class SabApiController(
                     HttpContext, dbClient, queueManager, configManager, websocketManager);
             case "addurl":
                 return new AddUrlController(
-                    HttpContext, dbClient, queueManager, configManager, websocketManager);
+                    HttpContext, dbClient, queueManager, configManager, websocketManager, hitTracker);
 
             case "queue" when HttpContext.GetRequestParam("name") == "delete":
                 return new RemoveFromQueueController(

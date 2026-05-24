@@ -42,6 +42,7 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
     public DbSet<NzbName> NzbNames => Set<NzbName>();
     public DbSet<NzbBlobCleanupItem> NzbBlobCleanupItems => Set<NzbBlobCleanupItem>();
     public DbSet<WatchdogEntry> WatchdogEntries => Set<WatchdogEntry>();
+    public DbSet<IndexerApiHit> IndexerApiHits => Set<IndexerApiHit>();
 
     // blob items
     public List<DavNzbFile> BlobNzbFiles = [];
@@ -568,6 +569,33 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.HasIndex(i => i.AttemptedAt);
             e.HasIndex(i => i.QueueItemId);
             e.HasIndex(i => i.ContentGroupKey);
+        });
+
+        // IndexerApiHit
+        b.Entity<IndexerApiHit>(e =>
+        {
+            e.ToTable("IndexerApiHits");
+            e.HasKey(i => i.Id);
+
+            e.Property(i => i.Id)
+                .ValueGeneratedOnAdd();
+
+            e.Property(i => i.IndexerName)
+                .IsRequired();
+
+            e.Property(i => i.Type)
+                .HasConversion<int>()
+                .IsRequired();
+
+            e.Property(i => i.AccessedAt)
+                .IsRequired()
+                .HasConversion(
+                    x => x.ToUnixTimeSeconds(),
+                    x => DateTimeOffset.FromUnixTimeSeconds(x)
+                );
+
+            e.HasIndex(i => new { i.IndexerName, i.Type, i.AccessedAt });
+            e.HasIndex(i => i.AccessedAt);
         });
     }
 
