@@ -136,6 +136,35 @@
     opacity: 0.8;
 }
 
+.usageFillInfinite {
+    position: absolute;
+    inset: 0;
+    border-radius: 4px;
+    background-image: linear-gradient(
+        -45deg,
+        var(--text-muted) 25%,
+        transparent 25%,
+        transparent 50%,
+        var(--text-muted) 50%,
+        var(--text-muted) 75%,
+        transparent 75%
+    );
+    background-size: 14px 14px;
+    opacity: 0.35;
+    animation: usageFillInfiniteSlide 1.4s linear infinite;
+}
+
+@keyframes usageFillInfiniteSlide {
+    from { background-position: 0 0; }
+    to { background-position: 14px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .usageFillInfinite {
+        animation: none;
+    }
+}
+
 .usageText {
     font-size: 12px;
     color: var(--text-primary);

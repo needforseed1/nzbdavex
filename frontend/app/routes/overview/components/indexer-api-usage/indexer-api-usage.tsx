@@ -66,8 +66,11 @@ function UsageBar({ used, limit }: { used: number, limit: number | null | undefi
     if (!limit || limit <= 0) {
         return (
             <div className={styles.usageRow}>
-                <span className={styles.usageText} title="No limit configured">
-                    {formatNumber(used)} <span className={styles.usageMuted}>· unlimited</span>
+                <div className={styles.usageBar} title="No limit configured">
+                    <div className={styles.usageFillInfinite} />
+                </div>
+                <span className={styles.usageText}>
+                    {formatNumber(used)}<span className={styles.usageMuted}> · unlimited</span>
                 </span>
             </div>
         );
