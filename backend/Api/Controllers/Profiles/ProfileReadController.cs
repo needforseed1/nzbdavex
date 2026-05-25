@@ -37,10 +37,13 @@ public class ProfileReadController(
         var items = result.Candidates
             .Select((c, i) =>
             {
-                var description = BuildDescription(c);
+                var displayIndexer = !string.IsNullOrWhiteSpace(c.SourceIndexerName)
+                    ? c.SourceIndexerName!
+                    : c.IndexerName;
+                var description = BuildDescription(c, displayIndexer);
                 return new
                 {
-                    name = $"[NZB] {c.IndexerName}",
+                    name = $"[NZB] {displayIndexer}",
                     description,
                     title = description,
                     url = $"{baseUrl}/adapters/addon/{token}/play/{result.PlayTokens[i]}.mkv",
@@ -48,7 +51,7 @@ public class ProfileReadController(
                     {
                         filename = c.Title,
                         videoSize = c.Size,
-                        bingeGroup = $"nzbdavex|{c.IndexerName}|{type}",
+                        bingeGroup = $"nzbdavex|{displayIndexer}|{type}",
                         notWebReady = true,
                     },
                 };
@@ -68,12 +71,11 @@ public class ProfileReadController(
         return $"{v:0.##} {s[i]}";
     }
 
-    private static string BuildDescription(NzbResolutionCache.Candidate c)
+    private static string BuildDescription(NzbResolutionCache.Candidate c, string indexerName)
     {
         var meta = new List<string> { $"💾 {FormatBytes(c.Size)}" };
         if (c.Posted is { } p) meta.Add($"📅 {FormatAge(DateTimeOffset.UtcNow - p)}");
-        meta.Add($"🌐 {c.IndexerName}");
-        return $"{c.Title}\n{string.Join(" | ", meta)}";
+        return $"{c.Title}\n{string.Join(" | ", meta)}\n🌐 {indexerName}";
     }
 
     private static string FormatAge(TimeSpan a)
