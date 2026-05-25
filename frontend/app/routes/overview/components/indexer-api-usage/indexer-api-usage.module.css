@@ -151,18 +151,6 @@
     );
     background-size: 14px 14px;
     opacity: 0.35;
-    animation: usageFillInfiniteSlide 1.4s linear infinite;
-}
-
-@keyframes usageFillInfiniteSlide {
-    from { background-position: 0 0; }
-    to { background-position: 14px 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .usageFillInfinite {
-        animation: none;
-    }
 }
 
 .usageText {
