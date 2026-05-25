@@ -156,14 +156,17 @@ public class NewznabAdapterController(
                     new XAttribute("name", "usenetdate"),
                     new XAttribute("value", r.Candidate.UsenetDate.Value.ToString("R"))));
 
-            if (!string.IsNullOrWhiteSpace(r.Candidate.SourceIndexerName))
+            var displayIndexer = !string.IsNullOrWhiteSpace(r.Candidate.SourceIndexerName)
+                ? r.Candidate.SourceIndexerName
+                : r.Candidate.IndexerName;
+            if (!string.IsNullOrWhiteSpace(displayIndexer))
             {
                 item.Add(new XElement(Newznab + "attr",
                     new XAttribute("name", "hydraIndexerName"),
-                    new XAttribute("value", r.Candidate.SourceIndexerName)));
+                    new XAttribute("value", displayIndexer)));
                 item.Add(new XElement(Newznab + "attr",
                     new XAttribute("name", "sourceIndexerName"),
-                    new XAttribute("value", r.Candidate.SourceIndexerName)));
+                    new XAttribute("value", displayIndexer)));
             }
             if (!string.IsNullOrWhiteSpace(r.Candidate.Language))
                 item.Add(new XElement(Newznab + "attr",
