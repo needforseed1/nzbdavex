@@ -33,7 +33,7 @@ export default function Index({ loaderData, actionData }: Route.ComponentProps) 
         <div className={styles["page"]}>
             <Form className={styles["container"]} method="POST">
                 <div className={styles["brand"]}>
-                    <img className={styles["logo"]} src="/logo.svg?v=3" alt="davex" />
+                    <img className={styles["logo"]} src="/logo.png?v=4" alt="davex" />
                     <div className={styles["title"]}>davex</div>
                 </div>
                 <div className={styles["subtitle"]}>Sign in to continue</div>
