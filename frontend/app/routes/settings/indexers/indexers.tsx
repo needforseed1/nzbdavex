@@ -43,6 +43,9 @@ interface ConnectionDetails {
     HitLimit?: number;
     DownloadLimit?: number;
     HitLimitResetTime?: number;
+    ExtraMovieCategories?: string;
+    ExtraTvCategories?: string;
+    IgnoreCategoryFilter?: boolean;
     Filter?: ResultFilter;
 }
 
@@ -98,6 +101,13 @@ function isTimeoutValid(raw: string): boolean {
     if (!raw.trim()) return true;
     const n = Number(raw);
     return Number.isInteger(n) && n > 0 && raw.trim() === n.toString();
+}
+
+function isCategoryListValid(raw: string): boolean {
+    if (!raw.trim()) return true;
+    const parts = raw.split(",").map(p => p.trim()).filter(p => p.length > 0);
+    if (parts.length === 0) return true;
+    return parts.every(p => /^\d+$/.test(p));
 }
 
 // http://host:port, https://..., optionally with user:pass@. Empty string = no proxy.
@@ -320,6 +330,16 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
         && indexer.HitLimitResetTime <= 23;
     const apiLimit = formatLimit(indexer.HitLimit, hasResetHour);
     const downloadLimit = formatLimit(indexer.DownloadLimit, hasResetHour);
+    const categoriesSummary = (() => {
+        if (indexer.IgnoreCategoryFilter) return "All (no filter)";
+        const m = indexer.ExtraMovieCategories?.trim();
+        const t = indexer.ExtraTvCategories?.trim();
+        if (!m && !t) return "Default";
+        const parts: string[] = [];
+        if (m) parts.push(`+M ${m}`);
+        if (t) parts.push(`+T ${t}`);
+        return parts.join(" · ");
+    })();
 
     return (
         <div className={`${styles["indexer-card"]} ${isDisabled ? styles["indexer-card-disabled"] : ""}`}>
@@ -489,6 +509,18 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
                                 <span className={styles["indexer-detail-value"]}>{downloadLimit}</span>
                             </div>
                         </div>
+
+                        <div className={styles["indexer-detail-item"]}>
+                            <div className={styles["indexer-detail-icon"]}>
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M7 7h.01M7 3h5a2 2 0 0 1 1.41.59l7 7a2 2 0 0 1 0 2.82l-7 7a2 2 0 0 1-2.82 0l-7-7A2 2 0 0 1 3 12V7a4 4 0 0 1 4-4z" />
+                                </svg>
+                            </div>
+                            <div className={styles["indexer-detail-content"]}>
+                                <span className={styles["indexer-detail-label"]}>Categories</span>
+                                <span className={styles["indexer-detail-value"]} title={categoriesSummary}>{categoriesSummary}</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -516,6 +548,9 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
     const [hitResetTime, setHitResetTime] = useState("");
     const [enabled, setEnabled] = useState(true);
     const [strict, setStrict] = useState(false);
+    const [extraMovieCategories, setExtraMovieCategories] = useState("");
+    const [extraTvCategories, setExtraTvCategories] = useState("");
+    const [ignoreCategoryFilter, setIgnoreCategoryFilter] = useState(false);
 
     const [filterEnabled, setFilterEnabled] = useState(false);
     const [filterAdvancedOpen, setFilterAdvancedOpen] = useState(false);
@@ -557,6 +592,9 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             );
             setEnabled(indexer?.Enabled ?? true);
             setStrict(indexer?.EnableStrictMatching ?? false);
+            setExtraMovieCategories(indexer?.ExtraMovieCategories ?? "");
+            setExtraTvCategories(indexer?.ExtraTvCategories ?? "");
+            setIgnoreCategoryFilter(indexer?.IgnoreCategoryFilter ?? false);
             const f = indexer?.Filter ?? OPTIMISED_DEFAULTS;
             setFilterEnabled(f.Enabled);
             setFilterSkipPassworded(f.SkipPassworded);
@@ -615,6 +653,10 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             && clampNonNegInt(filterGrabsGraceHours, OPTIMISED_DEFAULTS.GrabsGraceHours) === OPTIMISED_DEFAULTS.GrabsGraceHours
             && clampNonNegInt(filterMaxAgeDaysWithoutGrabs, OPTIMISED_DEFAULTS.MaxAgeDaysWithoutGrabs) === OPTIMISED_DEFAULTS.MaxAgeDaysWithoutGrabs
             && filterPreferDownloaded === OPTIMISED_DEFAULTS.PreferDownloaded;
+        const normaliseCategoryList = (raw: string) => {
+            const parts = raw.split(",").map(p => p.trim()).filter(p => p.length > 0);
+            return parts.length === 0 ? undefined : parts.join(",");
+        };
         onSave({
             Name: name.trim(),
             Url: url.trim(),
@@ -628,6 +670,9 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             DownloadLimit: Number.isFinite(dl) && dl > 0 ? dl : undefined,
             HitLimitResetTime: Number.isFinite(hr) && hr >= 0 && hr <= 23 ? hr : undefined,
             EnableStrictMatching: strict,
+            ExtraMovieCategories: normaliseCategoryList(extraMovieCategories),
+            ExtraTvCategories: normaliseCategoryList(extraTvCategories),
+            IgnoreCategoryFilter: ignoreCategoryFilter || undefined,
             Filter: filterIsClean ? undefined : {
                 Enabled: filterEnabled,
                 SkipPassworded: filterSkipPassworded,
@@ -638,6 +683,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             },
         });
     }, [name, url, apiKey, userAgent, proxyUrl, timeoutSeconds, maxRpm, hitLimit, downloadLimit, hitResetTime, enabled, strict,
+        extraMovieCategories, extraTvCategories, ignoreCategoryFilter,
         filterEnabled, filterSkipPassworded, filterMinGrabs, filterGrabsGraceHours,
         filterMaxAgeDaysWithoutGrabs, filterPreferDownloaded, onSave]);
 
@@ -667,9 +713,12 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         const n = Number(hitResetTime);
         return Number.isInteger(n) && n >= 0 && n <= 23 && hitResetTime.trim() === n.toString();
     })();
+    const isExtraMovieCategoriesValid = isCategoryListValid(extraMovieCategories);
+    const isExtraTvCategoriesValid = isCategoryListValid(extraTvCategories);
     const isFormValid = name.trim() !== "" && isUrlValid && apiKey.trim() !== ""
         && isRpmValid && isProxyValid && isTimeoutFieldValid
-        && isHitLimitValid && isDownloadLimitValid && isHitResetValid;
+        && isHitLimitValid && isDownloadLimitValid && isHitResetValid
+        && isExtraMovieCategoriesValid && isExtraTvCategoriesValid;
 
     if (!show) return null;
 
@@ -844,6 +893,51 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                                 />
                                 <label htmlFor="indexer-strict" className={styles["form-checkbox-label"]}>
                                     Strict matching <span className={styles["label-hint"]}>(drop results whose title doesn't match the request)</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div className={styles["form-group"]}>
+                            <label htmlFor="indexer-extra-movie-cats" className={styles["form-label"]}>
+                                Extra movie categories <span className={styles["label-hint"]}>(comma-separated; appended to the default 2000/2070)</span>
+                            </label>
+                            <input
+                                type="text"
+                                id="indexer-extra-movie-cats"
+                                className={`${styles["form-input"]} ${!isExtraMovieCategoriesValid ? styles.error : ""}`}
+                                placeholder="e.g. 2100,2200"
+                                value={extraMovieCategories}
+                                onChange={e => setExtraMovieCategories(e.target.value)}
+                                disabled={ignoreCategoryFilter}
+                            />
+                        </div>
+
+                        <div className={styles["form-group"]}>
+                            <label htmlFor="indexer-extra-tv-cats" className={styles["form-label"]}>
+                                Extra TV categories <span className={styles["label-hint"]}>(comma-separated; appended to the default 5000/5070)</span>
+                            </label>
+                            <input
+                                type="text"
+                                id="indexer-extra-tv-cats"
+                                className={`${styles["form-input"]} ${!isExtraTvCategoriesValid ? styles.error : ""}`}
+                                placeholder="e.g. 5100,5200"
+                                value={extraTvCategories}
+                                onChange={e => setExtraTvCategories(e.target.value)}
+                                disabled={ignoreCategoryFilter}
+                            />
+                        </div>
+
+                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                            <div className={styles["form-checkbox-wrapper"]}>
+                                <input
+                                    type="checkbox"
+                                    id="indexer-ignore-category-filter"
+                                    className={styles["form-checkbox"]}
+                                    checked={ignoreCategoryFilter}
+                                    onChange={e => setIgnoreCategoryFilter(e.target.checked)}
+                                />
+                                <label htmlFor="indexer-ignore-category-filter" className={styles["form-checkbox-label"]}>
+                                    Ignore category filter <span className={styles["label-hint"]}>(send no <code>cat=</code> param at all — escape hatch for indexers with fully custom category schemas)</span>
                                 </label>
                             </div>
                         </div>
@@ -1041,6 +1135,8 @@ export function isIndexersSettingsValid(newConfig: Record<string, string>) {
             if (i.DownloadLimit !== undefined && (!Number.isInteger(i.DownloadLimit) || i.DownloadLimit < 0)) return false;
             if (i.HitLimitResetTime !== undefined
                 && (!Number.isInteger(i.HitLimitResetTime) || i.HitLimitResetTime < 0 || i.HitLimitResetTime > 23)) return false;
+            if (i.ExtraMovieCategories !== undefined && !isCategoryListValid(i.ExtraMovieCategories)) return false;
+            if (i.ExtraTvCategories !== undefined && !isCategoryListValid(i.ExtraTvCategories)) return false;
         }
         if (validateExcludePatterns(newConfig["search.exclude-patterns"] ?? "").length > 0) return false;
         return true;

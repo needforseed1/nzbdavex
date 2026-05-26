@@ -43,6 +43,9 @@ public class IndexerConfig
         // Hour of day (0-23, UTC) when the hit counters reset. null = use rolling 24h window
         // (limits hits in the trailing 24 hours from now). Matches NZBHydra2 semantics.
         public int? HitLimitResetTime { get; set; }
+        public string? ExtraMovieCategories { get; set; }
+        public string? ExtraTvCategories { get; set; }
+        public bool IgnoreCategoryFilter { get; set; } = false;
         public ResultFilter? Filter { get; set; }
     }
 

@@ -198,7 +198,8 @@ public class SearchProfileService(
                 var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
                 var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
-                var items = await client.QueryAsync(queryParams, ct).ConfigureAwait(false);
+                var indexerQuery = ApplyIndexerCategoryOverrides(queryParams, x);
+                var items = await client.QueryAsync(indexerQuery, ct).ConfigureAwait(false);
                 _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
                 var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
                 return filtered.Select(i => new IndexerHit(x.Name, ua, proxy, i));
@@ -326,6 +327,56 @@ public class SearchProfileService(
         if (!id.StartsWith("tt", StringComparison.OrdinalIgnoreCase)) return null;
         var digits = id[2..];
         return digits.All(char.IsDigit) ? digits : null;
+    }
+
+    private static IReadOnlyDictionary<string, string> ApplyIndexerCategoryOverrides(
+        IReadOnlyDictionary<string, string> queryParams,
+        IndexerConfig.ConnectionDetails indexer)
+    {
+        var needsCatChange = indexer.IgnoreCategoryFilter
+            || !string.IsNullOrWhiteSpace(indexer.ExtraMovieCategories)
+            || !string.IsNullOrWhiteSpace(indexer.ExtraTvCategories);
+        if (!needsCatChange) return queryParams;
+
+        var copy = new Dictionary<string, string>(queryParams, StringComparer.OrdinalIgnoreCase);
+
+        if (indexer.IgnoreCategoryFilter)
+        {
+            copy.Remove("cat");
+            return copy;
+        }
+
+        var t = copy.TryGetValue("t", out var tVal) ? tVal : null;
+        string? extras = t switch
+        {
+            "movie" => indexer.ExtraMovieCategories,
+            "tvsearch" => indexer.ExtraTvCategories,
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(extras)) return copy;
+
+        copy.TryGetValue("cat", out var existing);
+        copy["cat"] = MergeCategoryList(existing, extras);
+        return copy;
+    }
+
+    private static string MergeCategoryList(string? baseList, string extras)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        void AddAll(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            foreach (var part in raw.Split(','))
+            {
+                var v = part.Trim();
+                if (v.Length == 0) continue;
+                if (seen.Add(v)) result.Add(v);
+            }
+        }
+        AddAll(baseList);
+        AddAll(extras);
+        return string.Join(",", result);
     }
 
     private record IndexerHit(string IndexerName, string IndexerUserAgent, string? IndexerProxyUrl, NewznabClient.NewznabItem Item);
