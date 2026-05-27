@@ -26,7 +26,8 @@ public class JsonSearchController(
         [FromQuery] string? type,
         [FromQuery] string? id,
         [FromQuery] int? season,
-        [FromQuery] int? episode)
+        [FromQuery] int? episode,
+        [FromQuery] string? q)
     {
         SetCors(Response);
 
@@ -49,7 +50,7 @@ public class JsonSearchController(
             id = $"{id}:{season.Value}:{episode.Value}";
         }
 
-        result = await searchService.SearchByImdbAsync(token, type, id, ct).ConfigureAwait(false);
+        result = await searchService.SearchByImdbAsync(token, type, id, ct, q).ConfigureAwait(false);
 
         if (result is null) return NotFound();
 

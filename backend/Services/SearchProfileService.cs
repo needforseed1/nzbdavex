@@ -15,6 +15,7 @@ public class SearchProfileService(
     IndexerHitTracker hitTracker,
     TvdbIdResolver tvdbResolver,
     ExternalIdResolver externalResolver,
+    ImdbTitleResolver titleResolver,
     PreflightOrchestrator preflightOrchestrator)
 {
     public ProfileConfig.Profile? GetProfile(string token)
@@ -152,11 +153,12 @@ public class SearchProfileService(
     }
 
     public async Task<SearchResult?> SearchByImdbAsync(
-        string profileToken, string type, string id, CancellationToken ct)
+        string profileToken, string type, string id, CancellationToken ct,
+        string? clientQuery = null)
     {
         var queryParams = await BuildImdbQueryAsync(type, id, ct).ConfigureAwait(false);
         if (queryParams is null) return Empty(profileToken, type, id);
-        return await SearchAsync(profileToken, type, id, queryParams, ct).ConfigureAwait(false);
+        return await SearchAsync(profileToken, type, id, queryParams, ct, clientQuery).ConfigureAwait(false);
     }
 
     public async Task<SearchResult?> SearchAsync(
@@ -164,7 +166,8 @@ public class SearchProfileService(
         string type,
         string id,
         IReadOnlyDictionary<string, string> queryParams,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? clientQuery = null)
     {
         var profile = GetProfile(profileToken);
         if (profile is null) return null;
@@ -179,57 +182,13 @@ public class SearchProfileService(
         if (indexers.Count == 0) return Empty(profileToken, type, id);
 
         var now = DateTimeOffset.UtcNow;
-        var perIndexer = await Task.WhenAll(indexers.Select(async x =>
-        {
-            try
-            {
-                var hitCheck = await hitTracker
-                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
-                    .ConfigureAwait(false);
-                if (hitCheck is { Allowed: false })
-                {
-                    Log.Information("Indexer {Indexer} skipped: {Reason}",
-                        x.Name, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Search));
-                    return Enumerable.Empty<IndexerHit>();
-                }
-
-                var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
-                var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
-                var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
-                await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
-                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
-                var indexerQuery = ApplyIndexerCategoryOverrides(queryParams, x);
-                var items = await client.QueryAsync(indexerQuery, ct).ConfigureAwait(false);
-                _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
-                var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
-                return filtered.Select(i => new IndexerHit(x.Name, ua, proxy, i));
-            }
-            catch (Exception e)
-            {
-                if (!e.IsCancellationException())
-                    Log.Warning("Indexer {Indexer} search failed: {Message}", x.Name, e.Message);
-                return [];
-            }
-        })).ConfigureAwait(false);
-
+        var excludePatterns = configManager.GetSearchExcludePatterns();
         var anyPreferDownloaded = indexers.Any(x => x.Filter is { Enabled: true, PreferDownloaded: true });
 
-        var excludePatterns = configManager.GetSearchExcludePatterns();
+        var perIndexer = await RunPerIndexerQueryAsync(indexers, queryParams, indexerConfig, globalProxy, now, ct)
+            .ConfigureAwait(false);
 
-        var dedupedQuery = perIndexer
-            .SelectMany(x => x)
-            .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
-            .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
-            .GroupBy(x => x.Item.NzbUrl)
-            .Select(g => g.First());
-
-        var deduped = (anyPreferDownloaded
-                ? dedupedQuery.OrderByDescending(x => x.Item.Grabs ?? -1)
-                              .ThenByDescending(x => x.Item.Size)
-                              .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue)
-                : dedupedQuery.OrderByDescending(x => x.Item.Size)
-                              .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue))
-            .ToList();
+        var deduped = DedupeAndSort(perIndexer, excludePatterns, anyPreferDownloaded);
 
         var strictIndexers = indexers
             .Where(x => x.EnableStrictMatching)
@@ -255,6 +214,40 @@ public class SearchProfileService(
                     .Where(x => !strictIndexers.Contains(x.Entry.IndexerName)
                                 || FilenameMatcher.TokensEqual(x.Head, consensus.Head))
                     .Select(x => x.Entry)
+                    .ToList();
+            }
+        }
+
+        if (profile.QueryFallbackMinResults > 0 && deduped.Count < profile.QueryFallbackMinResults)
+        {
+            var fallbackParams = await BuildFallbackQueryAsync(type, queryParams, clientQuery, ct)
+                .ConfigureAwait(false);
+            if (fallbackParams is not null)
+            {
+                Log.Information(
+                    "Profile {Profile} {Type}/{Id}: only {Count} result(s) (< {Threshold}); running text-query fallback",
+                    profile.Name, type, id, deduped.Count, profile.QueryFallbackMinResults);
+
+                var fallbackPerIndexer = await RunPerIndexerQueryAsync(
+                    indexers, fallbackParams, indexerConfig, globalProxy, now, ct).ConfigureAwait(false);
+                var fallbackHits = fallbackPerIndexer.SelectMany(x => x);
+
+                var seen = new HashSet<string>(deduped.Select(x => x.Item.NzbUrl), StringComparer.Ordinal);
+                var combined = perIndexer
+                    .SelectMany(x => x)
+                    .Concat(fallbackHits)
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
+                    .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
+                    .GroupBy(x => x.Item.NzbUrl)
+                    .Select(g => g.First())
+                    .ToList();
+
+                deduped = (anyPreferDownloaded
+                        ? combined.OrderByDescending(x => x.Item.Grabs ?? -1)
+                                  .ThenByDescending(x => x.Item.Size)
+                                  .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue)
+                        : combined.OrderByDescending(x => x.Item.Size)
+                                  .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue))
                     .ToList();
             }
         }
@@ -292,6 +285,113 @@ public class SearchProfileService(
             Candidates = candidates,
             PlayTokens = tokens,
         };
+    }
+
+    private async Task<IEnumerable<IndexerHit>[]> RunPerIndexerQueryAsync(
+        IReadOnlyList<IndexerConfig.ConnectionDetails> indexers,
+        IReadOnlyDictionary<string, string> queryParams,
+        IndexerConfig indexerConfig,
+        string? globalProxy,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        return await Task.WhenAll(indexers.Select(async x =>
+        {
+            try
+            {
+                var hitCheck = await hitTracker
+                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                    .ConfigureAwait(false);
+                if (hitCheck is { Allowed: false })
+                {
+                    Log.Information("Indexer {Indexer} skipped: {Reason}",
+                        x.Name, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Search));
+                    return Enumerable.Empty<IndexerHit>();
+                }
+
+                var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
+                var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
+                var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
+                await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
+                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
+                var indexerQuery = ApplyIndexerCategoryOverrides(queryParams, x);
+                var items = await client.QueryAsync(indexerQuery, ct).ConfigureAwait(false);
+                _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
+                var filtered = IndexerResultFilter.Apply(items, x.Filter, now);
+                return filtered.Select(i => new IndexerHit(x.Name, ua, proxy, i));
+            }
+            catch (Exception e)
+            {
+                if (!e.IsCancellationException())
+                    Log.Warning("Indexer {Indexer} search failed: {Message}", x.Name, e.Message);
+                return [];
+            }
+        })).ConfigureAwait(false);
+    }
+
+    private static List<IndexerHit> DedupeAndSort(
+        IEnumerable<IndexerHit>[] perIndexer,
+        IReadOnlyList<Regex> excludePatterns,
+        bool anyPreferDownloaded)
+    {
+        var dedupedQuery = perIndexer
+            .SelectMany(x => x)
+            .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
+            .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
+            .GroupBy(x => x.Item.NzbUrl)
+            .Select(g => g.First());
+
+        return (anyPreferDownloaded
+                ? dedupedQuery.OrderByDescending(x => x.Item.Grabs ?? -1)
+                              .ThenByDescending(x => x.Item.Size)
+                              .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue)
+                : dedupedQuery.OrderByDescending(x => x.Item.Size)
+                              .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> BuildFallbackQueryAsync(
+        string type,
+        IReadOnlyDictionary<string, string> originalParams,
+        string? clientQuery,
+        CancellationToken ct)
+    {
+        var imdbDigits = originalParams.TryGetValue("imdbid", out var imdb) ? imdb : null;
+        int? tvdbId = null;
+        if (originalParams.TryGetValue("tvdbid", out var tvdbStr) && int.TryParse(tvdbStr, out var t)) tvdbId = t;
+
+        var title = string.IsNullOrWhiteSpace(clientQuery)
+            ? await titleResolver.GetTitleAsync(type, imdbDigits, tvdbId, ct).ConfigureAwait(false)
+            : clientQuery.Trim();
+
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        if (type == "movie")
+        {
+            return new Dictionary<string, string>
+            {
+                ["t"] = "movie",
+                ["q"] = title,
+                ["cat"] = "2000",
+                ["limit"] = "100",
+            };
+        }
+
+        if (type == "series")
+        {
+            var dict = new Dictionary<string, string>
+            {
+                ["t"] = "tvsearch",
+                ["q"] = title,
+                ["cat"] = "5000",
+                ["limit"] = "100",
+            };
+            if (originalParams.TryGetValue("season", out var s)) dict["season"] = s;
+            if (originalParams.TryGetValue("ep", out var e)) dict["ep"] = e;
+            return dict;
+        }
+
+        return null;
     }
 
     private static SearchResult Empty(string profileToken, string type, string id) =>

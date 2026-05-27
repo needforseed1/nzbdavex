@@ -13,6 +13,7 @@ interface Profile {
     Name: string;
     IndexerNames: string[];
     EnabledAdapters?: string[] | null;
+    QueryFallbackMinResults?: number;
 }
 
 interface ProfileConfig {
@@ -92,7 +93,7 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
         update({
             Profiles: [
                 ...profileConfig.Profiles,
-                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS] }
+                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS], QueryFallbackMinResults: 0 }
             ]
         });
     }, [profileConfig, update]);
@@ -201,6 +202,20 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
                             />
                         ))}
                     </div>
+                </Form.Group>
+                <Form.Group>
+                    <Form.Label>Query fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(when the ID search returns fewer than N results, run a second text-query pass and merge — set to 0 to disable)</span></Form.Label>
+                    <Form.Control
+                        type="number"
+                        min={0}
+                        step={1}
+                        className={styles.input}
+                        placeholder="0"
+                        value={profile.QueryFallbackMinResults ?? 0}
+                        onChange={e => {
+                            const n = parseInt(e.target.value, 10);
+                            onChange(index, { QueryFallbackMinResults: Number.isFinite(n) && n > 0 ? n : 0 });
+                        }} />
                 </Form.Group>
             </Card.Body>
         </Card>

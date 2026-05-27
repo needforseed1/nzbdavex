@@ -49,13 +49,13 @@ public class NewznabAdapterController(
         if (op == "movie" && !string.IsNullOrWhiteSpace(imdbid))
         {
             var id = imdbid.StartsWith("tt", StringComparison.OrdinalIgnoreCase) ? imdbid : $"tt{imdbid}";
-            result = await searchService.SearchByImdbAsync(token, "movie", id, ct).ConfigureAwait(false);
+            result = await searchService.SearchByImdbAsync(token, "movie", id, ct, q).ConfigureAwait(false);
         }
         else if (op == "tvsearch" && !string.IsNullOrWhiteSpace(imdbid) && season.HasValue && ep.HasValue)
         {
             var idDigits = imdbid.StartsWith("tt", StringComparison.OrdinalIgnoreCase) ? imdbid[2..] : imdbid;
             var id = $"tt{idDigits}:{season.Value}:{ep.Value}";
-            result = await searchService.SearchByImdbAsync(token, "series", id, ct).ConfigureAwait(false);
+            result = await searchService.SearchByImdbAsync(token, "series", id, ct, q).ConfigureAwait(false);
         }
         else
         {
