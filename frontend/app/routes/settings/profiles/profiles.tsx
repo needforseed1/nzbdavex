@@ -204,7 +204,7 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
                     </div>
                 </Form.Group>
                 <Form.Group>
-                    <Form.Label>Query fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(when the ID search returns fewer than N results, run a second text-query pass and merge — set to 0 to disable)</span></Form.Label>
+                    <Form.Label>Query fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(if the ID search finds fewer than this many results, also search by title and add those results. Set to 0 to turn off.)</span></Form.Label>
                     <Form.Control
                         type="number"
                         min={0}
