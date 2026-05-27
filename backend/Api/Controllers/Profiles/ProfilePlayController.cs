@@ -865,12 +865,18 @@ public class ProfilePlayController(
         if (brokenIds.Count > 0)
             query = query.Where(h => !brokenIds.Contains(h.Id));
 
-        var existing = await query
+        var matchIds = await query
             .OrderByDescending(h => h.CreatedAt)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            .Select(h => h.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
 
-        if (existing is null) return null;
-        return await BuildRedirectForHistoryItemAsync(existing.Id, entry, ct).ConfigureAwait(false);
+        foreach (var id in matchIds)
+        {
+            if (ct.IsCancellationRequested) return null;
+            var redirect = await BuildRedirectForHistoryItemAsync(id, entry, ct).ConfigureAwait(false);
+            if (redirect is not null) return redirect;
+        }
+        return null;
     }
 
     private async Task<IActionResult?> BuildRedirectForHistoryItemAsync(
@@ -930,35 +936,40 @@ public class ProfilePlayController(
             .Where(x => ContentTypeUtil.GetContentType(x.Name).StartsWith("video/", StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (videos.Count == 0) return null;
-        if (videos.Count == 1) return videos[0];
 
-        if (entry is not null)
+        if (entry is null)
         {
-            var clickTokens = TokenizeName(entry.Primary.Title);
-            if (clickTokens.Count > 0)
-            {
-                DavItem? best = null;
-                int bestScore = 0;
-                long bestSize = -1;
-                foreach (var v in videos)
-                {
-                    if (v.Name.Contains("sample", StringComparison.OrdinalIgnoreCase)) continue;
-                    var fileTokens = TokenizeName(Path.GetFileNameWithoutExtension(v.Name));
-                    if (fileTokens.Count == 0) continue;
-                    var score = fileTokens.Count(t => clickTokens.Contains(t));
-                    var size = v.FileSize ?? 0;
-                    if (score > bestScore || (score == bestScore && score > 0 && size > bestSize))
-                    {
-                        best = v;
-                        bestScore = score;
-                        bestSize = size;
-                    }
-                }
-                if (best is not null && bestScore > 0) return best;
-            }
+            return videos.Count == 1
+                ? videos[0]
+                : videos.OrderByDescending(x => x.FileSize ?? 0).First();
         }
 
-        return videos.OrderByDescending(x => x.FileSize ?? 0).First();
+        var clickTokens = TokenizeName(entry.Primary.Title);
+        if (clickTokens.Count == 0)
+        {
+            return videos.Count == 1
+                ? videos[0]
+                : videos.OrderByDescending(x => x.FileSize ?? 0).First();
+        }
+
+        DavItem? best = null;
+        int bestScore = 0;
+        long bestSize = -1;
+        foreach (var v in videos)
+        {
+            if (v.Name.Contains("sample", StringComparison.OrdinalIgnoreCase)) continue;
+            var fileTokens = TokenizeName(Path.GetFileNameWithoutExtension(v.Name));
+            if (fileTokens.Count == 0) continue;
+            var score = fileTokens.Count(t => clickTokens.Contains(t));
+            var size = v.FileSize ?? 0;
+            if (score > bestScore || (score == bestScore && score > 0 && size > bestSize))
+            {
+                best = v;
+                bestScore = score;
+                bestSize = size;
+            }
+        }
+        return bestScore > 0 ? best : null;
     }
 
     private static HashSet<string> TokenizeName(string s)

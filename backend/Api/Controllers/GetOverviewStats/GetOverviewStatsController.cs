@@ -65,10 +65,19 @@ public class GetOverviewStatsController(
         GetOverviewStatsResponse.LiveTiles liveTiles;
         List<GetOverviewStatsResponse.ThroughputPoint> throughput;
         List<GetOverviewStatsResponse.ProviderRow> providers;
-        GetOverviewStatsResponse.HeatmapBlock heatmap;
         GetOverviewStatsResponse.LatencyBlock latency;
         List<GetOverviewStatsResponse.ErrorSlice> errors;
         long totalArticles, totalErrors, totalBytesFetched;
+
+        // Heatmap is always a trailing 7-day view regardless of the requested overview window,
+        // sourced from ProviderHourly (365 d retention) so it survives the 24 h raw-fetch TTL.
+        var heatmapStart = nowMs - 7 * OneDay;
+        var heatmapHours = await metrics.ProviderHourly
+            .Where(h => h.Hour >= heatmapStart)
+            .GroupBy(h => h.Hour)
+            .Select(g => new { Hour = g.Key, Articles = g.Sum(x => x.Articles) })
+            .ToListAsync().ConfigureAwait(false);
+        var heatmap = BuildHeatmapFromHourly(heatmapHours.Select(h => (h.Hour, h.Articles)));
 
         if (useRollups)
         {
@@ -82,7 +91,6 @@ public class GetOverviewStatsController(
             liveTiles = BuildLiveTiles(articlesLastMinute: 0, errorsLastMinute: 0);
             throughput = BuildThroughputFromHourly(hours.Select(h => (h.Hour, h.Articles, h.Errors, h.BytesFetched)), sessions.Select(s => (s.EndedAt, s.BytesServed)), bucketSize);
             providers = BuildProvidersFromHourly(hours, windowStart, bucketSize, nowMs, nicknamesByHost);
-            heatmap = new GetOverviewStatsResponse.HeatmapBlock();
             latency = new GetOverviewStatsResponse.LatencyBlock();
             errors = new List<GetOverviewStatsResponse.ErrorSlice>();
             totalArticles = hours.Sum(h => h.Articles);
@@ -110,7 +118,6 @@ public class GetOverviewStatsController(
             liveTiles = BuildLiveTiles(articlesLastMinute, errorsLastMinute);
             throughput = BuildThroughput(fetches.Select(f => (f.At, f.Status)), sessions.Select(s => (s.EndedAt, s.BytesServed)), bucketSize);
             providers = BuildProviders(fetches, perMinuteBytes, windowStart, bucketSize, window, nicknamesByHost);
-            heatmap = BuildHeatmap(fetches.Select(f => f.At), nowMs);
             latency = BuildLatency(fetches.Where(f => f.Status == SegmentFetch.FetchStatus.Ok).Select(f => f.DurationMs));
             errors = BuildErrors(fetches.Select(f => f.Status));
             totalArticles = throughput.Sum(p => p.Articles);
@@ -355,19 +362,18 @@ public class GetOverviewStatsController(
         public ProviderAccumulator(int n) { Spark = new long[n]; }
     }
 
-    private static GetOverviewStatsResponse.HeatmapBlock BuildHeatmap(IEnumerable<long> fetchTimes, long nowMs)
+    private static GetOverviewStatsResponse.HeatmapBlock BuildHeatmapFromHourly(
+        IEnumerable<(long Hour, long Articles)> hours)
     {
-        var since = nowMs - 7 * OneDay;
         var cells = new Dictionary<(int Day, int Hour), long>();
         long max = 0;
-        foreach (var at in fetchTimes)
+        foreach (var (hour, articles) in hours)
         {
-            if (at < since) continue;
-            var dt = DateTimeOffset.FromUnixTimeMilliseconds(at).UtcDateTime;
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(hour).UtcDateTime;
             var dow = ((int)dt.DayOfWeek + 6) % 7; // shift Sun=0 → Mon=0
             var key = (dow, dt.Hour);
             cells.TryGetValue(key, out var c);
-            c++;
+            c += articles;
             cells[key] = c;
             if (c > max) max = c;
         }
