@@ -14,6 +14,7 @@ export type ActivityHeatmapProps = {
 
 const ONE_HOUR = 3_600_000;
 const ONE_DAY = 86_400_000;
+const ONE_WEEK = 7 * ONE_DAY;
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -38,15 +39,9 @@ type GridShape = {
 export function ActivityHeatmap({ maxCell, mode, windowStartMs, windowEndMs, bucketSizeMs, cells }: ActivityHeatmapProps) {
     const [hover, setHover] = useState<GridCell | null>(null);
 
-    const lookup = useMemo(() => {
-        const m = new Map<number, number>();
-        for (const c of cells) m.set(c.bucket, c.count);
-        return m;
-    }, [cells]);
-
     const grid = useMemo(
-        () => buildGrid(mode, windowStartMs, windowEndMs, bucketSizeMs, lookup),
-        [mode, windowStartMs, windowEndMs, bucketSizeMs, lookup],
+        () => buildGrid(mode, windowStartMs, windowEndMs, cells),
+        [mode, windowStartMs, windowEndMs, cells],
     );
 
     const total = useMemo(() => cells.reduce((s, c) => s + c.count, 0), [cells]);
@@ -154,34 +149,40 @@ function buildGrid(
     mode: HeatmapMode,
     windowStartMs: number,
     windowEndMs: number,
-    bucketSizeMs: number,
-    lookup: Map<number, number>,
+    cells: HeatmapCell[],
 ): GridShape {
     if (mode === "day") {
-        const cells: GridCell[] = [];
+        const byBucket = new Map<number, number>();
+        for (const c of cells) byBucket.set(c.bucket, c.count);
+        const row: GridCell[] = [];
         for (let h = 0; h < 24; h++) {
             const bucket = windowStartMs + h * ONE_HOUR;
-            cells.push({ bucket, count: lookup.get(bucket) ?? 0, inRange: true });
+            row.push({ bucket, count: byBucket.get(bucket) ?? 0, inRange: bucket <= windowEndMs });
         }
-        return {
-            rows: [{ label: "Hours", cells }],
-            cols: 24,
-            columnLabels: hourAxisLabels(),
-        };
+        return { rows: [{ label: "Hours", cells: row }], cols: 24, columnLabels: rollingHourLabels(row) };
     }
 
     if (mode === "week" || mode === "month") {
-        const dayCount = mode === "week" ? 7 : 30;
+        const counts = new Map<string, number>();
+        for (const c of cells) {
+            const key = `${startOfLocalDay(c.bucket)}:${new Date(c.bucket).getHours()}`;
+            counts.set(key, (counts.get(key) ?? 0) + c.count);
+        }
+
+        const firstDay = startOfLocalDay(windowStartMs);
+        const lastDay = startOfLocalDay(windowEndMs);
+        const dayCount = Math.round((lastDay - firstDay) / ONE_DAY) + 1;
+
         const rows: GridRow[] = [];
         for (let d = 0; d < dayCount; d++) {
-            const dayStart = windowStartMs + d * ONE_DAY;
+            const dayStart = addLocalDays(firstDay, d);
             const cellsRow: GridCell[] = [];
             for (let h = 0; h < 24; h++) {
-                const bucket = dayStart + h * ONE_HOUR;
+                const instant = dayStart + h * ONE_HOUR;
                 cellsRow.push({
-                    bucket,
-                    count: lookup.get(bucket) ?? 0,
-                    inRange: bucket <= windowEndMs,
+                    bucket: instant,
+                    count: counts.get(`${dayStart}:${h}`) ?? 0,
+                    inRange: instant >= windowStartMs && instant <= windowEndMs,
                 });
             }
             rows.push({
@@ -190,44 +191,75 @@ function buildGrid(
                 cells: cellsRow,
             });
         }
-        return {
-            rows,
-            cols: 24,
-            columnLabels: hourAxisLabels(),
-        };
+        return { rows, cols: 24, columnLabels: hourAxisLabels() };
     }
 
-    const weekCount = 53;
+    const firstMonday = startOfLocalWeek(windowStartMs);
+    const counts = new Map<string, number>();
+    for (const c of cells) {
+        const day = startOfLocalDay(c.bucket);
+        const week = Math.round((startOfLocalWeek(day) - firstMonday) / ONE_WEEK);
+        counts.set(`${localDow(day)}:${week}`, (counts.get(`${localDow(day)}:${week}`) ?? 0) + c.count);
+    }
+
+    const lastDay = startOfLocalDay(windowEndMs);
+    const weekCount = Math.round((startOfLocalWeek(windowEndMs) - firstMonday) / ONE_WEEK) + 1;
     const rows: GridRow[] = [];
     for (let dow = 0; dow < 7; dow++) {
         const cellsRow: GridCell[] = [];
         for (let w = 0; w < weekCount; w++) {
-            const bucket = windowStartMs + w * 7 * ONE_DAY + dow * ONE_DAY;
+            const dayStart = addLocalDays(firstMonday, w * 7 + dow);
             cellsRow.push({
-                bucket,
-                count: lookup.get(bucket) ?? 0,
-                inRange: bucket <= windowEndMs,
+                bucket: dayStart,
+                count: counts.get(`${dow}:${w}`) ?? 0,
+                inRange: dayStart <= lastDay,
             });
         }
         rows.push({ label: DOW_LABELS[dow], cells: cellsRow });
     }
-    return {
-        rows,
-        cols: weekCount,
-        columnLabels: monthAxisLabels(windowStartMs, weekCount),
-    };
+    return { rows, cols: weekCount, columnLabels: monthAxisLabels(firstMonday, weekCount) };
+}
+
+function startOfLocalDay(ms: number): number {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function addLocalDays(dayStartMs: number, days: number): number {
+    const d = new Date(dayStartMs);
+    d.setDate(d.getDate() + days);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+function startOfLocalWeek(ms: number): number {
+    const day = startOfLocalDay(ms);
+    return addLocalDays(day, -localDow(day));
+}
+
+function localDow(ms: number): number {
+    return (new Date(ms).getDay() + 6) % 7;
 }
 
 function hourAxisLabels(): { index: number, label: string }[] {
     return [0, 6, 12, 18, 23].map(h => ({ index: h, label: String(h).padStart(2, "0") }));
 }
 
-function monthAxisLabels(startMonday: number, weekCount: number): { index: number, label: string }[] {
+function rollingHourLabels(cells: GridCell[]): { index: number, label: string }[] {
+    const labels: { index: number, label: string }[] = [];
+    for (let i = 0; i < cells.length; i++) {
+        const hour = new Date(cells[i].bucket).getHours();
+        if (hour % 6 === 0) labels.push({ index: i, label: String(hour).padStart(2, "0") });
+    }
+    return labels;
+}
+
+function monthAxisLabels(firstMonday: number, weekCount: number): { index: number, label: string }[] {
     const labels: { index: number, label: string }[] = [];
     let lastMonth = -1;
     for (let w = 0; w < weekCount; w++) {
-        const weekStart = new Date(startMonday + w * 7 * ONE_DAY);
-        const m = weekStart.getUTCMonth();
+        const m = new Date(addLocalDays(firstMonday, w * 7)).getMonth();
         if (m !== lastMonth) {
             labels.push({ index: w, label: MONTH_LABELS[m] });
             lastMonth = m;
@@ -238,27 +270,27 @@ function monthAxisLabels(startMonday: number, weekCount: number): { index: numbe
 
 function rowDateLabel(dayStartMs: number, mode: HeatmapMode): string {
     const d = new Date(dayStartMs);
-    const month = MONTH_LABELS[d.getUTCMonth()];
-    const day = d.getUTCDate();
+    const month = MONTH_LABELS[d.getMonth()];
+    const day = d.getDate();
     if (mode === "week") {
-        return `${DOW_LABELS[(d.getUTCDay() + 6) % 7]} ${day}`;
+        return `${DOW_LABELS[(d.getDay() + 6) % 7]} ${day}`;
     }
     return `${month} ${day}`;
 }
 
 function formatBucket(bucketMs: number, bucketSizeMs: number): string {
     const d = new Date(bucketMs);
-    const month = MONTH_LABELS[d.getUTCMonth()];
-    const day = d.getUTCDate();
-    const dow = DOW_LABELS[(d.getUTCDay() + 6) % 7];
-    const year = d.getUTCFullYear();
-    const yearNow = new Date().getUTCFullYear();
+    const month = MONTH_LABELS[d.getMonth()];
+    const day = d.getDate();
+    const dow = DOW_LABELS[(d.getDay() + 6) % 7];
+    const year = d.getFullYear();
+    const yearNow = new Date().getFullYear();
     const yearSuffix = year === yearNow ? "" : ` ${year}`;
     if (bucketSizeMs >= ONE_DAY) {
         return `${dow} ${month} ${day}${yearSuffix}`;
     }
-    const hour = String(d.getUTCHours()).padStart(2, "0");
-    return `${dow} ${month} ${day}${yearSuffix} ${hour}:00 UTC`;
+    const hour = String(d.getHours()).padStart(2, "0");
+    return `${dow} ${month} ${day}${yearSuffix} ${hour}:00`;
 }
 
 function subtitleFor(mode: HeatmapMode): string {
