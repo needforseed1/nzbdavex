@@ -1,90 +1,58 @@
 # Changelog
 
-## [0.7.0](https://github.com/qooode/nzbdavex/compare/v0.6.4...v0.7.0) (2026-05-20)
+## [1.0.0](https://github.com/qooode/nzbdavex/releases/tag/v1.0.0) (2026-05-28)
+
+**First official release of davex.** davex is an independent fork of [nzbdav](https://github.com/nzbdav-dev/nzbdav), rebuilt into a fast on-demand usenet client with a token-scoped search API, self-healing content resolution, and a live observability dashboard. This release captures everything the fork added since it diverged from nzbdav 0.6.4.
+
+
+### Highlights
+
+1. **Search Profiles: a token-scoped, multi-adapter search API.** Each profile exposes its own Newznab adapter, JSON search, and NZB proxy endpoints behind a scoped token, so *arr apps and other external clients can search and fetch straight from davex. This is the backbone of the fork. ([93e61fc](https://github.com/qooode/nzbdavex/commit/93e61fc), [81e6e20](https://github.com/qooode/nzbdavex/commit/81e6e20))
+2. **Watchdog: self-healing resolution with a live dashboard.** When a client requests an item, davex works down the ranked candidates across your indexers and providers and automatically falls through dead, incomplete, or excluded releases until one resolves, so a single bad release no longer breaks the request. The Watchdog page shows it happening live: every click grouped into its attempts with indexer, provider, size, outcome, fail reason, and timing, plus the winning release and how fast it resolved. Filter by live, resolved, failed, or excluded, and the whole history persists across restarts. ([476484a](https://github.com/qooode/nzbdavex/commit/476484a), [874681b](https://github.com/qooode/nzbdavex/commit/874681b), [6bb315f](https://github.com/qooode/nzbdavex/commit/6bb315f), [6f805ad](https://github.com/qooode/nzbdavex/commit/6f805ad))
+3. **Live Overview dashboard.** A real-time control center built from scratch: throughput chart, error donut, activity heatmap, provider and indexer scoreboards, lifetime totals, and an active-reads panel showing exactly what is being served right now, all pushed live over WebSocket. ([93e89b7](https://github.com/qooode/nzbdavex/commit/93e89b7), [3130a89](https://github.com/qooode/nzbdavex/commit/3130a89), [051112f](https://github.com/qooode/nzbdavex/commit/051112f))
+4. **Preflight verification.** davex can pre-verify the top search candidates and cache their NZB bytes before a client ever connects, so the first read lands on a known-good release. Mode, candidate count, TTL, and max indexer wait are all configurable. ([e4ae7cc](https://github.com/qooode/nzbdavex/commit/e4ae7cc))
+5. **Size-aware content variants.** When the same title shows up as several releases, the variant resolver keeps the best one by size (with configurable tolerance and eviction) instead of re-downloading duplicates. ([2e6951c](https://github.com/qooode/nzbdavex/commit/2e6951c))
+6. **Faster RAR access.** Lazy RAR mounting parses only the first volume at import and defers the rest to first read, dropping click-to-mount from roughly 5 to 15 seconds down to 1 to 2 seconds on typical releases. Trailing volumes then pre-warm in the background so the first read no longer stutters. Toggle via `api.lazy-rar-parsing`; unsupported archives fall back to the eager processor automatically. ([18f6a67](https://github.com/qooode/nzbdavex/commit/18f6a67), [88f6a14](https://github.com/qooode/nzbdavex/commit/88f6a14))
+7. **Provider usage tracking and data caps.** Track each Usenet provider's usage against a configurable data cap, toggle providers on and off, and give them nicknames, all surfaced in the client and on the scoreboards. ([1855512](https://github.com/qooode/nzbdavex/commit/1855512), [989673a](https://github.com/qooode/nzbdavex/commit/989673a), [3f53915](https://github.com/qooode/nzbdavex/commit/3f53915), [17ce0b9](https://github.com/qooode/nzbdavex/commit/17ce0b9))
 
 
 ### Features
 
-* lazy RAR mounting. Only parses the first volume at import and defers trailing volumes to first read. Drops click-to-mount from ~5-15s to ~1-2s on typical RAR releases. Toggle via `api.lazy-rar-parsing` (default on); unsupported archives (compressed, solid, multi-file with companion files) automatically fall back to the eager per-part processor. ([18f6a67](https://github.com/qooode/nzbdavex/commit/18f6a674))
-* parallel resolution of trailing RAR volumes during first read, capped at `MaxDownloadConnections`. Avoids the multi-second stall when a player issues its end-of-file metadata request right after opening a video. ([65905cd](https://github.com/qooode/nzbdavex/commit/65905cd3))
+**Search and indexers**
+
+* ID resolvers for TVDB, IMDb titles, and external IDs, with a configurable query fallback when the first search returns too few results. ([60896c6](https://github.com/qooode/nzbdavex/commit/60896c6), [6d7397f](https://github.com/qooode/nzbdavex/commit/6d7397f), [f0b54b3](https://github.com/qooode/nzbdavex/commit/f0b54b3))
+* Strict matching to cut false positives, plus per-indexer category overrides (extra movie/TV categories and an ignore-filter toggle). ([4fa8222](https://github.com/qooode/nzbdavex/commit/4fa8222), [d31404f](https://github.com/qooode/nzbdavex/commit/d31404f))
+* Result filtering by age and grab count, with richer result metadata. ([174e7cb](https://github.com/qooode/nzbdavex/commit/174e7cb), [0d393fc](https://github.com/qooode/nzbdavex/commit/0d393fc))
+* Per-indexer request timeouts, custom User-Agent, and proxy support, plus a Newznab rate limiter and an NZB resolution cache. ([2335550](https://github.com/qooode/nzbdavex/commit/2335550), [e9e2d4a](https://github.com/qooode/nzbdavex/commit/e9e2d4a), [9c1bb8f](https://github.com/qooode/nzbdavex/commit/9c1bb8f), [c451079](https://github.com/qooode/nzbdavex/commit/c451079))
+* Indexer API-usage tracking: hits against each indexer's configured limits, shown on the Overview and Indexer settings. ([0f17473](https://github.com/qooode/nzbdavex/commit/0f17473))
+
+**Content delivery**
+
+* New profile delivery pipeline with active read sessions and a session registry. ([051112f](https://github.com/qooode/nzbdavex/commit/051112f), [6212172](https://github.com/qooode/nzbdavex/commit/6212172))
+* Suffix-length range requests (`bytes=-N`), video-resolution caching, extended content-type mappings, and Cache-Control headers. ([f06f896](https://github.com/qooode/nzbdavex/commit/f06f896), [3f8173e](https://github.com/qooode/nzbdavex/commit/3f8173e), [ba0749f](https://github.com/qooode/nzbdavex/commit/ba0749f))
+
+**Observability**
+
+* Live log viewer that pushes backend logs over WebSocket in real time, with download. ([ef0111b](https://github.com/qooode/nzbdavex/commit/ef0111b))
+* Transfer metrics (bytes served and throughput) feeding the live dashboard. ([67f1016](https://github.com/qooode/nzbdavex/commit/67f1016), [ade1815](https://github.com/qooode/nzbdavex/commit/ade1815))
+
+**UI and settings**
+
+* Rebrand from nzbdav to davex with refreshed branding and app icons. ([17db1a4](https://github.com/qooode/nzbdavex/commit/17db1a4), [7596bc4](https://github.com/qooode/nzbdavex/commit/7596bc4), [b7b2dd4](https://github.com/qooode/nzbdavex/commit/b7b2dd4))
+* Reworked Indexers settings (card layout and modal), an advanced settings tab with accordion, a cleaner SABnzbd settings page, and an explore route with a toolbar, multi-select, and delete. ([c808876](https://github.com/qooode/nzbdavex/commit/c808876), [166bf94](https://github.com/qooode/nzbdavex/commit/166bf94), [7b2002e](https://github.com/qooode/nzbdavex/commit/7b2002e), [9faedbb](https://github.com/qooode/nzbdavex/commit/9faedbb))
+* Custom checkboxes and toggle switches across the app. ([49213ab](https://github.com/qooode/nzbdavex/commit/49213ab))
+
+**Packaging**
+
+* Multi-arch Docker images (`linux/amd64` and `linux/arm64`) published to GHCR with `edge` and semver tags, and removal of the legacy workflows and Dependabot config. ([6317dcc](https://github.com/qooode/nzbdavex/commit/6317dcc), [b5c49c1](https://github.com/qooode/nzbdavex/commit/b5c49c1))
 
 
 ### Bug Fixes
 
-* skip SharpCompress's seek-past-file-data in lazy resolver, which otherwise fires ~7 InterpolationSearch STATs per volume boundary and stutters playback. ([f04113a](https://github.com/qooode/nzbdavex/commit/f04113a))
-* apply the same early-stop trick to first-volume parse and parallelize pending-part size lookups in `LazyRarProcessor`. ([e9fbac5](https://github.com/qooode/nzbdavex/commit/e9fbac5))
-* keep old `DavMultipartFile` blobs readable by treating missing `PendingParts`/`FileParts` as empty rather than NRE. ([18f6a67](https://github.com/qooode/nzbdavex/commit/18f6a674))
-
-## [0.6.4](https://github.com/nzbdav-dev/nzbdav/compare/v0.6.3...v0.6.4) (2026-04-08)
-
-
-### Bug Fixes
-
-* **deps:** bump @types/node from 25.4.0 to 25.5.0 in /frontend ([#381](https://github.com/nzbdav-dev/nzbdav/issues/381)) ([680e80d](https://github.com/nzbdav-dev/nzbdav/commit/680e80df44d4a86a6c896e25c54762159fd69741))
-* **deps:** bump isbot from 5.1.36 to 5.1.37 in /frontend ([#379](https://github.com/nzbdav-dev/nzbdav/issues/379)) ([b054f42](https://github.com/nzbdav-dev/nzbdav/commit/b054f42a8e2b715f94995b5e37763f8c0d9651f7))
-* **deps:** Bump the dotnet group with 3 updates ([#395](https://github.com/nzbdav-dev/nzbdav/issues/395)) ([aae1e43](https://github.com/nzbdav-dev/nzbdav/commit/aae1e4367bb70f7a0a517779f453680c1e06c2bb))
-* **deps:** bump the react group in /frontend with 2 updates ([#394](https://github.com/nzbdav-dev/nzbdav/issues/394)) ([5ce46bc](https://github.com/nzbdav-dev/nzbdav/commit/5ce46bc74b0cf671a91987f92aca96c5830d4615))
-* **deps:** bump the react-router group in /frontend with 5 updates ([#372](https://github.com/nzbdav-dev/nzbdav/issues/372)) ([27d4cea](https://github.com/nzbdav-dev/nzbdav/commit/27d4cea5790d92bc6f965e3dfdb3c50f9dad207a))
-* **deps:** bump the tailwindcss group in /frontend with 2 updates ([#374](https://github.com/nzbdav-dev/nzbdav/issues/374)) ([2f1c0f8](https://github.com/nzbdav-dev/nzbdav/commit/2f1c0f8bf480d7d49dfdadcafba47e7e6f7ce948))
-* **deps:** bump vite from 7.3.1 to 8.0.3 in /frontend in the vite group ([#375](https://github.com/nzbdav-dev/nzbdav/issues/375)) ([2efc0c2](https://github.com/nzbdav-dev/nzbdav/commit/2efc0c24ae2672afe5644a0186dbc1ebad710419))
-* **deps:** bump ws from 8.19.0 to 8.20.0 in /frontend ([#380](https://github.com/nzbdav-dev/nzbdav/issues/380)) ([cb42d73](https://github.com/nzbdav-dev/nzbdav/commit/cb42d73124d528b57addc70d542f562ca16d8496))
-
-## [0.6.3](https://github.com/nzbdav-dev/nzbdav/compare/v0.6.2...v0.6.3) (2026-04-08)
-
-
-### Features
-
-* add NZB backup settings to frontend. ([55260d4](https://github.com/nzbdav-dev/nzbdav/commit/55260d41d00722b3881b4eeea5d5d07e86d5704b))
-* allow exporting nzb from history table. ([7928d4b](https://github.com/nzbdav-dev/nzbdav/commit/7928d4b1fb5fc785828b4a7b211d5c62b37b6243))
-* backup incoming nzbs to configured directory when enabled. ([c2b3692](https://github.com/nzbdav-dev/nzbdav/commit/c2b369229ae7ebd0bd3bfaa14c99f939d93c241e))
-* index QueueItems table by category and filename. ([9116bfc](https://github.com/nzbdav-dev/nzbdav/commit/9116bfc93407dc867206f16f644f7201591ff0e1))
-* organize /nzbs webdav dir by category. ([404d418](https://github.com/nzbdav-dev/nzbdav/commit/404d418a8a0a9d1465c1115b87a8506a5b9d56de))
-
-
-### Bug Fixes
-
-* remove 'Delete mounted files' option when clearing a failed history item. ([dfbc411](https://github.com/nzbdav-dev/nzbdav/commit/dfbc41148a0877cecba45bd01c97602222d1dac1))
-* updated opacity for disabled history actions. ([0b82f48](https://github.com/nzbdav-dev/nzbdav/commit/0b82f482465d0c7a81c3dca7889b57a9e0d060b2))
-* updated padding on queue/history tables. ([2e83dc7](https://github.com/nzbdav-dev/nzbdav/commit/2e83dc74e75a27b3cba1aa5b82f5da5a0b1a8217))
-* webdav range requests past content boundary return 500 instead 416 ([#384](https://github.com/nzbdav-dev/nzbdav/issues/384)) ([a43d5d7](https://github.com/nzbdav-dev/nzbdav/commit/a43d5d7e3d2de1201800dab1a38ad67b1e9d001e))
-
-## [0.6.2](https://github.com/nzbdav-dev/nzbdav/compare/v0.6.1...v0.6.2) (2026-03-24)
-
-
-### Bug Fixes
-
-* compatability issues with NZBDonkey ([#316](https://github.com/nzbdav-dev/nzbdav/issues/316)) ([b2d0f2a](https://github.com/nzbdav-dev/nzbdav/commit/b2d0f2a4c6b48cca688bdffb91ba1b71a3fb1b84))
-* downgrade unreachable Arr instance log level from Error to Debug ([#352](https://github.com/nzbdav-dev/nzbdav/issues/352)) ([90a03bf](https://github.com/nzbdav-dev/nzbdav/commit/90a03bf3e63a871b75d25ab109a6fcdd4689ffae))
-* ensure `audio/flac` content-type mapping for flac files. ([5253fe3](https://github.com/nzbdav-dev/nzbdav/commit/5253fe3f03cbc2889928c338b2096acc7b863a52))
-* fail queue items with missing nzb blobs instead of blocking queue ([#351](https://github.com/nzbdav-dev/nzbdav/issues/351)) ([a146d07](https://github.com/nzbdav-dev/nzbdav/commit/a146d07d8c62891993796b28ad358e41385dd02d))
-* funnel frontend auth through middleware. ([eb71ebf](https://github.com/nzbdav-dev/nzbdav/commit/eb71ebf8432fc78446de1e37e4d9c5c3e81112be))
-* improve error message for malformed nzbs. ([325252e](https://github.com/nzbdav-dev/nzbdav/commit/325252e65f910f36d0e52810ccb2fba0d1a50019))
-* typo when disposing queue nzb stream. ([3e44aae](https://github.com/nzbdav-dev/nzbdav/commit/3e44aaebd635f6dcd9949f1d6dcd80d61985cbb0))
-* update changelog link on ui leftnav-menu. ([14cd09d](https://github.com/nzbdav-dev/nzbdav/commit/14cd09d2a5f88438b79b46cc6b9c1200fedf0c16))
-
-## [0.6.1](https://github.com/nzbdav-dev/nzbdav/compare/v0.6.0...v0.6.1) (2026-03-11)
-
-
-### Bug Fixes
-
-* **deps:** bump @tailwindcss/vite from 4.1.11 to 4.2.1 in /frontend ([#330](https://github.com/nzbdav-dev/nzbdav/issues/330)) ([3389627](https://github.com/nzbdav-dev/nzbdav/commit/3389627c98a50370d580d614ebb0f0874d507219))
-* **deps:** bump @types/express-serve-static-core ([#347](https://github.com/nzbdav-dev/nzbdav/issues/347)) ([95f8953](https://github.com/nzbdav-dev/nzbdav/commit/95f89533f1ed3f16a4c862f3e67f83d6b6ddf401))
-* **deps:** bump @types/node from 20.19.10 to 25.4.0 in /frontend ([#328](https://github.com/nzbdav-dev/nzbdav/issues/328)) ([7239021](https://github.com/nzbdav-dev/nzbdav/commit/72390216d65380230fff1b0c091ec677e892a223))
-* **deps:** bump bootstrap from 5.3.7 to 5.3.8 in /frontend ([#329](https://github.com/nzbdav-dev/nzbdav/issues/329)) ([1790518](https://github.com/nzbdav-dev/nzbdav/commit/17905189d379ae0d8ed0e2934d3acde7e3009785))
-* **deps:** bump cross-env from 7.0.3 to 10.1.0 in /frontend ([#336](https://github.com/nzbdav-dev/nzbdav/issues/336)) ([b8d6693](https://github.com/nzbdav-dev/nzbdav/commit/b8d6693225e819127bb40063f335c8ab7a4f5ca0))
-* **deps:** bump express and @types/express in /frontend ([#324](https://github.com/nzbdav-dev/nzbdav/issues/324)) ([1539ce5](https://github.com/nzbdav-dev/nzbdav/commit/1539ce5d50ac53f1ca39a65166d17ed80fb295e1))
-* **deps:** bump isbot from 5.1.29 to 5.1.35 in /frontend ([#322](https://github.com/nzbdav-dev/nzbdav/issues/322)) ([2d0d069](https://github.com/nzbdav-dev/nzbdav/commit/2d0d0694ecc060134810e7c2d4bbb07aaa94a74f))
-* **deps:** bump isbot from 5.1.35 to 5.1.36 in /frontend ([#349](https://github.com/nzbdav-dev/nzbdav/issues/349)) ([0619772](https://github.com/nzbdav-dev/nzbdav/commit/06197726fd2be0695027e5a7ca1ecf8c55d21586))
-* **deps:** Bump Microsoft.AspNetCore.OpenApi from 10.0.1 to 10.0.4 ([#332](https://github.com/nzbdav-dev/nzbdav/issues/332)) ([7e0cfd6](https://github.com/nzbdav-dev/nzbdav/commit/7e0cfd6acada37b2b2de8961eae9d095a97f8417))
-* **deps:** Bump Microsoft.EntityFrameworkCore.Design from 10.0.1 to 10.0.4 ([#334](https://github.com/nzbdav-dev/nzbdav/issues/334)) ([88fa597](https://github.com/nzbdav-dev/nzbdav/commit/88fa5976bda674e98d2bf57802fbddeb721abaaa))
-* **deps:** Bump Microsoft.EntityFrameworkCore.Sqlite from 10.0.1 to 10.0.4 ([#338](https://github.com/nzbdav-dev/nzbdav/issues/338)) ([e19d72c](https://github.com/nzbdav-dev/nzbdav/commit/e19d72cd42b9ea302fc6e5dae32ea0e2652f1094))
-* **deps:** bump mime-types from 3.0.1 to 3.0.2 in /frontend ([#323](https://github.com/nzbdav-dev/nzbdav/issues/323)) ([8866951](https://github.com/nzbdav-dev/nzbdav/commit/88669514ff6ff279647cd8f92f23ae9f3aa908a4))
-* **deps:** bump react-dropzone from 14.3.8 to 15.0.0 in /frontend ([#348](https://github.com/nzbdav-dev/nzbdav/issues/348)) ([ab24e15](https://github.com/nzbdav-dev/nzbdav/commit/ab24e15c3b8ec3cda5c07c2943adbf1fadd1c52c))
-* **deps:** bump tailwindcss from 4.1.11 to 4.2.1 in /frontend ([#335](https://github.com/nzbdav-dev/nzbdav/issues/335)) ([2a62a41](https://github.com/nzbdav-dev/nzbdav/commit/2a62a41e8b3b094f69bbb687bec775776530435b))
-* **deps:** bump the react group in /frontend with 4 updates ([#346](https://github.com/nzbdav-dev/nzbdav/issues/346)) ([46a8a7b](https://github.com/nzbdav-dev/nzbdav/commit/46a8a7bc605033c8bf64bc159f9337425044b292))
-* **deps:** bump the react-router group in /frontend with 5 updates ([#345](https://github.com/nzbdav-dev/nzbdav/issues/345)) ([83833f4](https://github.com/nzbdav-dev/nzbdav/commit/83833f4e35cacc7010368a9b0935d1ed6945b58f))
-* **deps:** bump tsx from 4.20.3 to 4.21.0 in /frontend ([#326](https://github.com/nzbdav-dev/nzbdav/issues/326)) ([71974ec](https://github.com/nzbdav-dev/nzbdav/commit/71974eca1762fb72f5f9ecad181b33a8dacb413f))
-* **deps:** bump typescript from 5.9.2 to 5.9.3 in /frontend ([#325](https://github.com/nzbdav-dev/nzbdav/issues/325)) ([1c692a6](https://github.com/nzbdav-dev/nzbdav/commit/1c692a66364cce5112f2c66bff55ec9ce400ba13))
-* **deps:** bump vite from 6.3.5 to 7.3.1 in /frontend ([#337](https://github.com/nzbdav-dev/nzbdav/issues/337)) ([0f8eea6](https://github.com/nzbdav-dev/nzbdav/commit/0f8eea6db59d16a3aeaf4b611e8c6b8d94b77e00))
-* **deps:** bump vite-tsconfig-paths from 5.1.4 to 6.1.1 in /frontend ([#341](https://github.com/nzbdav-dev/nzbdav/issues/341)) ([c396ad3](https://github.com/nzbdav-dev/nzbdav/commit/c396ad34a826ea1cc37cf2d29e30466031eb79be))
-* **deps:** bump ws from 8.18.3 to 8.19.0 in /frontend ([#342](https://github.com/nzbdav-dev/nzbdav/issues/342)) ([f2fa35d](https://github.com/nzbdav-dev/nzbdav/commit/f2fa35d86ad03c73ba5584ba2ccb3c28f25ef34d))
+* forward `/adapters/*` to the backend so addon manifest and Newznab URLs stop 404ing. ([e42f9d8](https://github.com/qooode/nzbdavex/commit/e42f9d8))
+* harden `MultiSegmentStream` and handle NNTP read timeouts more gracefully. ([51c6c1b](https://github.com/qooode/nzbdavex/commit/51c6c1b), [817cccd](https://github.com/qooode/nzbdavex/commit/817cccd))
+* lazy RAR resolver: skip SharpCompress seek-past-data stalls and serialize concurrent persistence. ([f04113a](https://github.com/qooode/nzbdavex/commit/f04113a), [7f4c57e](https://github.com/qooode/nzbdavex/commit/7f4c57e))
+* negative-cache failed WebDAV item lookups and return structured request errors. ([8e8a2e8](https://github.com/qooode/nzbdavex/commit/8e8a2e8), [d875049](https://github.com/qooode/nzbdavex/commit/d875049))
+* drop static `XElement` references in WebDAV property managers to avoid cross-request races. ([14fbaaf](https://github.com/qooode/nzbdavex/commit/14fbaaf))
+* cap search results at 100, normalize titles, and raise the regex timeout for exclude-pattern matching. ([ff6e10c](https://github.com/qooode/nzbdavex/commit/ff6e10c), [77c8176](https://github.com/qooode/nzbdavex/commit/77c8176), [d52aea7](https://github.com/qooode/nzbdavex/commit/d52aea7))
+* cancel in-flight verify tasks more reliably, with consistent route paths and NWebDav path-segment exclusions. ([216b5d5](https://github.com/qooode/nzbdavex/commit/216b5d5), [7467446](https://github.com/qooode/nzbdavex/commit/7467446), [ce6f177](https://github.com/qooode/nzbdavex/commit/ce6f177))

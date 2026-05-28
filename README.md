@@ -18,13 +18,10 @@ This is an extended fork of [nzbdav](https://github.com/nzbdav-dev/nzbdav) with 
 
 ## Getting Started
 
-There is no pre-built image published — clone the repo and build it locally with Docker:
+Pre-built multi-arch images (amd64/arm64) are published to GHCR. Pull the stable image and run it:
 
 ```bash
-git clone https://github.com/qooode/nzbdavex.git
-cd nzbdavex
-docker build -t nzbdavex:latest .
-docker run --rm -it -p 3000:3000 nzbdavex:latest
+docker run --rm -it -p 3000:3000 ghcr.io/qooode/nzbdavex:latest
 ```
 
 To persist settings, mount a volume at `/config`:
@@ -36,10 +33,31 @@ docker run --rm -it \
   -e PUID=1000 \
   -e PGID=1000 \
   -p 3000:3000 \
-  nzbdavex:latest
+  ghcr.io/qooode/nzbdavex:latest
 ```
 
-To update later, `git pull` in the cloned repo and rebuild with `docker build -t nzbdavex:latest .`.
+Image tags:
+
+- `:latest` — newest stable release (recommended)
+- `:1.0`, `:1.0.0` — pin to a release line or an exact version
+- `:edge` — latest commit on `main` (for testing; may be unstable)
+
+To update, pull the newer image and recreate the container:
+
+```bash
+docker pull ghcr.io/qooode/nzbdavex:latest
+```
+
+### Build from source (optional)
+
+Prefer to build it yourself? Clone the repo and build with Docker:
+
+```bash
+git clone https://github.com/qooode/nzbdavex.git
+cd nzbdavex
+docker build -t nzbdavex:latest .
+docker run --rm -it -p 3000:3000 nzbdavex:latest
+```
 
 Once running, open the UI on port `3000` and head to **Settings** to configure your NNTP providers and WebDAV credentials.
 

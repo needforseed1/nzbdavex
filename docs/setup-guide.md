@@ -39,11 +39,9 @@ Configure them in NzbDav under `Settings → Indexers`, and (optionally) in any 
 
 We start with a basic NzbDav container.
 
-There is no pre-built image published, so we build from source. Clone the repo somewhere on the host first:
+We use the pre-built multi-arch image published to GHCR (`ghcr.io/qooode/nzbdavex`). No clone or build needed.
 
-```bash
-git clone https://github.com/qooode/nzbdavex.git
-```
+> Prefer to build from source? Clone the repo (`git clone https://github.com/qooode/nzbdavex.git`) and replace the `image:` line in the compose below with `build: /path/to/nzbdavex`.
 
 ### 1. `docker-compose.yml` (Part 1)
 
@@ -56,14 +54,13 @@ your-root-docker-folder/
 │   └── ...
 ```
 
-Update `PUID`, `PGID`, `TZ`, `build:` path (to where you cloned `nzbdavex`), and volume paths as needed.
+Update `PUID`, `PGID`, `TZ`, and volume paths as needed.
 You can get your PUID/PGID by running `id` in your terminal.
 
 ```yaml
 services:
   nzbdav:
-    build: /path/to/nzbdavex   # path to the cloned https://github.com/qooode/nzbdavex repo
-    image: nzbdavex:latest
+    image: ghcr.io/qooode/nzbdavex:latest   # to build from source instead, replace with: build: /path/to/nzbdavex
     container_name: nzbdav
     restart: unless-stopped
     healthcheck:
