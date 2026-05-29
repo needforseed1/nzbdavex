@@ -61,7 +61,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
     const { order, save, reset } = useRowOrder(DEFAULT_ROW_ORDER);
 
     const liveTiles = stats.tiles;
-    const isLongWindow = window === "30d" || window === "all";
+    const isLongWindow = window === "7d" || window === "30d" || window === "all";
 
     // Re-fetch on window change + every 30s so chart, heatmap, providers, etc.
     // stay fresh without manual refresh. Skipped when the tab is hidden so

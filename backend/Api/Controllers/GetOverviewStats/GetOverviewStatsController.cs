@@ -52,6 +52,7 @@ public class GetOverviewStatsController(
 
         await using var metrics = new MetricsDbContext();
         var useRollups =
+            window == GetOverviewStatsRequest.OverviewWindow.Last7Days ||
             window == GetOverviewStatsRequest.OverviewWindow.Last30Days ||
             window == GetOverviewStatsRequest.OverviewWindow.AllTime;
 
@@ -73,8 +74,6 @@ public class GetOverviewStatsController(
 
         if (useRollups)
         {
-            // Long windows: scan the hourly rollup. Raw SegmentFetches only retain 24 h
-            // so they cannot answer 30-day or all-time questions.
             var hours = await metrics.ProviderHourly
                 .Where(h => h.Hour >= windowStart)
                 .Select(h => new { h.Hour, h.Provider, h.Articles, h.BytesFetched, h.Errors, h.Retries, h.SumDurationMs })
