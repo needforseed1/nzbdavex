@@ -18,6 +18,8 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
     private readonly object _evictLock = new();
     private long _currentBytes;
 
+    private static readonly JsonSerializerOptions HeaderJsonOptions = new() { IncludeFields = true };
+
     public SegmentCacheNntpClient(INntpClient inner, string cacheDir, long maxBytes) : base(inner)
     {
         _dir = cacheDir;
@@ -102,8 +104,9 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         var blobPath = BlobPath(hash);
         try
         {
-            var header = JsonSerializer.Deserialize<UsenetYencHeader>(File.ReadAllText(blobPath + ".h"));
-            if (header == null)
+            var header = JsonSerializer.Deserialize<UsenetYencHeader>(
+                File.ReadAllText(blobPath + ".h"), HeaderJsonOptions);
+            if (header == null || header.PartSize != entry.Size)
             {
                 Drop(hash);
                 return false;
@@ -299,7 +302,7 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
                 {
                     if (_eof && !_writeFailed && _temp != null && _written == _header.PartSize)
                     {
-                        File.WriteAllText(_blobPath + ".h", JsonSerializer.Serialize(_header));
+                        File.WriteAllText(_blobPath + ".h", JsonSerializer.Serialize(_header, HeaderJsonOptions));
                         File.Move(_tempPath, _blobPath, overwrite: true);
                         _onFinalized(Path.GetFileName(_blobPath), _written);
                     }
