@@ -45,22 +45,7 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         }
 
         var response = await base.DecodedBodyAsync(segmentId, onConnectionReadyAgain, ct).ConfigureAwait(false);
-        if (response.ResponseType != UsenetResponseType.ArticleRetrievedBodyFollows)
-            return response;
-
-        UsenetYencHeader? header = null;
-        try
-        {
-            header = await response.Stream.GetYencHeadersAsync(ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            // fall through: serve uncached
-        }
-
-        if (header == null) return response;
-        var tee = new WriteThroughStream(response.Stream, header, BlobPath(Hash(id)), OnFinalized);
-        return response with { Stream = tee };
+        return await WrapForCachingAsync(id, response, ct).ConfigureAwait(false);
     }
 
     public override async Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync(
@@ -71,10 +56,41 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         return await base.AcquireExclusiveConnectionAsync(segmentId, ct).ConfigureAwait(false);
     }
 
-    public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
+    public override async Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
         SegmentId segmentId, UsenetExclusiveConnection exclusiveConnection, CancellationToken ct)
     {
-        return DecodedBodyAsync(segmentId, exclusiveConnection.OnConnectionReadyAgain, ct);
+        if (MultiProviderNntpClient.AttributionContext.Value != null)
+            return await base.DecodedBodyAsync(segmentId, exclusiveConnection, ct).ConfigureAwait(false);
+
+        string id = segmentId;
+        if (TryServeFromCache(id, out var cached))
+        {
+            exclusiveConnection.OnConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
+            return cached!;
+        }
+
+        var response = await base.DecodedBodyAsync(segmentId, exclusiveConnection, ct).ConfigureAwait(false);
+        return await WrapForCachingAsync(id, response, ct).ConfigureAwait(false);
+    }
+
+    private async Task<UsenetDecodedBodyResponse> WrapForCachingAsync(
+        string id, UsenetDecodedBodyResponse response, CancellationToken ct)
+    {
+        if (response.ResponseType != UsenetResponseType.ArticleRetrievedBodyFollows)
+            return response;
+
+        UsenetYencHeader? header = null;
+        try
+        {
+            header = await response.Stream.GetYencHeadersAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            header = null;
+        }
+
+        if (header == null) return response;
+        return response with { Stream = new WriteThroughStream(response.Stream, header, BlobPath(Hash(id)), OnFinalized) };
     }
 
     private bool TryServeFromCache(string id, out UsenetDecodedBodyResponse? response)
