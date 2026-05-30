@@ -1,10 +1,15 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace NzbWebDAV.Services;
 
 public class TmdbIdResolver
 {
-    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(6) };
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan NegativeTtl = TimeSpan.FromMinutes(15);
+
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
 
     public async Task<string?> GetImdbIdAsync(string type, string tmdbId, CancellationToken ct)
     {
@@ -17,6 +22,17 @@ public class TmdbIdResolver
         if (property is null) return null;
         if (!ulong.TryParse(tmdbId, out _)) return null;
 
+        var key = $"{type}|{tmdbId}";
+        if (_cache.TryGetValue(key, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
+            return cached.ImdbId;
+
+        var imdb = await ResolveAsync(property, tmdbId, ct).ConfigureAwait(false);
+        _cache[key] = new CacheEntry(imdb, DateTimeOffset.UtcNow.Add(imdb is null ? NegativeTtl : CacheTtl));
+        return imdb;
+    }
+
+    private static async Task<string?> ResolveAsync(string property, string tmdbId, CancellationToken ct)
+    {
         try
         {
             var query = $"SELECT ?imdb WHERE {{ ?item wdt:{property} \"{tmdbId}\" . ?item wdt:P345 ?imdb . }} LIMIT 1";
@@ -39,4 +55,6 @@ public class TmdbIdResolver
             return null;
         }
     }
+
+    private sealed record CacheEntry(string? ImdbId, DateTimeOffset ExpiresAt);
 }

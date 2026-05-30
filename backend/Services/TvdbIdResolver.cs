@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 
@@ -5,13 +6,31 @@ namespace NzbWebDAV.Services;
 
 public class TvdbIdResolver
 {
-    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(6) };
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan NegativeTtl = TimeSpan.FromMinutes(15);
+
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
 
     public async Task<int?> GetTvdbIdAsync(string imdbDigits, CancellationToken ct)
     {
-        return await TryTvmazeAsync(imdbDigits, ct).ConfigureAwait(false)
-               ?? await TryWikidataAsync(imdbDigits, ct).ConfigureAwait(false)
-               ?? await TryTvmazeByNameAsync(imdbDigits, ct).ConfigureAwait(false);
+        if (_cache.TryGetValue(imdbDigits, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
+            return cached.TvdbId;
+
+        var tvmazeTask = TryTvmazeAsync(imdbDigits, ct);
+        var wikidataTask = TryWikidataAsync(imdbDigits, ct);
+        var titleTask = TryWikidataTitleAndYearAsync(imdbDigits, ct);
+
+        var tvdb = await tvmazeTask.ConfigureAwait(false)
+                   ?? await wikidataTask.ConfigureAwait(false);
+        if (tvdb is null)
+        {
+            var (title, year) = await titleTask.ConfigureAwait(false);
+            tvdb = await TryTvmazeByTitleAsync(title, year, ct).ConfigureAwait(false);
+        }
+
+        _cache[imdbDigits] = new CacheEntry(tvdb, DateTimeOffset.UtcNow.Add(tvdb is null ? NegativeTtl : CacheTtl));
+        return tvdb;
     }
 
     private async Task<int?> TryTvmazeAsync(string imdbDigits, CancellationToken ct)
@@ -64,9 +83,8 @@ public class TvdbIdResolver
     // (specials/docs TVmaze never mapped to an imdb id, items lacking a tvdb statement).
     // Last resort: resolve the title from Wikidata, then recover the tvdb id via TVmaze's
     // name search. Guarded by exact name match (and year when available) to avoid collisions.
-    private async Task<int?> TryTvmazeByNameAsync(string imdbDigits, CancellationToken ct)
+    private async Task<int?> TryTvmazeByTitleAsync(string? title, int? year, CancellationToken ct)
     {
-        var (title, year) = await TryWikidataTitleAndYearAsync(imdbDigits, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(title)) return null;
 
         try
@@ -160,4 +178,6 @@ public class TvdbIdResolver
         }
         return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
+
+    private sealed record CacheEntry(int? TvdbId, DateTimeOffset ExpiresAt);
 }

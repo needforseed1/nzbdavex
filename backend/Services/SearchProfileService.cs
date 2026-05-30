@@ -276,10 +276,10 @@ public class SearchProfileService(
             }
         }
 
-        // Always attempt a text fallback when the ID search returned nothing; honor a higher
-        // explicit threshold when one is configured.
-        var fallbackThreshold = Math.Max(profile.QueryFallbackMinResults, 1);
-        if (deduped.Count < fallbackThreshold)
+        // Text fallback is opt-in: QueryFallbackMinResults = 0 disables it entirely. When set,
+        // it runs only if the ID search returned fewer than that many results.
+        var fallbackThreshold = profile.QueryFallbackMinResults;
+        if (fallbackThreshold > 0 && deduped.Count < fallbackThreshold)
         {
             var fallbackVariants = await BuildFallbackQueriesAsync(type, queryParams, clientQuery, ct)
                 .ConfigureAwait(false);

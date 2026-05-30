@@ -6,7 +6,7 @@ namespace NzbWebDAV.Services;
 
 public class ImdbTitleResolver
 {
-    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(6) };
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
     private static readonly TimeSpan NegativeTtl = TimeSpan.FromMinutes(15);
 
