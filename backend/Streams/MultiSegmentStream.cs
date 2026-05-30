@@ -107,6 +107,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             }
             catch (UsenetArticleNotFoundException e)
             {
+                if (_failFastOnFirstSegment && isFirstSegment)
+                {
+                    Log.Warning(e, "First article {SegmentId} missing on all providers at playback start. " +
+                                   "Failing the stream so the player surfaces an error.", segmentId);
+                    throw;
+                }
+
                 return ZeroFillSegment(
                     "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
                     e.SegmentId);
