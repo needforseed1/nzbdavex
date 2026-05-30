@@ -276,24 +276,39 @@ public class SearchProfileService(
             }
         }
 
-        if (profile.QueryFallbackMinResults > 0 && deduped.Count < profile.QueryFallbackMinResults)
+        // Always attempt a text fallback when the ID search returned nothing; honor a higher
+        // explicit threshold when one is configured.
+        var fallbackThreshold = Math.Max(profile.QueryFallbackMinResults, 1);
+        if (deduped.Count < fallbackThreshold)
         {
-            var fallbackParams = await BuildFallbackQueryAsync(type, queryParams, clientQuery, ct)
+            var fallbackVariants = await BuildFallbackQueriesAsync(type, queryParams, clientQuery, ct)
                 .ConfigureAwait(false);
-            if (fallbackParams is not null)
+            if (fallbackVariants.Count > 0)
             {
                 Log.Information(
-                    "Profile {Profile} {Type}/{Id}: only {Count} result(s) (< {Threshold}); running text-query fallback",
-                    profile.Name, type, id, deduped.Count, profile.QueryFallbackMinResults);
+                    "Profile {Profile} {Type}/{Id}: only {Count} result(s) (< {Threshold}); running text-query fallback ({Variants} variant(s))",
+                    profile.Name, type, id, deduped.Count, fallbackThreshold, fallbackVariants.Count);
 
-                var fallbackPerIndexer = await RunPerIndexerQueryAsync(
-                    indexers, fallbackParams, indexerConfig, globalProxy, now, ct).ConfigureAwait(false);
-                var fallbackHits = fallbackPerIndexer.SelectMany(x => x);
+                var combinedHits = perIndexer.SelectMany(x => x).ToList();
 
-                var seen = new HashSet<string>(deduped.Select(x => x.Item.NzbUrl), StringComparer.Ordinal);
-                var combined = perIndexer
-                    .SelectMany(x => x)
-                    .Concat(fallbackHits)
+                // Escalate through variants (targeted -> broad), stopping as soon as we clear the
+                // threshold so a broad title-only query only runs when the precise one falls short.
+                foreach (var variant in fallbackVariants)
+                {
+                    var variantPerIndexer = await RunPerIndexerQueryAsync(
+                        indexers, variant, indexerConfig, globalProxy, now, ct).ConfigureAwait(false);
+                    combinedHits.AddRange(variantPerIndexer.SelectMany(x => x));
+
+                    var distinctCount = combinedHits
+                        .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
+                        .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
+                        .Select(x => x.Item.NzbUrl)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count();
+                    if (distinctCount >= fallbackThreshold) break;
+                }
+
+                var combined = combinedHits
                     .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
                     .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
                     .GroupBy(x => x.Item.NzbUrl)
@@ -408,12 +423,13 @@ public class SearchProfileService(
             .ToList();
     }
 
-    private async Task<IReadOnlyDictionary<string, string>?> BuildFallbackQueryAsync(
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, string>>> BuildFallbackQueriesAsync(
         string type,
         IReadOnlyDictionary<string, string> originalParams,
         string? clientQuery,
         CancellationToken ct)
     {
+        var empty = Array.Empty<IReadOnlyDictionary<string, string>>();
         var imdbDigits = originalParams.TryGetValue("imdbid", out var imdb) ? imdb : null;
         int? tvdbId = null;
         if (originalParams.TryGetValue("tvdbid", out var tvdbStr) && int.TryParse(tvdbStr, out var t)) tvdbId = t;
@@ -422,34 +438,56 @@ public class SearchProfileService(
             ? await titleResolver.GetTitleAsync(type, imdbDigits, tvdbId, ct).ConfigureAwait(false)
             : clientQuery.Trim();
 
-        if (string.IsNullOrWhiteSpace(title)) return null;
+        if (string.IsNullOrWhiteSpace(title)) return empty;
 
         if (type == "movie")
         {
-            return new Dictionary<string, string>
+            return new IReadOnlyDictionary<string, string>[]
             {
-                ["t"] = "movie",
-                ["q"] = title,
-                ["cat"] = "2000",
-                ["limit"] = "100",
+                new Dictionary<string, string>
+                {
+                    ["t"] = "movie",
+                    ["q"] = title,
+                    ["cat"] = "2000",
+                    ["limit"] = "100",
+                },
             };
         }
 
         if (type == "series")
         {
-            var dict = new Dictionary<string, string>
+            var variants = new List<IReadOnlyDictionary<string, string>>();
+
+            // Targeted: title + structured season/ep — precise, matches well-tagged episodes.
+            var targeted = new Dictionary<string, string>
             {
                 ["t"] = "tvsearch",
                 ["q"] = title,
                 ["cat"] = "5000",
                 ["limit"] = "100",
             };
-            if (originalParams.TryGetValue("season", out var s)) dict["season"] = s;
-            if (originalParams.TryGetValue("ep", out var e)) dict["ep"] = e;
-            return dict;
+            if (originalParams.TryGetValue("season", out var s)) targeted["season"] = s;
+            if (originalParams.TryGetValue("ep", out var e)) targeted["ep"] = e;
+            variants.Add(targeted);
+
+            // Broad: title only, no season/ep — catches flat/special releases that carry no
+            // episode metadata (e.g. 2-part documentary specials). Reached only via escalation
+            // when the targeted query falls short, so normal episodic shows aren't flooded.
+            if (targeted.ContainsKey("season") || targeted.ContainsKey("ep"))
+            {
+                variants.Add(new Dictionary<string, string>
+                {
+                    ["t"] = "tvsearch",
+                    ["q"] = title,
+                    ["cat"] = "5000",
+                    ["limit"] = "100",
+                });
+            }
+
+            return variants;
         }
 
-        return null;
+        return empty;
     }
 
     private static SearchResult Empty(string profileToken, string type, string id) =>

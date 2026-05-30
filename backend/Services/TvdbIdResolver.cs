@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace NzbWebDAV.Services;
@@ -9,7 +10,8 @@ public class TvdbIdResolver
     public async Task<int?> GetTvdbIdAsync(string imdbDigits, CancellationToken ct)
     {
         return await TryTvmazeAsync(imdbDigits, ct).ConfigureAwait(false)
-               ?? await TryWikidataAsync(imdbDigits, ct).ConfigureAwait(false);
+               ?? await TryWikidataAsync(imdbDigits, ct).ConfigureAwait(false)
+               ?? await TryTvmazeByNameAsync(imdbDigits, ct).ConfigureAwait(false);
     }
 
     private async Task<int?> TryTvmazeAsync(string imdbDigits, CancellationToken ct)
@@ -56,5 +58,106 @@ public class TvdbIdResolver
         {
             return null;
         }
+    }
+
+    // TVmaze's imdb lookup and Wikidata's P345->P4835 link both miss some titles
+    // (specials/docs TVmaze never mapped to an imdb id, items lacking a tvdb statement).
+    // Last resort: resolve the title from Wikidata, then recover the tvdb id via TVmaze's
+    // name search. Guarded by exact name match (and year when available) to avoid collisions.
+    private async Task<int?> TryTvmazeByNameAsync(string imdbDigits, CancellationToken ct)
+    {
+        var (title, year) = await TryWikidataTitleAndYearAsync(imdbDigits, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        try
+        {
+            var url = $"https://api.tvmaze.com/singlesearch/shows?q={Uri.EscapeDataString(title)}";
+            using var resp = await HttpClient.GetAsync(url, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            var name = root.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+            if (!NamesEqual(name, title)) return null;
+
+            if (year is { } expectedYear
+                && root.TryGetProperty("premiered", out var premEl)
+                && premEl.ValueKind == JsonValueKind.String
+                && premEl.GetString() is { Length: >= 4 } prem
+                && int.TryParse(prem[..4], out var premYear)
+                && Math.Abs(premYear - expectedYear) > 1)
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("externals", out var externals)) return null;
+            if (!externals.TryGetProperty("thetvdb", out var tvdbElement)) return null;
+            if (tvdbElement.ValueKind == JsonValueKind.Number && tvdbElement.TryGetInt32(out var tvdbId))
+                return tvdbId;
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<(string? Title, int? Year)> TryWikidataTitleAndYearAsync(string imdbDigits, CancellationToken ct)
+    {
+        try
+        {
+            var query =
+                $"SELECT ?label ?date WHERE {{ " +
+                $"?item wdt:P345 \"tt{imdbDigits}\" . " +
+                $"?item rdfs:label ?label . FILTER(LANG(?label) = \"en\") " +
+                $"OPTIONAL {{ ?item wdt:P580 ?start }} " +
+                $"OPTIONAL {{ ?item wdt:P577 ?pub }} " +
+                $"BIND(COALESCE(?start, ?pub) AS ?date) }} LIMIT 1";
+            var url = $"https://query.wikidata.org/sparql?query={Uri.EscapeDataString(query)}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Accept.ParseAdd("application/sparql-results+json");
+            req.Headers.UserAgent.ParseAdd("NzbDav (https://github.com/nzbdav-dev/nzbdav)");
+            using var resp = await HttpClient.SendAsync(req, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return (null, null);
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+            var bindings = doc.RootElement.GetProperty("results").GetProperty("bindings");
+            if (bindings.GetArrayLength() == 0) return (null, null);
+            var row = bindings[0];
+            var title = row.TryGetProperty("label", out var l) && l.TryGetProperty("value", out var lv)
+                ? lv.GetString()
+                : null;
+            int? year = null;
+            if (row.TryGetProperty("date", out var d) && d.TryGetProperty("value", out var dv)
+                && dv.GetString() is { Length: >= 4 } ds && int.TryParse(ds[..4], out var y))
+            {
+                year = y;
+            }
+            return (string.IsNullOrWhiteSpace(title) ? null : title, year);
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
+    private static bool NamesEqual(string? a, string? b)
+    {
+        var na = NormalizeName(a);
+        return na.Length > 0 && na == NormalizeName(b);
+    }
+
+    private static string NormalizeName(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        var sb = new StringBuilder(s.Length);
+        foreach (var ch in s.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(ch)) sb.Append(ch);
+            else if (char.IsWhiteSpace(ch) || ch is '-' or ':' or '.' or '\'' or '_') sb.Append(' ');
+        }
+        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 }

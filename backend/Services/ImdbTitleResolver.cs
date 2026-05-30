@@ -24,6 +24,8 @@ public class ImdbTitleResolver
             if (type == "series")
             {
                 title = await TryTvmazeAsync(imdbDigits, tvdbId, ct).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(title) && imdbDigits is not null)
+                    title = await TryWikidataAsync(imdbDigits, ct).ConfigureAwait(false);
             }
             else if (type == "movie" && imdbDigits is not null)
             {
