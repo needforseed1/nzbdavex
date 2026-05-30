@@ -11,9 +11,12 @@ namespace NzbWebDAV.Streams;
 
 public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 {
+    private const int MaxBodyRetries = 2;
+
     private readonly Memory<string> _segmentIds;
     private readonly INntpClient _usenetClient;
     private readonly long _expectedSegmentSize;
+    private readonly bool _failFastOnFirstSegment;
     private readonly Channel<Task<Stream>> _streamTasks;
     private readonly ContextualCancellationTokenSource _cts;
     private Stream? _stream;
@@ -25,12 +28,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         INntpClient usenetClient,
         int articleBufferSize,
         long expectedSegmentSize,
+        bool failFastOnFirstSegment,
         CancellationToken cancellationToken
     )
     {
         return articleBufferSize == 0
             ? new UnbufferedMultiSegmentStream(segmentIds, usenetClient, expectedSegmentSize)
-            : new MultiSegmentStream(segmentIds, usenetClient, articleBufferSize, expectedSegmentSize, cancellationToken);
+            : new MultiSegmentStream(segmentIds, usenetClient, articleBufferSize, expectedSegmentSize,
+                failFastOnFirstSegment, cancellationToken);
     }
 
     private MultiSegmentStream
@@ -39,12 +44,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         INntpClient usenetClient,
         int articleBufferSize,
         long expectedSegmentSize,
+        bool failFastOnFirstSegment,
         CancellationToken cancellationToken
     )
     {
         _segmentIds = segmentIds;
         _usenetClient = usenetClient;
         _expectedSegmentSize = expectedSegmentSize;
+        _failFastOnFirstSegment = failFastOnFirstSegment;
         _streamTasks = Channel.CreateBounded<Task<Stream>>(articleBufferSize);
         _cts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _ = DownloadSegments(_cts.Token);
@@ -60,7 +67,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
                 await _streamTasks.Writer.WaitToWriteAsync(cancellationToken);
                 var connection = await _usenetClient.AcquireExclusiveConnectionAsync(segmentId, cancellationToken);
-                var streamTask = DownloadSegment(segmentId, connection, cancellationToken);
+                var streamTask = DownloadSegment(segmentId, connection, isFirstSegment: i == 0, cancellationToken);
                 if (_streamTasks.Writer.TryWrite(streamTask)) continue;
 
                 // if we never get a chance to write the stream to the writer
@@ -81,29 +88,60 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     (
         string segmentId,
         UsenetExclusiveConnection exclusiveConnection,
+        bool isFirstSegment,
         CancellationToken cancellationToken
     )
     {
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            var bodyResponse = await _usenetClient
-                .DecodedBodyAsync(segmentId, exclusiveConnection, cancellationToken)
-                .ConfigureAwait(false);
-            return bodyResponse.Stream;
+            try
+            {
+                var bodyResponse = attempt == 0
+                    ? await _usenetClient
+                        .DecodedBodyAsync(segmentId, exclusiveConnection, cancellationToken)
+                        .ConfigureAwait(false)
+                    : await _usenetClient
+                        .DecodedBodyAsync(segmentId, cancellationToken)
+                        .ConfigureAwait(false);
+                return bodyResponse.Stream;
+            }
+            catch (UsenetArticleNotFoundException e)
+            {
+                return ZeroFillSegment(
+                    "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
+                    e.SegmentId);
+            }
+            catch (Exception e) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (attempt < MaxBodyRetries)
+                {
+                    Log.Debug(e, "Transient failure fetching segment {SegmentId} (attempt {Attempt}). Retrying.",
+                        segmentId, attempt + 1);
+                    await Task.Delay(TimeSpan.FromMilliseconds(250 * (attempt + 1)), cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                if (_failFastOnFirstSegment && isFirstSegment)
+                {
+                    Log.Warning(e, "Segment {SegmentId} unavailable at playback start after {Attempts} attempts. " +
+                                   "Failing the stream so the player surfaces an error.", segmentId, attempt + 1);
+                    throw;
+                }
+
+                return ZeroFillSegment(
+                    "Segment {SegmentId} unavailable after retries. Zero-filling {Bytes} bytes to keep playback alive.",
+                    segmentId, e);
+            }
         }
-        catch (UsenetArticleNotFoundException e)
-        {
-            // All providers report this segment missing. Substitute zeros so the
-            // HTTP response stays byte-aligned with Content-Length and the player
-            // can resync to the next keyframe instead of seeing a truncated body
-            // (which closes VLC/MPV/Plex). The outer LimitLengthStream clips any
-            // overshoot, so erring on "estimated full segment" is safe.
-            var fill = _expectedSegmentSize > 0 ? _expectedSegmentSize : 1;
-            Log.Warning(
-                "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
-                e.SegmentId, fill);
-            return new MemoryStream(new byte[fill], writable: false);
-        }
+    }
+
+    private Stream ZeroFillSegment(string messageTemplate, string segmentId, Exception? exception = null)
+    {
+        var fill = _expectedSegmentSize > 0 ? _expectedSegmentSize : 1;
+        if (exception == null) Log.Warning(messageTemplate, segmentId, fill);
+        else Log.Warning(exception, messageTemplate, segmentId, fill);
+        return new MemoryStream(new byte[fill], writable: false);
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)

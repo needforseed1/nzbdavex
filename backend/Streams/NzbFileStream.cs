@@ -91,6 +91,14 @@ public class NzbFileStream(
                     var end = Math.Min(fileSize, start + avg);
                     return new LongRange(start, end);
                 }
+                catch (Exception e) when (articleBufferSize > 0 && !ct.IsCancellationRequested)
+                {
+                    Log.Warning(e,
+                        "Seek probe transient failure on segment index {Index}. Using estimated range.", guess);
+                    var start = guess * avg;
+                    var end = Math.Min(fileSize, start + avg);
+                    return new LongRange(start, end);
+                }
             },
             ct
         ).ConfigureAwait(false);
@@ -98,18 +106,20 @@ public class NzbFileStream(
 
     private async Task<Stream> GetFileStream(long rangeStart, CancellationToken cancellationToken)
     {
-        if (rangeStart == 0) return GetMultiSegmentStream(0, cancellationToken);
+        if (rangeStart == 0) return GetMultiSegmentStream(0, failFastOnFirstSegment: true, cancellationToken);
         var foundSegment = await SeekSegment(rangeStart, cancellationToken).ConfigureAwait(false);
-        var stream = GetMultiSegmentStream(foundSegment.FoundIndex, cancellationToken);
+        var stream = GetMultiSegmentStream(foundSegment.FoundIndex, failFastOnFirstSegment: false, cancellationToken);
         await stream.DiscardBytesAsync(rangeStart - foundSegment.FoundByteRange.StartInclusive, cancellationToken)
             .ConfigureAwait(false);
         return stream;
     }
 
-    private Stream GetMultiSegmentStream(int firstSegmentIndex, CancellationToken cancellationToken)
+    private Stream GetMultiSegmentStream(int firstSegmentIndex, bool failFastOnFirstSegment,
+        CancellationToken cancellationToken)
     {
         var segmentIds = fileSegmentIds.AsMemory()[firstSegmentIndex..];
-        return MultiSegmentStream.Create(segmentIds, usenetClient, articleBufferSize, ExpectedSegmentSize, cancellationToken);
+        return MultiSegmentStream.Create(segmentIds, usenetClient, articleBufferSize, ExpectedSegmentSize,
+            failFastOnFirstSegment, cancellationToken);
     }
 
     protected override void Dispose(bool disposing)
