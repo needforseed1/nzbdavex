@@ -34,6 +34,14 @@ public class DatabaseStoreMultipartFile(
         var id = davMultipartFile.Id;
         var multipartFile = await dbClient.GetDavMultipartFileAsync(davMultipartFile, ct).ConfigureAwait(false);
         if (multipartFile is null) throw new FileNotFoundException($"Could not find nzb file with id: {id}");
+
+        if (multipartFile.Metadata.AesParams != null
+            && multipartFile.Metadata.IsLazy
+            && (multipartFile.Metadata.PendingParts?.Length ?? 0) > 0)
+        {
+            await lazyRarResolver.EnsureResolvedThroughAsync(multipartFile, long.MaxValue, ct).ConfigureAwait(false);
+        }
+
         return GetStream(multipartFile);
     }
 
