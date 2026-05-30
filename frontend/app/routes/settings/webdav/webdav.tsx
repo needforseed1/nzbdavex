@@ -94,6 +94,58 @@ export function WebdavSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
                 <Form.Check
                     className={styles.input}
                     type="switch"
+                    id="segment-cache-enabled-checkbox"
+                    aria-describedby="segment-cache-enabled-help"
+                    label={`Enable Segment Cache`}
+                    checked={config["usenet.segment-cache.enabled"] === "true"}
+                    onChange={e => setNewConfig({ ...config, "usenet.segment-cache.enabled": "" + e.target.checked })} />
+                <Form.Text id="segment-cache-enabled-help" muted>
+                    When enabled, decoded segments are stored on disk so repeated reads (re-watches, seeks, multiple viewers) skip the
+                    network and don't count against provider limits. Takes effect after a restart.
+                </Form.Text>
+            </Form.Group>
+            {config["usenet.segment-cache.enabled"] === "true" && (
+                <>
+                    <hr />
+                    <Form.Group>
+                        <Form.Label htmlFor="segment-cache-path-input">Segment Cache Path</Form.Label>
+                        <Form.Control
+                            {...className([styles.input, !isValidSegmentCachePath(config["usenet.segment-cache.path"]) && styles.error])}
+                            type="text"
+                            id="segment-cache-path-input"
+                            aria-describedby="segment-cache-path-help"
+                            placeholder="/config/segment-cache"
+                            value={config["usenet.segment-cache.path"]}
+                            onChange={e => setNewConfig({ ...config, "usenet.segment-cache.path": e.target.value })} />
+                        <Form.Text id="segment-cache-path-help" muted>
+                            Directory where cached segments are stored. Use a fast local disk (SSD/NVMe) for best results.
+                        </Form.Text>
+                    </Form.Group>
+                    <hr />
+                    <Form.Group>
+                        <Form.Label htmlFor="segment-cache-max-gb-input">Maximum Cache Size</Form.Label>
+                        <InputGroup className={styles.input}>
+                            <Form.Control
+                                className={!isPositiveInteger(config["usenet.segment-cache.max-gb"]) ? styles.error : undefined}
+                                type="text"
+                                id="segment-cache-max-gb-input"
+                                aria-describedby="segment-cache-max-gb-help"
+                                placeholder="10"
+                                value={config["usenet.segment-cache.max-gb"]}
+                                onChange={e => setNewConfig({ ...config, "usenet.segment-cache.max-gb": e.target.value })} />
+                            <InputGroup.Text>GB</InputGroup.Text>
+                        </InputGroup>
+                        <Form.Text id="segment-cache-max-gb-help" muted>
+                            Maximum disk space the cache may use before evicting least-recently-used segments. Keep this below your free disk space.
+                        </Form.Text>
+                    </Form.Group>
+                </>
+            )}
+            <hr />
+            <Form.Group>
+                <Form.Check
+                    className={styles.input}
+                    type="switch"
                     id="readonly-checkbox"
                     aria-describedby="readonly-help"
                     label={`Enforce Read-Only`}
@@ -144,13 +196,24 @@ export function isWebdavSettingsUpdated(config: Record<string, string>, newConfi
         || config["webdav.show-hidden-files"] !== newConfig["webdav.show-hidden-files"]
         || config["webdav.enforce-readonly"] !== newConfig["webdav.enforce-readonly"]
         || config["webdav.preview-par2-files"] !== newConfig["webdav.preview-par2-files"]
+        || config["usenet.segment-cache.enabled"] !== newConfig["usenet.segment-cache.enabled"]
+        || config["usenet.segment-cache.path"] !== newConfig["usenet.segment-cache.path"]
+        || config["usenet.segment-cache.max-gb"] !== newConfig["usenet.segment-cache.max-gb"]
 }
 
 export function isWebdavSettingsValid(newConfig: Record<string, string>) {
+    const segmentCacheValid = newConfig["usenet.segment-cache.enabled"] !== "true"
+        || (isValidSegmentCachePath(newConfig["usenet.segment-cache.path"])
+            && isPositiveInteger(newConfig["usenet.segment-cache.max-gb"]));
     return isValidUser(newConfig["webdav.user"])
         && isValidMaxDownloadConnections(newConfig["usenet.max-download-connections"])
         && isValidStreamingPriority(newConfig["usenet.streaming-priority"])
-        && isValidArticleBufferSize(newConfig["usenet.article-buffer-size"]);
+        && isValidArticleBufferSize(newConfig["usenet.article-buffer-size"])
+        && segmentCacheValid;
+}
+
+function isValidSegmentCachePath(value: string): boolean {
+    return value.trim().length > 0;
 }
 
 function isValidUser(user: string): boolean {

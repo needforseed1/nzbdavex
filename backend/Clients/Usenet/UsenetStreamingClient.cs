@@ -3,6 +3,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Services;
 using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Websocket;
+using Serilog;
 
 namespace NzbWebDAV.Clients.Usenet;
 
@@ -28,7 +29,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         };
     }
 
-    private static DownloadingNntpClient CreateDownloadingNntpClient
+    private static INntpClient CreateDownloadingNntpClient
     (
         ConfigManager configManager,
         WebsocketManager websocketManager,
@@ -38,7 +39,22 @@ public class UsenetStreamingClient : WrappingNntpClient
     )
     {
         var multiProviderClient = CreateMultiProviderClient(configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
-        return new DownloadingNntpClient(multiProviderClient, configManager);
+        var downloadingClient = new DownloadingNntpClient(multiProviderClient, configManager);
+        if (!configManager.IsSegmentCacheEnabled()) return downloadingClient;
+        try
+        {
+            return new SegmentCacheNntpClient(
+                downloadingClient,
+                configManager.GetSegmentCachePath(),
+                configManager.GetSegmentCacheMaxBytes()
+            );
+        }
+        catch (Exception e)
+        {
+            Log.Warning(e, "Segment cache disabled: failed to initialise at {Path}.",
+                configManager.GetSegmentCachePath());
+            return downloadingClient;
+        }
     }
 
     private static MultiProviderNntpClient CreateMultiProviderClient

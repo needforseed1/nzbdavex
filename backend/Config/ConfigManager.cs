@@ -149,6 +149,24 @@ public class ConfigManager
         );
     }
 
+    public bool IsSegmentCacheEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.segment-cache.enabled"));
+        return v != null && bool.Parse(v);
+    }
+
+    public string GetSegmentCachePath()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("usenet.segment-cache.path"))
+               ?? "/config/segment-cache";
+    }
+
+    public long GetSegmentCacheMaxBytes()
+    {
+        var gb = long.Parse(StringUtil.EmptyToNull(GetConfigValue("usenet.segment-cache.max-gb")) ?? "10");
+        return Math.Max(1, gb) * 1024L * 1024L * 1024L;
+    }
+
     // When true, RAR archives are mounted instantly by parsing only the first
     // volume at import; trailing volumes are resolved on first read. Falls
     // back to eager parsing for archives that don't fit the supported shape
