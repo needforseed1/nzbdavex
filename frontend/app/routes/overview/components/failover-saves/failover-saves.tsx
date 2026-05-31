@@ -9,12 +9,18 @@ export type FailoverSavesProps = {
 }
 
 export function FailoverSaves({ failover, window }: FailoverSavesProps) {
-    const { articlesRecovered, readsSaved, providers } = failover;
+    const { articlesRecovered, readsSaved, providers, buckets, bucketSizeMs } = failover;
 
-    const maxSaves = useMemo(
-        () => Math.max(1, ...providers.map(p => p.saves)),
-        [providers],
-    );
+    const maxSaves = useMemo(() => Math.max(1, ...providers.map(p => p.saves)), [providers]);
+
+    const peak = useMemo(() => {
+        let best: { bucket: number, total: number } | null = null;
+        for (const b of buckets) {
+            const total = b.counts.reduce((s, c) => s + c, 0);
+            if (!best || total > best.total) best = { bucket: b.bucket, total };
+        }
+        return best;
+    }, [buckets]);
 
     const hasData = articlesRecovered > 0 && providers.length > 0;
     const sinceLabel = window === "all" ? "all time" : `last ${window}`;
@@ -29,47 +35,73 @@ export function FailoverSaves({ failover, window }: FailoverSavesProps) {
             {hasData ? (
                 <>
                     <div className={styles.hero}>
-                        <div className={styles.heroMain}>
-                            <span className={styles.heroNum}>{formatNumber(articlesRecovered)}</span>
-                            <span className={styles.heroLabel}>articles recovered</span>
+                        <span className={styles.heroNum}>{formatNumber(articlesRecovered)}</span>
+                        <div className={styles.heroText}>
+                            <div className={styles.heroLabel}>articles your backups rescued</div>
+                            {readsSaved > 0 && (
+                                <div className={styles.heroSub}>
+                                    without them, <strong>{formatNumber(readsSaved)}</strong>{" "}
+                                    {readsSaved === 1 ? "read" : "reads"} would&rsquo;ve failed
+                                </div>
+                            )}
                         </div>
-                        {readsSaved > 0 && (
-                            <div className={styles.heroAside}>
-                                <span className={styles.heroAsideNum}>{formatNumber(readsSaved)}</span>
-                                <span className={styles.heroAsideLabel}>
-                                    {readsSaved === 1 ? "read would've failed" : "reads would've failed"}
-                                </span>
-                            </div>
-                        )}
                     </div>
 
-                    <div className={styles.rankHead}>Rescued by</div>
-                    <div className={styles.ranking}>
+                    <div className={styles.rankHead}>
+                        <span>Rescued by</span>
+                        <span>saves</span>
+                    </div>
+                    <div className={styles.bars}>
                         {providers.map(p => {
-                            const pct = (p.saves / maxSaves) * 100;
+                            const width = (p.saves / maxSaves) * 100;
+                            const share = articlesRecovered > 0 ? (p.saves / articlesRecovered) * 100 : 0;
                             return (
                                 <div key={p.provider} className={styles.row} title={p.provider}>
                                     <span className={styles.name}>{p.nickname?.trim() || p.provider}</span>
-                                    <span className={styles.track}>
-                                        <span className={styles.base} />
-                                        <span className={styles.stem} style={{ width: `${pct.toFixed(1)}%` }} />
-                                        <span className={styles.dot} style={{ left: `${pct.toFixed(1)}%` }} />
+                                    <span className={styles.barTrack}>
+                                        <span className={styles.barFill} style={{ width: `${width.toFixed(1)}%` }} />
                                     </span>
-                                    <span className={styles.value}>{formatNumber(p.saves)}</span>
+                                    <span className={styles.count}>{formatNumber(p.saves)}</span>
+                                    <span className={styles.share}>{share.toFixed(0)}%</span>
                                 </div>
                             );
                         })}
                     </div>
+
+                    {peak && (
+                        <div className={styles.footnote}>
+                            Backups worked hardest {formatPeak(peak.bucket, bucketSizeMs)} — {formatNumber(peak.total)}{" "}
+                            {peak.total === 1 ? "rescue" : "rescues"}
+                        </div>
+                    )}
                 </>
             ) : (
                 <div className={styles.empty}>
                     No failover saves in this window.
                     <div className={styles.emptySub}>
                         Every article was served on the first try. When a provider misses, a backup steps in
-                        — and you'll see which one rescued what here.
+                        — and you&rsquo;ll see which one rescued what here.
                     </div>
                 </div>
             )}
         </div>
     );
+}
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatPeak(ms: number, bucketSizeMs: number): string {
+    const d = new Date(ms);
+    const day = DAYS[d.getDay()];
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mon = MONTHS[d.getMonth()];
+    if (bucketSizeMs <= 3_600_000) {
+        const hh = String(d.getHours()).padStart(2, "0");
+        return `${day} ${hh}:00`;
+    }
+    if (bucketSizeMs >= 7 * 86_400_000) {
+        return `the week of ${dd} ${mon}`;
+    }
+    return `${day} ${dd} ${mon}`;
 }

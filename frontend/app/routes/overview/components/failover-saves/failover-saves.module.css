@@ -8,7 +8,7 @@
 }
 
 .header {
-    margin-bottom: 14px;
+    margin-bottom: 16px;
 }
 
 .title {
@@ -27,59 +27,53 @@
 
 .hero {
     display: flex;
-    align-items: baseline;
-    gap: 24px;
-    flex-wrap: wrap;
-    margin-bottom: 18px;
-}
-
-.heroMain {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
 }
 
 .heroNum {
-    font-size: 30px;
+    font-size: 40px;
     font-weight: 700;
-    color: var(--success);
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-    line-height: 1;
+    letter-spacing: -0.03em;
+    line-height: 0.95;
+}
+
+.heroText {
+    min-width: 0;
 }
 
 .heroLabel {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-secondary);
+    font-weight: 500;
 }
 
-.heroAside {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-}
-
-.heroAsideNum {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
-    font-variant-numeric: tabular-nums;
-}
-
-.heroAsideLabel {
+.heroSub {
     font-size: 12px;
     color: var(--text-muted);
+    margin-top: 3px;
+}
+
+.heroSub strong {
+    color: var(--text-primary);
+    font-weight: 600;
 }
 
 .rankHead {
+    display: flex;
+    justify-content: space-between;
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
-    margin-bottom: 2px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
-.ranking {
+.bars {
     display: flex;
     flex-direction: column;
 }
@@ -87,7 +81,7 @@
 .row {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
     padding: 9px 0;
     border-bottom: 1px solid var(--border-subtle);
 }
@@ -97,7 +91,7 @@
 }
 
 .name {
-    width: 150px;
+    width: 130px;
     flex-shrink: 0;
     font-size: 13px;
     font-weight: 500;
@@ -107,64 +101,45 @@
     text-overflow: ellipsis;
 }
 
-.track {
-    position: relative;
+.barTrack {
     flex: 1;
-    height: 14px;
-    min-width: 40px;
-}
-
-.base {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 50%;
-    height: 2px;
-    transform: translateY(-50%);
+    min-width: 30px;
+    height: 8px;
     background: var(--bg-surface);
-    border-radius: 2px;
+    border-radius: 4px;
+    overflow: hidden;
 }
 
-.stem {
-    position: absolute;
-    left: 0;
-    top: 50%;
-    height: 3px;
-    transform: translateY(-50%);
-    background: linear-gradient(to right, rgba(52, 211, 153, 0.4), var(--success));
-    border-radius: 2px;
-    transition: filter 120ms ease;
+.barFill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(to right, rgba(52, 211, 153, 0.55), var(--success));
 }
 
-.dot {
-    position: absolute;
-    top: 50%;
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    background: var(--success);
-    transform: translate(-50%, -50%);
-    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
-    transition: filter 120ms ease, box-shadow 120ms ease;
-}
-
-.row:hover .stem {
-    filter: brightness(1.25);
-}
-
-.row:hover .dot {
-    filter: brightness(1.15);
-    box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.22);
-}
-
-.value {
-    width: 54px;
+.count {
+    width: 46px;
     flex-shrink: 0;
     text-align: right;
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
+}
+
+.share {
+    width: 36px;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.footnote {
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
 }
 
 .empty {
