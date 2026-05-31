@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import styles from "./failover-saves.module.css";
 import type { FailoverBlock, OverviewWindow } from "~/clients/backend-client.server";
 import { formatNumber } from "../../utils/format";
@@ -8,25 +8,16 @@ export type FailoverSavesProps = {
     window: OverviewWindow,
 }
 
-const PLOT_H = 132;
-
 export function FailoverSaves({ failover, window }: FailoverSavesProps) {
-    const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-    const { articlesRecovered, readsSaved, providers, buckets, bucketSizeMs } = failover;
+    const { articlesRecovered, readsSaved, providers } = failover;
 
-    const colors = useMemo(
-        () => providers.map((_, i) => PROVIDER_COLORS[i] ?? PROVIDER_OVERFLOW),
+    const maxSaves = useMemo(
+        () => Math.max(1, ...providers.map(p => p.saves)),
         [providers],
     );
 
-    const maxBucketTotal = useMemo(
-        () => Math.max(1, ...buckets.map(b => b.counts.reduce((s, c) => s + c, 0))),
-        [buckets],
-    );
-
-    const hasData = articlesRecovered > 0 && buckets.length > 0;
+    const hasData = articlesRecovered > 0 && providers.length > 0;
     const sinceLabel = window === "all" ? "all time" : `last ${window}`;
-    const hover = hoverIdx !== null ? buckets[hoverIdx] : null;
 
     return (
         <div className={styles.container}>
@@ -52,48 +43,22 @@ export function FailoverSaves({ failover, window }: FailoverSavesProps) {
                         )}
                     </div>
 
-                    <div className={styles.plot} style={{ height: PLOT_H }}>
-                        {buckets.map((b, i) => {
-                            const total = b.counts.reduce((s, c) => s + c, 0);
+                    <div className={styles.rankHead}>Rescued by</div>
+                    <div className={styles.ranking}>
+                        {providers.map(p => {
+                            const pct = (p.saves / maxSaves) * 100;
                             return (
-                                <div
-                                    key={b.bucket}
-                                    className={`${styles.bar} ${hoverIdx === i ? styles.barActive : ""}`}
-                                    onMouseEnter={() => setHoverIdx(i)}
-                                    onMouseLeave={() => setHoverIdx(null)}
-                                    title={`${formatBucketTime(b.bucket, bucketSizeMs)} · ${formatNumber(total)} rescued`}
-                                >
-                                    {b.counts.map((c, pi) => (c > 0 ? (
-                                        <div
-                                            key={pi}
-                                            className={styles.seg}
-                                            style={{ height: (c / maxBucketTotal) * PLOT_H, background: colors[pi] }}
-                                        />
-                                    ) : null))}
+                                <div key={p.provider} className={styles.row} title={p.provider}>
+                                    <span className={styles.name}>{p.nickname?.trim() || p.provider}</span>
+                                    <span className={styles.track}>
+                                        <span className={styles.base} />
+                                        <span className={styles.stem} style={{ width: `${pct.toFixed(1)}%` }} />
+                                        <span className={styles.dot} style={{ left: `${pct.toFixed(1)}%` }} />
+                                    </span>
+                                    <span className={styles.value}>{formatNumber(p.saves)}</span>
                                 </div>
                             );
                         })}
-                    </div>
-
-                    <div className={styles.footer}>
-                        {hover ? (
-                            <span className={styles.hoverLine}>
-                                <strong>{formatBucketTime(hover.bucket, bucketSizeMs)}</strong>
-                                &nbsp;·&nbsp;{formatNumber(hover.counts.reduce((s, c) => s + c, 0))} rescued
-                            </span>
-                        ) : (
-                            <span className={styles.hint}>Rescues over time, stacked by which provider stepped in</span>
-                        )}
-                    </div>
-
-                    <div className={styles.legend}>
-                        {providers.map((p, i) => (
-                            <span key={p.provider} className={styles.legendItem} title={p.provider}>
-                                <span className={styles.swatch} style={{ background: colors[i] }} />
-                                <span className={styles.legendName}>{p.nickname?.trim() || p.provider}</span>
-                                <span className={styles.legendNum}>{formatNumber(p.saves)}</span>
-                            </span>
-                        ))}
                     </div>
                 </>
             ) : (
@@ -101,34 +66,10 @@ export function FailoverSaves({ failover, window }: FailoverSavesProps) {
                     No failover saves in this window.
                     <div className={styles.emptySub}>
                         Every article was served on the first try. When a provider misses, a backup steps in
-                        — and you'll see exactly what it rescued here.
+                        — and you'll see which one rescued what here.
                     </div>
                 </div>
             )}
         </div>
     );
-}
-
-const PROVIDER_COLORS = [
-    "#34d399",
-    "#38bdf8",
-    "#a78bfa",
-    "#fbbf24",
-    "#2dd4bf",
-    "#94a3b8",
-];
-const PROVIDER_OVERFLOW = "#71717a";
-
-function formatBucketTime(ms: number, bucketSizeMs: number): string {
-    const d = new Date(ms);
-    const day = String(d.getDate()).padStart(2, "0");
-    const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
-    if (bucketSizeMs <= 3_600_000) {
-        const hh = String(d.getHours()).padStart(2, "0");
-        return `${day} ${mon} ${hh}:00`;
-    }
-    if (bucketSizeMs >= 7 * 86_400_000) {
-        return `wk of ${day} ${mon}`;
-    }
-    return `${day} ${mon}`;
 }
