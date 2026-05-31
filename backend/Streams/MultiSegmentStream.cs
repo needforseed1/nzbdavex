@@ -103,7 +103,8 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     : await _usenetClient
                         .DecodedBodyAsync(segmentId, cancellationToken)
                         .ConfigureAwait(false);
-                return bodyResponse.Stream;
+
+                return await DrainSegmentAsync(bodyResponse.Stream, cancellationToken).ConfigureAwait(false);
             }
             catch (UsenetArticleNotFoundException e)
             {
@@ -149,6 +150,22 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         if (exception == null) Log.Warning(messageTemplate, segmentId, fill);
         else Log.Warning(exception, messageTemplate, segmentId, fill);
         return new MemoryStream(new byte[fill], writable: false);
+    }
+
+    private async Task<Stream> DrainSegmentAsync(Stream source, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var capacity = _expectedSegmentSize is > 0 and <= int.MaxValue ? (int)_expectedSegmentSize : 0;
+            var buffer = new MemoryStream(capacity);
+            await source.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+            buffer.Position = 0;
+            return buffer;
+        }
+        finally
+        {
+            await source.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
