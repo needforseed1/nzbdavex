@@ -93,15 +93,32 @@ public class SearchProfileService(
         if (parts.Length < 2) return null;
         if (!long.TryParse(parts[1], out var externalId)) return null;
         var mapping = await externalResolver.ResolveAsync(provider, externalId, ct).ConfigureAwait(false);
-        var imdb = mapping?.ImdbId is { } i ? StripImdbPrefix(i) : null;
-        if (imdb is null) return null;
-        return new Dictionary<string, string>
+        if (mapping is null) return null;
+
+        var imdb = mapping.ImdbId is { } i ? StripImdbPrefix(i) : null;
+        if (imdb is not null)
         {
-            ["t"] = "movie",
-            ["imdbid"] = imdb,
-            ["cat"] = "2000,2070",
-            ["limit"] = "100",
-        };
+            return new Dictionary<string, string>
+            {
+                ["t"] = "movie",
+                ["imdbid"] = imdb,
+                ["cat"] = "2000,2070",
+                ["limit"] = "100",
+            };
+        }
+
+        // last resort: no cross-id anywhere, search by the anime's title
+        if (!string.IsNullOrWhiteSpace(mapping.Title))
+        {
+            return new Dictionary<string, string>
+            {
+                ["t"] = "movie",
+                ["q"] = mapping.Title,
+                ["cat"] = "2000,2070",
+                ["limit"] = "100",
+            };
+        }
+        return null;
     }
 
     private async Task<IReadOnlyDictionary<string, string>?> BuildExternalSeriesQueryAsync(string provider, string id, CancellationToken ct)
@@ -129,14 +146,27 @@ public class SearchProfileService(
         if (mapping.IsMovie)
         {
             var imdb = mapping.ImdbId is { } i ? StripImdbPrefix(i) : null;
-            if (imdb is null) return null;
-            return new Dictionary<string, string>
+            if (imdb is not null)
             {
-                ["t"] = "movie",
-                ["imdbid"] = imdb,
-                ["cat"] = "2000,2070",
-                ["limit"] = "100",
-            };
+                return new Dictionary<string, string>
+                {
+                    ["t"] = "movie",
+                    ["imdbid"] = imdb,
+                    ["cat"] = "2000,2070",
+                    ["limit"] = "100",
+                };
+            }
+            if (!string.IsNullOrWhiteSpace(mapping.Title))
+            {
+                return new Dictionary<string, string>
+                {
+                    ["t"] = "movie",
+                    ["q"] = mapping.Title,
+                    ["cat"] = "2000,2070",
+                    ["limit"] = "100",
+                };
+            }
+            return null;
         }
 
         if (episode is null) return null;
@@ -151,6 +181,10 @@ public class SearchProfileService(
         };
         if (mapping.TvdbId is { } tvdb) dict["tvdbid"] = tvdb.ToString();
         else if (mapping.ImdbId is { } imdb && StripImdbPrefix(imdb) is { } imdbDigits) dict["imdbid"] = imdbDigits;
+        // last resort: no cross-id anywhere, fall back to a title query (+ season/ep). Episode
+        // numbering is best-effort here — a single-cours Kitsu entry maps cleanly, but multi-cour
+        // entries that use absolute numbering may land on the wrong episode.
+        else if (!string.IsNullOrWhiteSpace(mapping.Title)) dict["q"] = mapping.Title;
         else return null;
         return dict;
     }

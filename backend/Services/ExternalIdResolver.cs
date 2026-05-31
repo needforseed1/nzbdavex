@@ -4,7 +4,7 @@ using Serilog;
 
 namespace NzbWebDAV.Services;
 
-public class ExternalIdResolver
+public class ExternalIdResolver(AnimeListMappingResolver animeList)
 {
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
     private const string KitsuBase = "https://kitsu.io/api/edge";
@@ -13,7 +13,7 @@ public class ExternalIdResolver
 
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
 
-    public sealed record IdMapping(bool IsMovie, int? TvdbId, string? ImdbId, int Season);
+    public sealed record IdMapping(bool IsMovie, int? TvdbId, string? ImdbId, int Season, string? Title = null);
 
     public async Task<IdMapping?> ResolveAsync(string provider, long externalId, CancellationToken ct)
     {
@@ -36,6 +36,30 @@ public class ExternalIdResolver
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Log.Warning("ExternalIdResolver {Provider}:{Id} lookup failed: {Message}", provider, externalId, ex.Message);
+        }
+
+        // Kitsu's own mapping table is incomplete; when it yields no cross-id, consult the
+        // community anime-lists dataset, which frequently carries the tvdb/imdb id Kitsu omits.
+        if (mapping is null || (mapping.TvdbId is null && mapping.ImdbId is null))
+        {
+            try
+            {
+                var anime = await animeList.LookupAsync(provider, externalId, ct).ConfigureAwait(false);
+                if (anime is not null && (anime.TvdbId is not null || anime.ImdbId is not null))
+                {
+                    mapping = new IdMapping(
+                        IsMovie: mapping?.IsMovie ?? anime.IsMovie,
+                        TvdbId: anime.TvdbId,
+                        ImdbId: anime.ImdbId,
+                        // the dataset's season pairs with its tvdb id, so prefer it over Kitsu's default
+                        Season: anime.TvdbSeason ?? mapping?.Season ?? 1,
+                        Title: mapping?.Title);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Warning("AnimeList fallback {Provider}:{Id} failed: {Message}", provider, externalId, ex.Message);
+            }
         }
 
         _cache[key] = new CacheEntry(mapping, DateTimeOffset.UtcNow.Add(mapping is null ? NegativeTtl : CacheTtl));
@@ -67,7 +91,7 @@ public class ExternalIdResolver
     {
         var url = $"{KitsuBase}/anime/{sourceId}"
                   + "?include=mappings"
-                  + "&fields%5Banime%5D=subtype,mappings"
+                  + "&fields%5Banime%5D=subtype,canonicalTitle,titles,mappings"
                   + "&fields%5Bmappings%5D=externalSite,externalId";
         using var resp = await HttpClient.GetAsync(url, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode) return null;
@@ -75,11 +99,13 @@ public class ExternalIdResolver
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
 
         bool isMovie = false;
+        string? title = null;
         if (doc.RootElement.TryGetProperty("data", out var data)
-            && data.TryGetProperty("attributes", out var attrs)
-            && attrs.TryGetProperty("subtype", out var subtype))
+            && data.TryGetProperty("attributes", out var attrs))
         {
-            isMovie = string.Equals(subtype.GetString(), "movie", StringComparison.OrdinalIgnoreCase);
+            if (attrs.TryGetProperty("subtype", out var subtype))
+                isMovie = string.Equals(subtype.GetString(), "movie", StringComparison.OrdinalIgnoreCase);
+            title = ReadTitle(attrs);
         }
 
         int? tvdbId = null;
@@ -119,8 +145,29 @@ public class ExternalIdResolver
             }
         }
 
-        if (tvdbId is null && imdbId is null) return null;
-        return new IdMapping(isMovie, tvdbId, imdbId, season);
+        if (tvdbId is null && imdbId is null && string.IsNullOrWhiteSpace(title)) return null;
+        return new IdMapping(isMovie, tvdbId, imdbId, season, title);
+    }
+
+    private static string? ReadTitle(JsonElement attrs)
+    {
+        // canonicalTitle is usually the romaji title, which matches scene/usenet naming best
+        if (attrs.TryGetProperty("canonicalTitle", out var canonical)
+            && canonical.ValueKind == JsonValueKind.String
+            && canonical.GetString() is { Length: > 0 } c)
+            return c;
+
+        if (attrs.TryGetProperty("titles", out var titles) && titles.ValueKind == JsonValueKind.Object)
+        {
+            string[] keys = ["en", "en_jp", "ja_jp"];
+            foreach (var key in keys)
+            {
+                if (titles.TryGetProperty(key, out var t) && t.ValueKind == JsonValueKind.String
+                    && t.GetString() is { Length: > 0 } v)
+                    return v;
+            }
+        }
+        return null;
     }
 
     private sealed record CacheEntry(IdMapping? Mapping, DateTimeOffset ExpiresAt);

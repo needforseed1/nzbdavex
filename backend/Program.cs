@@ -129,6 +129,7 @@ class Program
             .AddSingleton<IndexerHitTracker>()
             .AddSingleton<TvdbIdResolver>()
             .AddSingleton<TmdbIdResolver>()
+            .AddSingleton<AnimeListMappingResolver>()
             .AddSingleton<ExternalIdResolver>()
             .AddSingleton<ImdbTitleResolver>()
             .AddSingleton<SearchProfileService>()
