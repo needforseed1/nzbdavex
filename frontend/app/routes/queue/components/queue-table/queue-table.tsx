@@ -132,7 +132,7 @@ export function QueueTable({
 
     const footer = totalPages > 1 ? (
         <div className={styles.tableFooter}>
-            {!isLive && <span className={styles.pausedNote}>Live updates pause on older pages — go to page 1 for live.</span>}
+            {!isLive && <span className={styles.pausedNote}>Live updates pause on older pages. Go to page 1 for live.</span>}
             <Pagination pageNumber={pageNumber} totalPages={totalPages} onPageSelected={onPageSelected} />
         </div>
     ) : undefined;
