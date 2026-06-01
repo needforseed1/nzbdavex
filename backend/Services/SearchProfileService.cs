@@ -310,18 +310,29 @@ public class SearchProfileService(
             }
         }
 
-        // Text fallback is opt-in: QueryFallbackMinResults = 0 disables it entirely. When set,
-        // it runs only if the ID search returned fewer than that many results.
-        var fallbackThreshold = profile.QueryFallbackMinResults;
-        if (fallbackThreshold > 0 && deduped.Count < fallbackThreshold)
+        var fallbackMode = type == "movie" ? profile.MovieFallback : profile.TvFallback;
+        var fallbackThreshold = Math.Max(1, type == "movie"
+            ? profile.MovieFallbackMinResults
+            : profile.TvFallbackMinResults);
+
+        var reqSeason = queryParams.TryGetValue("season", out var seasonStr) && int.TryParse(seasonStr, out var sv)
+            ? (int?)sv : null;
+        var reqEpisode = queryParams.TryGetValue("ep", out var epStr) && int.TryParse(epStr, out var ev)
+            ? (int?)ev : null;
+        bool EpisodeOk(IndexerHit x) =>
+            type != "series"
+            || (reqSeason is null && reqEpisode is null)
+            || FilenameMatcher.EpisodeCompatible(x.Item.Title, reqSeason, reqEpisode);
+
+        if (fallbackMode != ProfileConfig.FallbackMode.Off && deduped.Count < fallbackThreshold)
         {
-            var fallbackVariants = await BuildFallbackQueriesAsync(type, queryParams, clientQuery, ct)
+            var fallbackVariants = await BuildFallbackQueriesAsync(type, queryParams, clientQuery, fallbackMode, ct)
                 .ConfigureAwait(false);
             if (fallbackVariants.Count > 0)
             {
                 Log.Information(
-                    "Profile {Profile} {Type}/{Id}: only {Count} result(s) (< {Threshold}); running text-query fallback ({Variants} variant(s))",
-                    profile.Name, type, id, deduped.Count, fallbackThreshold, fallbackVariants.Count);
+                    "Profile {Profile} {Type}/{Id}: only {Count} result(s) (< {Threshold}); running {Mode} text-query fallback ({Variants} variant(s))",
+                    profile.Name, type, id, deduped.Count, fallbackThreshold, fallbackMode, fallbackVariants.Count);
 
                 var combinedHits = perIndexer.SelectMany(x => x).ToList();
 
@@ -336,6 +347,7 @@ public class SearchProfileService(
                     var distinctCount = combinedHits
                         .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
                         .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
+                        .Where(EpisodeOk)
                         .Select(x => x.Item.NzbUrl)
                         .Distinct(StringComparer.Ordinal)
                         .Count();
@@ -345,6 +357,7 @@ public class SearchProfileService(
                 var combined = combinedHits
                     .Where(x => !string.IsNullOrWhiteSpace(x.Item.NzbUrl))
                     .Where(x => !MatchesExcludePattern(x.Item.Title, excludePatterns))
+                    .Where(EpisodeOk)
                     .GroupBy(x => x.Item.NzbUrl)
                     .Select(g => g.First())
                     .ToList();
@@ -461,6 +474,7 @@ public class SearchProfileService(
         string type,
         IReadOnlyDictionary<string, string> originalParams,
         string? clientQuery,
+        ProfileConfig.FallbackMode mode,
         CancellationToken ct)
     {
         var empty = Array.Empty<IReadOnlyDictionary<string, string>>();
@@ -507,7 +521,8 @@ public class SearchProfileService(
             // Broad: title only, no season/ep — catches flat/special releases that carry no
             // episode metadata (e.g. 2-part documentary specials). Reached only via escalation
             // when the targeted query falls short, so normal episodic shows aren't flooded.
-            if (targeted.ContainsKey("season") || targeted.ContainsKey("ep"))
+            if (mode == ProfileConfig.FallbackMode.Broad
+                && (targeted.ContainsKey("season") || targeted.ContainsKey("ep")))
             {
                 variants.Add(new Dictionary<string, string>
                 {

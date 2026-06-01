@@ -423,7 +423,7 @@ public class ConfigManager
 
     public ProfileConfig GetProfileConfig()
     {
-        return GetConfigValue<ProfileConfig>("profiles.instances") ?? new ProfileConfig();
+        return (GetConfigValue<ProfileConfig>("profiles.instances") ?? new ProfileConfig()).Normalized();
     }
 
     public string GetDuplicateNzbBehavior()

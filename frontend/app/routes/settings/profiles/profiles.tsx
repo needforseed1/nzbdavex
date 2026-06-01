@@ -1,6 +1,6 @@
 import { Button, Form, Card } from "react-bootstrap";
 import styles from "./profiles.module.css";
-import { type Dispatch, type SetStateAction, useCallback, useMemo, useState } from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useMemo, useState } from "react";
 import { MultiCheckboxInput } from "~/components/multi-checkbox-input/multi-checkbox-input";
 
 type ProfilesSettingsProps = {
@@ -8,11 +8,17 @@ type ProfilesSettingsProps = {
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
 };
 
+type FallbackMode = "Off" | "Title" | "Broad";
+
 interface Profile {
     Token: string;
     Name: string;
     IndexerNames: string[];
     EnabledAdapters?: string[] | null;
+    MovieFallback?: FallbackMode;
+    TvFallback?: FallbackMode;
+    MovieFallbackMinResults?: number;
+    TvFallbackMinResults?: number;
     QueryFallbackMinResults?: number;
 }
 
@@ -93,7 +99,7 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
         update({
             Profiles: [
                 ...profileConfig.Profiles,
-                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS], QueryFallbackMinResults: 0 }
+                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS], MovieFallback: "Off", TvFallback: "Off", MovieFallbackMinResults: 3, TvFallbackMinResults: 3 }
             ]
         });
     }, [profileConfig, update]);
@@ -138,6 +144,76 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
     );
 }
 
+const FALLBACK_DEFAULT_THRESHOLD = 3;
+
+function effMode(explicit: FallbackMode | undefined, legacy: number | undefined, broadDefault: boolean): FallbackMode {
+    if (explicit) return explicit;
+    if (legacy && legacy > 0) return broadDefault ? "Broad" : "Title";
+    return "Off";
+}
+
+function effThreshold(explicit: number | undefined, legacy: number | undefined): number {
+    if (explicit && explicit > 0) return explicit;
+    if (legacy && legacy > 0) return legacy;
+    return FALLBACK_DEFAULT_THRESHOLD;
+}
+
+function fallbackHelp(mode: FallbackMode, allowBroad: boolean): string {
+    if (mode === "Title") {
+        return allowBroad
+            ? "Adds ~1 query per indexer (title + season/episode). Hits naming a different episode are dropped."
+            : "Adds ~1 query per indexer. Matches by title, so slightly less precise than an exact ID match.";
+    }
+    if (mode === "Broad") {
+        return "Adds up to 2 queries per indexer — including a whole-show query to catch untagged specials. Hits naming a different episode are dropped.";
+    }
+    return "";
+}
+
+interface FallbackControlProps {
+    label: ReactNode;
+    mode: FallbackMode;
+    threshold: number;
+    allowBroad: boolean;
+    onModeChange: (mode: FallbackMode) => void;
+    onThresholdChange: (n: number) => void;
+}
+
+function FallbackControl({ label, mode, threshold, allowBroad, onModeChange, onThresholdChange }: FallbackControlProps) {
+    return (
+        <Form.Group>
+            <Form.Label>{label}</Form.Label>
+            <Form.Select
+                className={styles.input}
+                value={mode}
+                onChange={e => onModeChange(e.target.value as FallbackMode)}>
+                <option value="Off">Off — exact ID match only</option>
+                <option value="Title">{allowBroad ? "Title + episode (precise)" : "Also search by title"}</option>
+                {allowBroad && <option value="Broad">Title + episode, then whole show (broad)</option>}
+            </Form.Select>
+            {mode !== "Off" && (
+                <>
+                    <div className={styles.fallbackThresholdRow}>
+                        <span className={styles.fallbackThresholdLabel}>when the ID search finds fewer than</span>
+                        <Form.Control
+                            type="number"
+                            min={1}
+                            step={1}
+                            className={styles.fallbackThresholdInput}
+                            value={threshold}
+                            onChange={e => {
+                                const n = parseInt(e.target.value, 10);
+                                onThresholdChange(Number.isFinite(n) && n > 0 ? n : 1);
+                            }} />
+                        <span className={styles.fallbackThresholdLabel}>results</span>
+                    </div>
+                    <p className={styles.hint}>{fallbackHelp(mode, allowBroad)}</p>
+                </>
+            )}
+        </Form.Group>
+    );
+}
+
 interface ProfileFormProps {
     profile: Profile;
     index: number;
@@ -160,6 +236,22 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
         const list = ALL_ADAPTER_KEYS.filter(k => next.has(k));
         onChange(index, { EnabledAdapters: list });
     }, [enabledKeys, index, onChange]);
+
+    const movieMode = effMode(profile.MovieFallback, profile.QueryFallbackMinResults, false);
+    const tvMode = effMode(profile.TvFallback, profile.QueryFallbackMinResults, true);
+    const movieThreshold = effThreshold(profile.MovieFallbackMinResults, profile.QueryFallbackMinResults);
+    const tvThreshold = effThreshold(profile.TvFallbackMinResults, profile.QueryFallbackMinResults);
+
+    const writeFallback = useCallback((patch: Partial<Profile>) => {
+        onChange(index, {
+            MovieFallback: movieMode,
+            TvFallback: tvMode,
+            MovieFallbackMinResults: movieThreshold,
+            TvFallbackMinResults: tvThreshold,
+            QueryFallbackMinResults: undefined,
+            ...patch,
+        });
+    }, [index, onChange, movieMode, tvMode, movieThreshold, tvThreshold]);
 
     return (
         <Card className={styles.instanceCard}>
@@ -203,20 +295,20 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
                         ))}
                     </div>
                 </Form.Group>
-                <Form.Group>
-                    <Form.Label>Query fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(if the ID search finds fewer than this many results, also search by title and add those results. Set to 0 to turn off.)</span></Form.Label>
-                    <Form.Control
-                        type="number"
-                        min={0}
-                        step={1}
-                        className={styles.input}
-                        placeholder="0"
-                        value={profile.QueryFallbackMinResults ?? 0}
-                        onChange={e => {
-                            const n = parseInt(e.target.value, 10);
-                            onChange(index, { QueryFallbackMinResults: Number.isFinite(n) && n > 0 ? n : 0 });
-                        }} />
-                </Form.Group>
+                <FallbackControl
+                    label={<>Movie fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(also search by title when the ID lookup comes up short)</span></>}
+                    mode={movieMode}
+                    threshold={movieThreshold}
+                    allowBroad={false}
+                    onModeChange={m => writeFallback({ MovieFallback: m })}
+                    onThresholdChange={n => writeFallback({ MovieFallbackMinResults: n })} />
+                <FallbackControl
+                    label={<>TV fallback <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(broad also catches untagged specials; wrong episodes are filtered out)</span></>}
+                    mode={tvMode}
+                    threshold={tvThreshold}
+                    allowBroad={true}
+                    onModeChange={m => writeFallback({ TvFallback: m })}
+                    onThresholdChange={n => writeFallback({ TvFallbackMinResults: n })} />
             </Card.Body>
         </Card>
     );

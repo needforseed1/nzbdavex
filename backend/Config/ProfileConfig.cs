@@ -1,8 +1,16 @@
+using System.Text.Json.Serialization;
+
 namespace NzbWebDAV.Config;
 
 public class ProfileConfig
 {
     public List<Profile> Profiles { get; set; } = [];
+
+    public ProfileConfig Normalized()
+    {
+        foreach (var p in Profiles) p.MigrateLegacy();
+        return this;
+    }
 
     public class Profile
     {
@@ -11,8 +19,33 @@ public class ProfileConfig
         public List<string> IndexerNames { get; set; } = [];
         public List<string>? EnabledAdapters { get; set; }
 
-        // When > 0 and the ID-based pass returns fewer than this many results,
-        // run a second text-query pass and merge. 0 disables the fallback.
-        public int QueryFallbackMinResults { get; set; } = 0;
+        public FallbackMode MovieFallback { get; set; } = FallbackMode.Off;
+        public FallbackMode TvFallback { get; set; } = FallbackMode.Off;
+        public int MovieFallbackMinResults { get; set; } = 3;
+        public int TvFallbackMinResults { get; set; } = 3;
+
+        public int? QueryFallbackMinResults { get; set; }
+
+        internal void MigrateLegacy()
+        {
+            if (QueryFallbackMinResults is { } legacy && legacy > 0
+                && MovieFallback == FallbackMode.Off
+                && TvFallback == FallbackMode.Off)
+            {
+                MovieFallback = FallbackMode.Title;
+                TvFallback = FallbackMode.Broad;
+                MovieFallbackMinResults = legacy;
+                TvFallbackMinResults = legacy;
+            }
+            QueryFallbackMinResults = null;
+        }
+    }
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum FallbackMode
+    {
+        Off = 0,
+        Title = 1,
+        Broad = 2,
     }
 }

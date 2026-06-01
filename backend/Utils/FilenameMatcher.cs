@@ -37,4 +37,63 @@ public static class FilenameMatcher
         if (q.Length == 0) return true;
         return TokensEqual(q, HeadTokens(candidate));
     }
+
+    private static readonly Regex SeasonEpisodeRegex = new(
+        @"\bs(\d{1,2})[. _-]?e(\d{1,3})(?:(?:-|e)e?(\d{1,3}))?\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex AltEpisodeRegex = new(
+        @"(?<![a-z0-9])(\d{1,2})x(\d{1,3})(?:[-x](\d{1,3}))?(?![a-z0-9])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex SeasonWordRegex = new(
+        @"\b(?:season|series)[. _]*(\d{1,2})\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex SeasonTokenRegex = new(
+        @"\bs(\d{1,2})(?![. _-]?e?\d)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public readonly record struct EpisodeTag(int Season, int? Episode, int? EpisodeEnd);
+
+    public static EpisodeTag? ParseEpisode(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        var m = SeasonEpisodeRegex.Match(title);
+        if (m.Success)
+            return new EpisodeTag(
+                int.Parse(m.Groups[1].Value),
+                int.Parse(m.Groups[2].Value),
+                m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : null);
+
+        m = AltEpisodeRegex.Match(title);
+        if (m.Success)
+            return new EpisodeTag(
+                int.Parse(m.Groups[1].Value),
+                int.Parse(m.Groups[2].Value),
+                m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : null);
+
+        m = SeasonWordRegex.Match(title);
+        if (m.Success)
+            return new EpisodeTag(int.Parse(m.Groups[1].Value), null, null);
+
+        m = SeasonTokenRegex.Match(title);
+        if (m.Success)
+            return new EpisodeTag(int.Parse(m.Groups[1].Value), null, null);
+
+        return null;
+    }
+
+    public static bool EpisodeCompatible(string? title, int? season, int? episode)
+    {
+        if (ParseEpisode(title) is not { } tag) return true;
+        if (season is { } s && tag.Season != s) return false;
+        if (episode is { } e && tag.Episode is { } te)
+        {
+            var end = tag.EpisodeEnd ?? te;
+            if (e < te || e > end) return false;
+        }
+        return true;
+    }
 }
