@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.1.0](https://github.com/qooode/nzbdavex/compare/v1.0.0...v1.1.0) (2026-06-01)
+
+Builds on the 1.0.0 foundation with an on-disk segment cache, a live failover-savings dashboard, smarter title resolution (TMDB and anime), and paginated queue/history views, plus a round of streaming reliability and performance work.
+
+
+### Highlights
+
+1. **On-disk segment cache.** davex can now persist decoded Usenet segments to disk and serve repeat reads from the cache instead of refetching them from your provider, cutting provider load and speeding up re-reads. Enable it from the WebDAV settings, with a configurable cache path and maximum size. ([876f226](https://github.com/qooode/nzbdavex/commit/876f226), [fc6a2b1](https://github.com/qooode/nzbdavex/commit/fc6a2b1), [0ad8e54](https://github.com/qooode/nzbdavex/commit/0ad8e54))
+2. **Failover-savings dashboard.** A new Overview panel quantifies how often provider failover rescued a read: articles recovered, reads saved, a per-provider rescuer ranking, peak-rescue stats, and a cumulative saves trend over time, all backed by new metrics that persist across restarts. ([d4fe020](https://github.com/qooode/nzbdavex/commit/d4fe020), [925bffd](https://github.com/qooode/nzbdavex/commit/925bffd), [2614782](https://github.com/qooode/nzbdavex/commit/2614782))
+3. **Smarter title resolution: TMDB and anime.** Search profiles now resolve TMDB IDs (rewritten to IMDb/TVDB queries) and fall back to community anime-list mappings when Kitsu's data is incomplete, with an added Wikidata fallback and a TVDB name-search last resort, so more requests find a match. ([7402f76](https://github.com/qooode/nzbdavex/commit/7402f76), [06e8c22](https://github.com/qooode/nzbdavex/commit/06e8c22), [b7ae972](https://github.com/qooode/nzbdavex/commit/b7ae972))
+4. **Paginated queue and history.** The Queue and History tables now paginate with navigation controls instead of loading everything at once, with clearer live-update status. ([3a1cfba](https://github.com/qooode/nzbdavex/commit/3a1cfba), [7ffc6ad](https://github.com/qooode/nzbdavex/commit/7ffc6ad))
+
+
+### Features
+
+* **Segment cache:** disk-backed cache of decoded segments in `UsenetStreamingClient`, with cache status/path/size wired through `ConfigManager` and new WebDAV settings (enable, path, max size) including validation. ([876f226](https://github.com/qooode/nzbdavex/commit/876f226))
+* **Failover metrics & dashboard:** `FailoverSaves` tracking on read sessions and provider rollups, a `FailoverBlock` in the overview stats response, miss/edge tracking with new database migrations, and the FailoverSaves panel with rescuer ranking, peak-rescue, and a saves trend. ([d4fe020](https://github.com/qooode/nzbdavex/commit/d4fe020), [925bffd](https://github.com/qooode/nzbdavex/commit/925bffd), [bf13a97](https://github.com/qooode/nzbdavex/commit/bf13a97), [ac5dbac](https://github.com/qooode/nzbdavex/commit/ac5dbac), [c65f493](https://github.com/qooode/nzbdavex/commit/c65f493), [db47f36](https://github.com/qooode/nzbdavex/commit/db47f36), [2614782](https://github.com/qooode/nzbdavex/commit/2614782))
+* **TMDB resolver:** `TmdbIdResolver` singleton, `tmdb` id-prefix support in the profile manifest, and TMDB→IMDb/TVDB query building in `SearchProfileService`. ([7402f76](https://github.com/qooode/nzbdavex/commit/7402f76))
+* **Anime list mapping:** `AnimeListMappingResolver` plus an `ExternalIdResolver` title fallback that consults community datasets when Kitsu's mapping is incomplete, used as a last-resort search query. ([06e8c22](https://github.com/qooode/nzbdavex/commit/06e8c22))
+* **Resolver fallbacks & caching:** Wikidata fallback in `ImdbTitleResolver`, a TVDB name-search last resort, multiple fallback query variants, and in-memory caching of resolved IDs with a reduced 6s HTTP timeout. ([b7ae972](https://github.com/qooode/nzbdavex/commit/b7ae972), [2d2a0c7](https://github.com/qooode/nzbdavex/commit/2d2a0c7))
+
+
+### Performance & reliability
+
+* Drain each segment into memory in `MultiSegmentStream` so the connection returns to the pool immediately and following segments prefetch. ([e52166b](https://github.com/qooode/nzbdavex/commit/e52166b))
+* Fail fast on a definitively missing first segment, and retry transient segment failures (up to two attempts) before zero-filling, so the player surfaces a real error instead of silently corrupt playback. ([88d8e16](https://github.com/qooode/nzbdavex/commit/88d8e16), [871843c](https://github.com/qooode/nzbdavex/commit/871843c))
+* Resolve lazy RAR files in `DatabaseStoreMultipartFile` when metadata still shows pending parts. ([b1a0c61](https://github.com/qooode/nzbdavex/commit/b1a0c61))
+* Use hourly rollup data for long Overview windows (7 days and up) and hide widgets that would otherwise show misleading data. ([7dd8cd4](https://github.com/qooode/nzbdavex/commit/7dd8cd4))
+* Rework the activity heatmap to aggregate by local days and weeks correctly and build its grid without the extra lookup map. ([ebb587f](https://github.com/qooode/nzbdavex/commit/ebb587f))
+
+
+### Documentation
+
+* Rename NzbDav to NzbDavEx across the README, setup guide, and issue templates, and switch the documented Docker image tag from `:latest` to `:stable`. ([17ee7fc](https://github.com/qooode/nzbdavex/commit/17ee7fc))
+
 ## [1.0.0](https://github.com/qooode/nzbdavex/releases/tag/v1.0.0) (2026-05-28)
 
 **First official release of davex.** davex is an independent fork of [nzbdav](https://github.com/nzbdav-dev/nzbdav), rebuilt into a fast on-demand usenet client with a token-scoped search API, self-healing content resolution, and a live observability dashboard. This release captures everything the fork added since it diverged from nzbdav 0.6.4.
