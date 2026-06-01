@@ -130,8 +130,9 @@
 .fallbackThresholdRow {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 4px 0 6px;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
 }
 
 .fallbackThresholdLabel {
@@ -140,6 +141,12 @@
 }
 
 .fallbackThresholdInput {
-    width: 80px;
+    width: 52px;
+    flex: 0 0 auto;
     margin-bottom: 0;
+    padding: 2px 6px;
+    height: auto;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: center;
 }
