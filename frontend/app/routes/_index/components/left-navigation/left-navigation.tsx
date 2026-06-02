@@ -29,7 +29,7 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
                 </Item>
             )}
             <Item target="/watchtower">
-                <div className={styles["watchdog-icon"]} />
+                <div className={styles["watchtower-icon"]} />
                 <div className={styles.title}>Watchtower</div>
             </Item>
             <Item target="/explore">
