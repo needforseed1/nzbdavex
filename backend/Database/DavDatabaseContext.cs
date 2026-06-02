@@ -43,6 +43,8 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
     public DbSet<NzbBlobCleanupItem> NzbBlobCleanupItems => Set<NzbBlobCleanupItem>();
     public DbSet<WatchdogEntry> WatchdogEntries => Set<WatchdogEntry>();
     public DbSet<IndexerApiHit> IndexerApiHits => Set<IndexerApiHit>();
+    public DbSet<ListSource> ListSources => Set<ListSource>();
+    public DbSet<WantedItem> WantedItems => Set<WantedItem>();
 
     // blob items
     public List<DavNzbFile> BlobNzbFiles = [];
@@ -596,6 +598,51 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
 
             e.HasIndex(i => new { i.IndexerName, i.Type, i.AccessedAt });
             e.HasIndex(i => i.AccessedAt);
+        });
+
+        // ListSource
+        b.Entity<ListSource>(e =>
+        {
+            e.ToTable("ListSources");
+            e.HasKey(i => i.Id);
+
+            e.Property(i => i.Id).ValueGeneratedNever();
+            e.Property(i => i.Kind).IsRequired();
+            e.Property(i => i.Name).IsRequired();
+            e.Property(i => i.Url).IsRequired(false);
+            e.Property(i => i.Enabled).IsRequired();
+            e.Property(i => i.Cap).IsRequired();
+            e.Property(i => i.CreatedAtUnix).IsRequired();
+            e.Property(i => i.LastSyncedAtUnix).IsRequired(false);
+            e.Property(i => i.LastSyncError).IsRequired(false);
+        });
+
+        // WantedItem
+        b.Entity<WantedItem>(e =>
+        {
+            e.ToTable("WantedItems");
+            e.HasKey(i => i.Id);
+
+            e.Property(i => i.Id).ValueGeneratedNever();
+            e.Property(i => i.Key).IsRequired();
+            e.Property(i => i.Type).IsRequired();
+            e.Property(i => i.ContentId).IsRequired();
+            e.Property(i => i.Title).IsRequired();
+            e.Property(i => i.State).IsRequired();
+            e.Property(i => i.Provenance).IsRequired();
+            e.Property(i => i.Shortlist).IsRequired();
+            e.Property(i => i.WinnerNzb).IsRequired(false);
+            e.Property(i => i.ResponderHost).IsRequired(false);
+            e.Property(i => i.FailReason).IsRequired(false);
+            e.Property(i => i.CreatedAtUnix).IsRequired();
+            e.Property(i => i.UpdatedAtUnix).IsRequired();
+            e.Property(i => i.LastResolvedAtUnix).IsRequired(false);
+            e.Property(i => i.LastVerifiedAtUnix).IsRequired(false);
+            e.Property(i => i.NextCheckAtUnix).IsRequired(false);
+
+            e.HasIndex(i => i.Key).IsUnique();
+            e.HasIndex(i => i.NextCheckAtUnix);
+            e.HasIndex(i => i.State);
         });
     }
 

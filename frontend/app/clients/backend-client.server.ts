@@ -320,6 +320,29 @@ class BackendClient {
         }
         return await response.json();
     }
+
+    public async getWatchtower(): Promise<WatchtowerData> {
+        const url = process.env.BACKEND_URL + "/api/get-watchtower";
+        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to get watchtower: ${(await response.json()).error}`);
+        }
+        return await response.json();
+    }
+
+    public async watchtowerMutate(fields: Record<string, string>): Promise<boolean> {
+        const url = process.env.BACKEND_URL + "/api/watchtower-mutate";
+        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const form = new FormData();
+        for (const [k, v] of Object.entries(fields)) form.append(k, v);
+        const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey }, body: form });
+        if (!response.ok) {
+            throw new Error(`Watchtower action failed: ${(await response.json()).error}`);
+        }
+        const data = await response.json();
+        return data.status;
+    }
 }
 
 export const backendClient = new BackendClient();
@@ -407,6 +430,47 @@ export type DirectoryItem = {
 export type ConfigItem = {
     configName: string,
     configValue: string,
+}
+
+export type WatchtowerData = {
+    status: boolean,
+    enabled: boolean,
+    sources: WatchtowerSource[],
+    items: WatchtowerItem[],
+    stats: WatchtowerStats,
+}
+
+export type WatchtowerSource = {
+    id: string,
+    kind: string,
+    name: string,
+    url?: string | null,
+    enabled: boolean,
+    cap: number,
+    lastSyncedAtUnix?: number | null,
+    lastSyncError?: string | null,
+}
+
+export type WatchtowerItem = {
+    key: string,
+    type: string,
+    contentId: string,
+    title: string,
+    state: string,
+    provenanceCount: number,
+    shortlistCount: number,
+    winnerTitle?: string | null,
+    winnerSize: number,
+    lastVerifiedAtUnix?: number | null,
+    nextCheckAtUnix?: number | null,
+    failReason?: string | null,
+}
+
+export type WatchtowerStats = {
+    total: number,
+    ready: number,
+    scouting: number,
+    unavailable: number,
 }
 
 export type SearchIndexersResponse = {

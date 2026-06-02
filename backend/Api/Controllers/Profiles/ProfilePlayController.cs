@@ -34,7 +34,8 @@ public class ProfilePlayController(
     LazyRarResolver lazyRarResolver,
     PreflightCache preflightCache,
     PreflightSessionRegistry preflightSessions,
-    VariantResolver variantResolver
+    VariantResolver variantResolver,
+    WatchtowerStore watchtowerStore
 ) : ControllerBase
 {
     private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(8);
@@ -68,6 +69,9 @@ public class ProfilePlayController(
 
         var entry = cache.Get(nzbToken);
         if (entry is null) return NotFound("Link expired. Re-search in your client.");
+
+        if (configManager.IsWatchtowerEnabled())
+            await watchtowerStore.TryWarmForPlayAsync(entry.Type, entry.Id, HttpContext.RequestAborted).ConfigureAwait(false);
 
         preflightSessions.Cancel(entry.ProfileToken, entry.Type, entry.Id);
 

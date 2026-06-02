@@ -1,0 +1,35 @@
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 16px 4px;
+}
+
+.section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 640px;
+}
+
+.sectionTitle {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.sectionDescription {
+    color: #9aa0a6;
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.input {
+    max-width: 420px;
+}
+
+.hint {
+    color: #8a9099;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    margin: 0;
+}

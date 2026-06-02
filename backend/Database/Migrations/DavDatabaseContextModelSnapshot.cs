@@ -434,6 +434,111 @@ namespace NzbWebDAV.Database.Migrations
                     b.ToTable("IndexerApiHits", (string)null);
                 });
 
+            modelBuilder.Entity("NzbWebDAV.Database.Models.ListSource", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Cap")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LastSyncError")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LastSyncedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Url")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ListSources", (string)null);
+                });
+
+            modelBuilder.Entity("NzbWebDAV.Database.Models.WantedItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("CreatedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FailReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LastResolvedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LastVerifiedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("NextCheckAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Provenance")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ResponderHost")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Shortlist")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("UpdatedAtUnix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("WinnerNzb")
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.HasIndex("NextCheckAtUnix");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("WantedItems", (string)null);
+                });
+
             modelBuilder.Entity("NzbWebDAV.Database.Models.QueueItem", b =>
                 {
                     b.Property<Guid>("Id")

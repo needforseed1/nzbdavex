@@ -380,6 +380,108 @@ public class ConfigManager
         return int.TryParse(v, out var n) ? Math.Clamp(n, 0, 120) : 5;
     }
 
+
+    public bool IsWatchtowerEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.enabled"));
+        return v != null ? bool.Parse(v) : false;
+    }
+
+    public string GetWatchtowerProfileToken()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("watchtower.profile-token")) ?? "";
+    }
+
+    public string GetWatchtowerRanking()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.ranking"));
+        return v == "largest" ? "largest" : "watchdog";
+    }
+
+    public long GetWatchtowerSizeFloorBytes()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.size-floor-bytes"));
+        if (v == null) return 524288000L;
+        return long.TryParse(v, out var n) ? Math.Max(0, n) : 524288000L;
+    }
+
+    public long GetWatchtowerSizeCeilingBytes()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.size-ceiling-bytes"));
+        if (v == null) return 0L;
+        return long.TryParse(v, out var n) ? Math.Max(0, n) : 0L;
+    }
+
+    public int GetWatchtowerMinGrabs()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.min-grabs"));
+        if (v == null) return 0;
+        return int.TryParse(v, out var n) ? Math.Max(0, n) : 0;
+    }
+
+    public int GetWatchtowerShortlistDepth()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.shortlist-depth"));
+        if (v == null) return 2;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 5) : 2;
+    }
+
+    public int GetWatchtowerGrabCapPerResolve()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.grab-cap-per-resolve"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 3;
+    }
+
+    public int GetWatchtowerVerifySampleCount()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.verify-sample-count"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 20) : 3;
+    }
+
+    public int GetWatchtowerActiveSetCap()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.active-set-cap"));
+        if (v == null) return 100;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 100000) : 100;
+    }
+
+    public int GetWatchtowerDailyResolveBudget()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.daily-resolve-budget"));
+        if (v == null) return 60;
+        return int.TryParse(v, out var n) ? Math.Max(0, n) : 60;
+    }
+
+    public int GetWatchtowerSyncIntervalSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.sync-interval-seconds"));
+        if (v == null) return 3600;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 60, 86400) : 3600;
+    }
+
+    public int GetWatchtowerKeepFreshBaseSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.keepfresh-base-seconds"));
+        if (v == null) return 21600;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 300, 604800) : 21600;
+    }
+
+    public int GetWatchtowerKeepFreshMaxSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.keepfresh-max-seconds"));
+        if (v == null) return 604800;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 600, 2592000) : 604800;
+    }
+
+    public int GetWatchtowerUnavailableRetrySeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.unavailable-retry-seconds"));
+        if (v == null) return 21600;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 600, 604800) : 21600;
+    }
+
     public bool IsPreviewPar2FilesEnabled()
     {
         var defaultValue = false;
