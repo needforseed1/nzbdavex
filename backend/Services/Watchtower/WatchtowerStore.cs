@@ -7,7 +7,7 @@ namespace NzbWebDAV.Services;
 
 public class WatchtowerStore(PreflightCache preflightCache)
 {
-    public async Task TryWarmForPlayAsync(string type, string contentId, CancellationToken ct)
+    public async Task TryWarmCacheAsync(string type, string contentId, CancellationToken ct)
     {
         try
         {
@@ -23,11 +23,11 @@ public class WatchtowerStore(PreflightCache preflightCache)
 
             preflightCache.SetVerified(winner.NzbUrl, item.WinnerNzb,
                 PlaybackFastVerifier.Verdict.Available, item.ResponderHost);
-            Log.Debug("Watchtower: warmed play cache for {Key} ({Title})", key, winner.Title);
+            Log.Debug("Watchtower: warmed cache for {Key} ({Title})", key, winner.Title);
         }
         catch (Exception e)
         {
-            Log.Debug(e, "Watchtower: warm-for-play failed for {Type}/{Id}", type, contentId);
+            Log.Debug(e, "Watchtower: cache warm failed for {Type}/{Id}", type, contentId);
         }
     }
 }

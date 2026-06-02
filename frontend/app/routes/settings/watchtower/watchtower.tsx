@@ -20,10 +20,10 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
             <div className={styles.section}>
                 <div className={styles.sectionTitle}>Watchtower</div>
                 <div className={styles.sectionDescription}>
-                    Keeps the titles on your lists pre-resolved and proven alive, so playback starts
-                    with no search and no spinner. Pointer-only and safe-by-default: it stores segment
-                    maps (kilobytes), never video, and respects your indexer caps. Manage your lists on
-                    the <b>Watchtower</b> page; tune the engine here.
+                    Keeps the titles on your lists pre-resolved to a healthy release and re-verified
+                    over time, so each is found and ready before you need it. Pointer-only and
+                    safe-by-default: it stores segment maps (kilobytes), never video, and respects your
+                    indexer caps. Manage your lists on the <b>Watchtower</b> page; tune the engine here.
                 </div>
             </div>
 
@@ -36,8 +36,7 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     onChange={e => set("watchtower.enabled", String(e.target.checked))} />
                 <p className={styles.hint}>
                     When on, the background engine syncs your lists, resolves the biggest healthy
-                    release for each item, keeps it verified over time, and warms it for instant
-                    playback. When off, nothing runs.
+                    release for each item, and keeps it verified over time. When off, nothing runs.
                 </p>
             </Form.Group>
 
@@ -57,14 +56,14 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     disabled={!enabled}
                     value={config["watchtower.ranking"] ?? "watchdog"}
                     onChange={e => set("watchtower.ranking", e.target.value)}>
-                    <option value="watchdog">Match the watchdog — pick what a Play click would pick</option>
+                    <option value="watchdog">Match the watchdog's pick</option>
                     <option value="largest">Largest healthy release</option>
                 </Form.Select>
                 <p className={styles.hint}>
-                    <b>Match the watchdog</b> uses the same rank order as playback, so the release
-                    Watchtower warms is exactly the one a click lands on — the most reliable instant
-                    play. <b>Largest</b> always prefers the biggest healthy release (it may differ
-                    from what the watchdog would have chosen).
+                    <b>Match the watchdog</b> uses the same rank order as the watchdog, so the release
+                    Watchtower readies is exactly the one the watchdog would select. <b>Largest</b>
+                    always prefers the biggest healthy release (it may differ from what the watchdog
+                    would have chosen).
                 </p>
             </Form.Group>
 
@@ -95,7 +94,7 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     onChange={e => set("watchtower.active-set-cap", e.target.value)} />
                 <p className={styles.hint}>
                     How many items the engine keeps actively ready. Beyond this, items are listed but
-                    parked until they bubble up — this is what bounds load no matter how big your lists get. Default 100.
+                    parked until they bubble up. This is what bounds load no matter how big your lists get. Default 100.
                 </p>
             </Form.Group>
 

@@ -71,7 +71,7 @@ public class ProfilePlayController(
         if (entry is null) return NotFound("Link expired. Re-search in your client.");
 
         if (configManager.IsWatchtowerEnabled())
-            await watchtowerStore.TryWarmForPlayAsync(entry.Type, entry.Id, HttpContext.RequestAborted).ConfigureAwait(false);
+            await watchtowerStore.TryWarmCacheAsync(entry.Type, entry.Id, HttpContext.RequestAborted).ConfigureAwait(false);
 
         preflightSessions.Cancel(entry.ProfileToken, entry.Type, entry.Id);
 

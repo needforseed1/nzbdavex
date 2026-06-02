@@ -38,8 +38,9 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                 <div>
                     <h2 className={styles.title}>Watchtower</h2>
                     <div className={styles.subtitle}>
-                        Keeps your lists ready — pre-resolved and proven alive — so playback starts
-                        with no search and no spinner. Pointer-only: it stores segment maps, never video.
+                        Keeps your lists ready. Each title is pre-resolved to a healthy release and
+                        re-verified over time, so it's found and ready before you need it. Pointer-only:
+                        it stores segment maps, never video.
                     </div>
                 </div>
                 <div className={styles.statsBar}>
@@ -64,7 +65,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
             <section className={styles.card}>
                 <div className={styles.cardTitle}>Lists</div>
                 <div className={styles.cardHint}>
-                    Any list that yields content ids — a Stremio catalog URL, a plain list URL, or
+                    Any list that yields content ids: a Stremio catalog URL, a plain list URL, or
                     manual additions. They merge into one deduped wanted-set.
                 </div>
 
@@ -204,7 +205,7 @@ function Stat({ label, value, tone }: { label: string, value: number, tone?: "ok
 }
 
 function formatBytes(bytes: number): string {
-    if (bytes <= 0) return "—";
+    if (bytes <= 0) return "-";
     const u = ["B", "KB", "MB", "GB", "TB"];
     let i = 0;
     let v = bytes;
