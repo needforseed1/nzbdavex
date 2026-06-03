@@ -16,13 +16,16 @@ public class WatchtowerService(
     NewznabRateLimiter rateLimiter,
     CandidateNegativeCache negativeCache,
     PreflightCache preflightCache,
-    ListSourceEnumerator enumerator
+    ListSourceEnumerator enumerator,
+    EpisodeEnumerator episodeEnumerator
 ) : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(15);
     private const int ResolvesPerTick = 3;
     private const int KeepFreshPerTick = 5;
+    private const int ExpandsPerTick = 5;
+    private const long SeasonPackGraceSeconds = 14L * 86400L;
 
     private int _resolveDayKey = -1;
     private int _resolvesToday;
@@ -40,6 +43,7 @@ public class WatchtowerService(
                 }
 
                 await SyncDueSourcesAsync(stoppingToken).ConfigureAwait(false);
+                await ExpandDueExpandersAsync(stoppingToken).ConfigureAwait(false);
                 await ResolveDueItemsAsync(stoppingToken).ConfigureAwait(false);
                 await KeepFreshDueItemsAsync(stoppingToken).ConfigureAwait(false);
 
@@ -110,7 +114,7 @@ public class WatchtowerService(
                     Type = r.Type,
                     ContentId = r.ContentId,
                     Title = string.IsNullOrWhiteSpace(r.Title) ? r.ContentId : r.Title!,
-                    State = WantedItem.StateScouting,
+                    State = WantedItem.IsBareSeries(r.Type, r.ContentId) ? WantedItem.StateExpander : WantedItem.StateScouting,
                     Provenance = WtJson.WriteStrings(new[] { srcId }),
                     Shortlist = "[]",
                     CreatedAtUnix = now,
@@ -129,6 +133,15 @@ public class WatchtowerService(
                 }
                 if (string.IsNullOrWhiteSpace(item.Title) && !string.IsNullOrWhiteSpace(r.Title))
                     item.Title = r.Title!;
+                if (item.State != WantedItem.StateExpander && WantedItem.IsBareSeries(item.Type, item.ContentId))
+                {
+                    item.State = WantedItem.StateExpander;
+                    item.Shortlist = "[]";
+                    item.WinnerNzb = null;
+                    item.FailReason = null;
+                    item.NextCheckAtUnix = now;
+                    item.UpdatedAtUnix = now;
+                }
             }
         }
 
@@ -142,7 +155,7 @@ public class WatchtowerService(
             prov.Remove(srcId);
             if (prov.Count == 0)
             {
-                ctx.WantedItems.Remove(item);
+                await WtReconcile.RemoveWithChildrenAsync(ctx, item, now, ct).ConfigureAwait(false);
             }
             else
             {
@@ -150,6 +163,256 @@ public class WatchtowerService(
                 item.UpdatedAtUnix = now;
             }
         }
+    }
+
+    private async Task ExpandDueExpandersAsync(CancellationToken ct)
+    {
+        var scope = configManager.GetWatchtowerSeriesScope();
+        if (scope == "off") return;
+
+        var now = Now();
+        var interval = configManager.GetWatchtowerSyncIntervalSeconds();
+
+        await using var ctx = new DavDatabaseContext();
+        var due = await ctx.WantedItems
+            .Where(w => w.State == WantedItem.StateExpander
+                        && (w.NextCheckAtUnix == null || w.NextCheckAtUnix <= now))
+            .OrderBy(w => w.NextCheckAtUnix)
+            .Take(ExpandsPerTick)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        foreach (var expander in due)
+        {
+            if (ct.IsCancellationRequested) break;
+            try
+            {
+                await ExpandOneAsync(ctx, expander, scope, now, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Log.Debug(e, "Watchtower: expand failed for {Key}", expander.Key);
+            }
+            expander.NextCheckAtUnix = now + interval;
+            expander.UpdatedAtUnix = now;
+            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ExpandOneAsync(DavDatabaseContext ctx, WantedItem expander, string scope, long now, CancellationToken ct)
+    {
+        var tag = WtReconcile.ExpanderTag(expander.Key);
+        var desired = await BuildDesiredAsync(expander, scope, now, ct).ConfigureAwait(false);
+        if (desired is null) return;
+
+        var desiredKeys = desired.Keys.ToList();
+        var existing = desiredKeys.Count == 0
+            ? new List<WantedItem>()
+            : await ctx.WantedItems.Where(w => desiredKeys.Contains(w.Key)).ToListAsync(ct).ConfigureAwait(false);
+        var existingByKey = existing.ToDictionary(w => w.Key);
+
+        foreach (var (childKey, row) in desired)
+        {
+            if (existingByKey.TryGetValue(childKey, out var child))
+            {
+                var prov = WtJson.ReadStrings(child.Provenance);
+                if (!prov.Contains(tag))
+                {
+                    prov.Add(tag);
+                    child.Provenance = WtJson.WriteStrings(prov);
+                    child.UpdatedAtUnix = now;
+                }
+            }
+            else
+            {
+                ctx.WantedItems.Add(new WantedItem
+                {
+                    Id = Guid.NewGuid(),
+                    Key = childKey,
+                    Type = row.Type,
+                    ContentId = row.ContentId,
+                    Title = row.Title,
+                    State = WantedItem.StateScouting,
+                    Provenance = WtJson.WriteStrings(new[] { tag }),
+                    Shortlist = "[]",
+                    CreatedAtUnix = now,
+                    UpdatedAtUnix = now,
+                    NextCheckAtUnix = now,
+                });
+            }
+        }
+
+        var tagged = await ctx.WantedItems
+            .Where(w => w.Provenance.Contains(tag))
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var child in tagged)
+        {
+            var prov = WtJson.ReadStrings(child.Provenance);
+            if (!prov.Contains(tag)) continue;
+            if (desired.ContainsKey(child.Key)) continue;
+            prov.Remove(tag);
+            if (prov.Count == 0)
+            {
+                ctx.WantedItems.Remove(child);
+            }
+            else
+            {
+                child.Provenance = WtJson.WriteStrings(prov);
+                child.UpdatedAtUnix = now;
+            }
+        }
+
+        Log.Information("Watchtower: expanded {Key} -> {Count} row(s) (scope {Scope})",
+            expander.Key, desired.Count, scope);
+    }
+
+    private async Task<Dictionary<string, DesiredRow>?> BuildDesiredAsync(
+        WantedItem expander, string scope, long now, CancellationToken ct)
+    {
+        if (IsImdbId(expander.ContentId))
+        {
+            var episodes = await episodeEnumerator.EnumerateImdbAsync(expander.ContentId, ct).ConfigureAwait(false);
+            if (episodes.Count == 0) return null;
+            return BuildDesiredRows(episodes, expander.Title, CanonicalImdb(expander.ContentId), scope, now);
+        }
+
+        var kitsuId = ParseKitsuId(expander.ContentId);
+        if (kitsuId is not null)
+        {
+            var episodes = await episodeEnumerator.EnumerateKitsuAsync(kitsuId, ct).ConfigureAwait(false);
+            if (episodes.Count == 0) return null;
+            return BuildAnimeDesiredRows(episodes, expander.Title, kitsuId, scope, now);
+        }
+
+        return null;
+    }
+
+    private Dictionary<string, DesiredRow> BuildAnimeDesiredRows(
+        IReadOnlyList<EpisodeEnumerator.Episode> episodes, string? seriesTitle, string kitsuId, string scope, long now)
+    {
+        var desired = new Dictionary<string, DesiredRow>();
+        var aired = episodes.Where(e => e.AirDateUnix is null || e.AirDateUnix <= now).OrderBy(e => e.Number).ToList();
+        if (aired.Count == 0) return desired;
+
+        var count = scope == "recent"
+            ? configManager.GetWatchtowerSeriesRecentCount()
+            : configManager.GetWatchtowerSeriesMaxEpisodes();
+
+        foreach (var ep in aired.Skip(Math.Max(0, aired.Count - count)))
+        {
+            var contentId = $"kitsu:{kitsuId}:{ep.Number}";
+            desired[$"series:{contentId}"] = new DesiredRow("series", contentId, AnimeTitle(seriesTitle, ep.Number));
+        }
+        return desired;
+    }
+
+    private static string? ParseKitsuId(string contentId)
+    {
+        var parts = contentId.Split(':');
+        if (parts.Length != 2 || !parts[0].Equals("kitsu", StringComparison.OrdinalIgnoreCase)) return null;
+        return parts[1].Length > 0 && parts[1].All(char.IsDigit) ? parts[1] : null;
+    }
+
+    private static string AnimeTitle(string? seriesTitle, int number)
+    {
+        var code = $"E{number:D2}";
+        var baseTitle = seriesTitle?.Trim();
+        return string.IsNullOrEmpty(baseTitle) ? code : $"{baseTitle} {code}";
+    }
+
+    private Dictionary<string, DesiredRow> BuildDesiredRows(
+        IReadOnlyList<EpisodeEnumerator.Episode> episodes, string? seriesTitle, string imdb, string scope, long now)
+    {
+        var desired = new Dictionary<string, DesiredRow>();
+        var aired = episodes.Where(e => e.AirDateUnix is null || e.AirDateUnix <= now).ToList();
+        if (aired.Count == 0) return desired;
+
+        var recentCount = configManager.GetWatchtowerSeriesRecentCount();
+        if (scope == "recent")
+        {
+            foreach (var ep in aired.Skip(Math.Max(0, aired.Count - recentCount)))
+                AddEpisodeRow(desired, imdb, seriesTitle, ep);
+            return desired;
+        }
+
+        var maxEpisodes = configManager.GetWatchtowerSeriesMaxEpisodes();
+        var packsEnabled = configManager.IsWatchtowerSeasonPacksEnabled();
+        var seasons = scope == "all-aired"
+            ? aired.Select(e => e.Season).Distinct().OrderByDescending(s => s).ToList()
+            : new List<int> { aired.Max(e => e.Season) };
+
+        var singleBudget = maxEpisodes;
+        foreach (var season in seasons)
+        {
+            if (packsEnabled && SeasonComplete(episodes, season, now))
+            {
+                AddSeasonRow(desired, imdb, seriesTitle, season);
+                continue;
+            }
+            foreach (var ep in aired.Where(e => e.Season == season).OrderBy(e => e.Number))
+            {
+                if (singleBudget <= 0) break;
+                AddEpisodeRow(desired, imdb, seriesTitle, ep);
+                singleBudget--;
+            }
+        }
+        return desired;
+    }
+
+    private static void AddEpisodeRow(
+        Dictionary<string, DesiredRow> desired, string imdb, string? seriesTitle, EpisodeEnumerator.Episode ep)
+    {
+        var contentId = $"{imdb}:{ep.Season}:{ep.Number}";
+        desired[$"series:{contentId}"] = new DesiredRow("series", contentId, ChildTitle(seriesTitle, ep));
+    }
+
+    private static void AddSeasonRow(
+        Dictionary<string, DesiredRow> desired, string imdb, string? seriesTitle, int season)
+    {
+        var contentId = $"{imdb}:{season}";
+        desired[$"season:{contentId}"] = new DesiredRow("season", contentId, SeasonTitle(seriesTitle, season));
+    }
+
+    private static bool SeasonComplete(IReadOnlyList<EpisodeEnumerator.Episode> all, int season, long now)
+    {
+        var eps = all.Where(e => e.Season == season).ToList();
+        if (eps.Count == 0) return false;
+        if (eps.Any(e => e.AirDateUnix is { } a && a > now)) return false;
+        var known = eps.Where(e => e.AirDateUnix is not null).Select(e => e.AirDateUnix!.Value).ToList();
+        if (known.Count == 0) return true;
+        return now - known.Max() >= SeasonPackGraceSeconds;
+    }
+
+    private static string SeasonTitle(string? seriesTitle, int season)
+    {
+        var code = $"S{season:D2} (season pack)";
+        var baseTitle = seriesTitle?.Trim();
+        return string.IsNullOrEmpty(baseTitle) ? code : $"{baseTitle} {code}";
+    }
+
+    private sealed record DesiredRow(string Type, string ContentId, string Title);
+
+    private static string ChildTitle(string? seriesTitle, EpisodeEnumerator.Episode ep)
+    {
+        var code = $"S{ep.Season:D2}E{ep.Number:D2}";
+        var baseTitle = seriesTitle?.Trim();
+        return string.IsNullOrEmpty(baseTitle) ? code : $"{baseTitle} {code}";
+    }
+
+    private static bool IsImdbId(string contentId)
+    {
+        var s = contentId;
+        var colon = s.IndexOf(':');
+        if (colon > 0) s = s[..colon];
+        if (s.StartsWith("tt", StringComparison.OrdinalIgnoreCase)) s = s[2..];
+        return s.Length > 0 && s.All(char.IsDigit);
+    }
+
+    private static string CanonicalImdb(string contentId)
+    {
+        var s = contentId;
+        var colon = s.IndexOf(':');
+        if (colon > 0) s = s[..colon];
+        return s.StartsWith("tt", StringComparison.OrdinalIgnoreCase) ? s : "tt" + s;
     }
 
     private async Task ResolveDueItemsAsync(CancellationToken ct)
@@ -197,6 +460,16 @@ public class WatchtowerService(
     private async Task ResolveOneAsync(string profileToken, WantedItem item, CancellationToken ct)
     {
         var now = Now();
+        if (WantedItem.IsBareSeries(item.Type, item.ContentId))
+        {
+            item.State = WantedItem.StateExpander;
+            item.Shortlist = "[]";
+            item.WinnerNzb = null;
+            item.FailReason = null;
+            item.NextCheckAtUnix = now;
+            item.UpdatedAtUnix = now;
+            return;
+        }
         var search = await searchProfileService
             .SearchByImdbAsync(profileToken, item.Type, item.ContentId, ct)
             .ConfigureAwait(false);

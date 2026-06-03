@@ -31,6 +31,7 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
         var ready = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateReady, ct).ConfigureAwait(false);
         var scouting = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateScouting, ct).ConfigureAwait(false);
         var unavailable = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateUnavailable, ct).ConfigureAwait(false);
+        var expanders = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateExpander, ct).ConfigureAwait(false);
 
         return Ok(new GetWatchtowerResponse
         {
@@ -54,6 +55,7 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
                 Ready = ready,
                 Scouting = scouting,
                 Unavailable = unavailable,
+                Expanders = expanders,
             },
         });
     }
@@ -62,6 +64,8 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
     {
         var shortlist = WtJson.ReadPointers(w.Shortlist);
         var winner = shortlist.FirstOrDefault();
+        var provenance = WtJson.ReadStrings(w.Provenance);
+        var expanderTag = provenance.FirstOrDefault(p => p.StartsWith("exp:", StringComparison.Ordinal));
         return new GetWatchtowerResponse.ItemDto
         {
             Key = w.Key,
@@ -69,7 +73,8 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
             ContentId = w.ContentId,
             Title = w.Title,
             State = w.State,
-            ProvenanceCount = WtJson.ReadStrings(w.Provenance).Count,
+            ProvenanceCount = provenance.Count,
+            ExpanderKey = expanderTag is null ? null : expanderTag.Substring(4),
             ShortlistCount = shortlist.Count,
             WinnerTitle = winner?.Title,
             WinnerSize = winner?.Size ?? 0,
@@ -107,6 +112,7 @@ public class GetWatchtowerResponse : BaseApiResponse
         [JsonPropertyName("title")] public required string Title { get; init; }
         [JsonPropertyName("state")] public required string State { get; init; }
         [JsonPropertyName("provenanceCount")] public required int ProvenanceCount { get; init; }
+        [JsonPropertyName("expanderKey")] public string? ExpanderKey { get; init; }
         [JsonPropertyName("shortlistCount")] public required int ShortlistCount { get; init; }
         [JsonPropertyName("winnerTitle")] public string? WinnerTitle { get; init; }
         [JsonPropertyName("winnerSize")] public required long WinnerSize { get; init; }
@@ -121,5 +127,6 @@ public class GetWatchtowerResponse : BaseApiResponse
         [JsonPropertyName("ready")] public required int Ready { get; init; }
         [JsonPropertyName("scouting")] public required int Scouting { get; init; }
         [JsonPropertyName("unavailable")] public required int Unavailable { get; init; }
+        [JsonPropertyName("expanders")] public required int Expanders { get; init; }
     }
 }

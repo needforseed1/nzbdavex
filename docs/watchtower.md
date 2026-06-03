@@ -37,6 +37,11 @@ STAT. On a miss it falls back to exactly today's behavior.
 - **Stremio catalog.** Any catalog URL (`.../catalog/movie/xyz.json`). This transitively
   supports every list wrapped as a Stremio catalog addon (Trakt, MDBList, Letterboxd, and so on).
 - **URL list.** A JSON array / `{items:[...]}` or plain newline-delimited `type:id` / imdb ids.
+- **Whole series.** A list naming a show (a bare `series:tt…`) is expanded into its episodes via
+  TVmaze (keyless) and tracked through the normal resolve + keep-fresh path. Scope is bounded by
+  `series-scope`; only aired episodes are warmed. A finished season is warmed as a single season
+  pack (one grab covers the whole season, played per-episode); the still-airing season uses single
+  episodes. Toggle with `season-packs`.
 
 Adding a new source kind is one `switch` case in `ListSourceEnumerator`; the engine is unchanged.
 
@@ -67,6 +72,10 @@ Adding a new source kind is one `switch` case in `ListSourceEnumerator`; the eng
 | `sync-interval-seconds` | `3600` | Remote list refresh cadence. |
 | `keepfresh-base/max-seconds` | `21600` / `604800` | Re-verify backoff window. |
 | `unavailable-retry-seconds` | `21600` | Re-search cadence when nothing healthy found. |
+| `series-scope` | `latest-season` | How much of a series to warm: `latest-season`, `all-aired`, `recent`, `off`. |
+| `series-max-episodes` | `50` | Cap on episodes warmed per series. |
+| `series-recent-count` | `3` | Episodes kept when `series-scope` is `recent`. |
+| `season-packs` | `true` | Warm one season pack for finished seasons instead of every episode. |
 
 ## Code map
 
@@ -79,7 +88,8 @@ Adding a new source kind is one `switch` case in `ListSourceEnumerator`; the eng
 
 ## Status / not yet
 
-- Movies + explicit episodes only (no whole-series auto-tracking, that's Sonarr's job).
+- Movies, explicit episodes, and whole series — imdb shows are expanded via TVmaze and anime (kitsu)
+  via Kitsu, all keyless. mal/anilist catalog ids are accepted as expanders but not yet expanded.
 - Dedup is exact-key; cross-namespace collapse (tmdb and imdb for the same title) is a follow-up.
 - Optional later: head-prebuffer for a small "next up" set; RSS-sync matching; expose the
   wanted-set *as* a Stremio catalog.

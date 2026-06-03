@@ -153,6 +153,7 @@ class Program
             .AddHostedService<ActiveReadsBroadcaster>()
             .AddSingleton<WatchtowerStore>()
             .AddSingleton<ListSourceEnumerator>()
+            .AddSingleton<EpisodeEnumerator>()
             .AddHostedService<WatchtowerService>()
             .AddScoped<DavDatabaseContext>()
             .AddScoped<DavDatabaseClient>()

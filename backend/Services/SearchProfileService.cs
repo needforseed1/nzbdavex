@@ -1,6 +1,8 @@
+using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Utils;
@@ -59,6 +61,25 @@ public class SearchProfileService(
                 ["cat"] = "2000",
                 ["limit"] = "100",
             };
+        }
+        if (type == "season")
+        {
+            var parts = id.Split(':');
+            if (parts.Length < 2) return null;
+            var seasonImdb = StripImdbPrefix(parts[0]);
+            if (seasonImdb is null) return null;
+            if (!int.TryParse(parts[1], out var seasonNum)) return null;
+            var dict = new Dictionary<string, string>
+            {
+                ["t"] = "tvsearch",
+                ["season"] = seasonNum.ToString(),
+                ["cat"] = "5000",
+                ["limit"] = "100",
+            };
+            var tvdb = await tvdbResolver.GetTvdbIdAsync(seasonImdb, ct).ConfigureAwait(false);
+            if (tvdb.HasValue) dict["tvdbid"] = tvdb.Value.ToString();
+            else dict["imdbid"] = seasonImdb;
+            return dict;
         }
         if (type == "series")
         {
@@ -372,8 +393,6 @@ public class SearchProfileService(
             }
         }
 
-        if (deduped.Count == 0) return Empty(profileToken, type, id);
-
         var candidates = deduped
             .Select(x => new NzbResolutionCache.Candidate
             {
@@ -394,6 +413,11 @@ public class SearchProfileService(
             })
             .ToList();
 
+        if (configManager.IsWatchtowerEnabled())
+            await AddWarmedSeasonPackAsync(candidates, type, id, ct).ConfigureAwait(false);
+
+        if (candidates.Count == 0) return Empty(profileToken, type, id);
+
         var tokens = cache.AddGroup(candidates, type, profileToken, id);
         preflightOrchestrator.Start(profileToken, type, id, candidates);
 
@@ -405,6 +429,47 @@ public class SearchProfileService(
             Candidates = candidates,
             PlayTokens = tokens,
         };
+    }
+
+    private async Task AddWarmedSeasonPackAsync(
+        List<NzbResolutionCache.Candidate> candidates, string type, string id, CancellationToken ct)
+    {
+        if (type != "series") return;
+        var parts = id.Split(':');
+        if (parts.Length < 3) return;
+        if (!int.TryParse(parts[^2], out var season)) return;
+        var imdb = parts[0];
+        if (!imdb.StartsWith("tt", StringComparison.OrdinalIgnoreCase)) return;
+
+        try
+        {
+            await using var ctx = new DavDatabaseContext();
+            var seasonRow = await ctx.WantedItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Key == $"season:{imdb}:{season}" && w.State == WantedItem.StateReady, ct)
+                .ConfigureAwait(false);
+            if (seasonRow is null) return;
+
+            foreach (var p in WtJson.ReadPointers(seasonRow.Shortlist))
+            {
+                if (p.Verdict != "available") continue;
+                if (candidates.Any(c => c.NzbUrl == p.NzbUrl)) continue;
+                candidates.Add(new NzbResolutionCache.Candidate
+                {
+                    IndexerName = p.IndexerName,
+                    IndexerUserAgent = p.IndexerUserAgent,
+                    NzbUrl = p.NzbUrl,
+                    Title = p.Title,
+                    Size = p.Size,
+                    Grabs = p.Grabs,
+                    ProxyUrl = p.ProxyUrl,
+                });
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Watchtower: season-pack candidate augment failed for {Id}", id);
+        }
     }
 
     private async Task<IEnumerable<IndexerHit>[]> RunPerIndexerQueryAsync(

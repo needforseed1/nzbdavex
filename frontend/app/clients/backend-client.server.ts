@@ -458,6 +458,7 @@ export type WatchtowerItem = {
     title: string,
     state: string,
     provenanceCount: number,
+    expanderKey?: string | null,
     shortlistCount: number,
     winnerTitle?: string | null,
     winnerSize: number,
@@ -471,6 +472,7 @@ export type WatchtowerStats = {
     ready: number,
     scouting: number,
     unavailable: number,
+    expanders: number,
 }
 
 export type SearchIndexersResponse = {

@@ -141,7 +141,7 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
             Type = type,
             ContentId = contentId,
             Title = title,
-            State = WantedItem.StateScouting,
+            State = WantedItem.IsBareSeries(type, contentId) ? WantedItem.StateExpander : WantedItem.StateScouting,
             Provenance = WtJson.WriteStrings(new[] { srcId }),
             Shortlist = "[]",
             CreatedAtUnix = now,
@@ -156,7 +156,11 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
         if (string.IsNullOrWhiteSpace(key))
             throw new BadHttpRequestException("An item key is required.");
         var item = await dbClient.Ctx.WantedItems.FirstOrDefaultAsync(w => w.Key == key, ct).ConfigureAwait(false);
-        if (item is not null) dbClient.Ctx.WantedItems.Remove(item);
+        if (item is not null)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            await WtReconcile.RemoveWithChildrenAsync(dbClient.Ctx, item, now, ct).ConfigureAwait(false);
+        }
     }
 
     private async Task<ListSource> GetOrCreateManualSourceAsync(long now, CancellationToken ct)

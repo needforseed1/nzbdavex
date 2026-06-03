@@ -234,3 +234,14 @@
 .selectSm { max-width: 170px; }
 .inputWide { flex: 1; min-width: 220px; }
 .inputSm { max-width: 100px; }
+
+.chipShow { color: var(--text-primary); background: var(--bg-surface-2); border-color: var(--border-subtle); }
+
+.group { border-top: 1px solid var(--border-subtle); }
+.group:first-child { border-top: none; }
+
+.children {
+    margin-left: 14px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-subtle);
+}

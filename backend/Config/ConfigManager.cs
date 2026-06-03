@@ -482,6 +482,38 @@ public class ConfigManager
         return int.TryParse(v, out var n) ? Math.Clamp(n, 600, 604800) : 21600;
     }
 
+    public string GetWatchtowerSeriesScope()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.series-scope"));
+        return v switch
+        {
+            "all-aired" => "all-aired",
+            "recent" => "recent",
+            "off" => "off",
+            _ => "latest-season",
+        };
+    }
+
+    public int GetWatchtowerSeriesMaxEpisodes()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.series-max-episodes"));
+        if (v == null) return 50;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 1000) : 50;
+    }
+
+    public int GetWatchtowerSeriesRecentCount()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.series-recent-count"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 100) : 3;
+    }
+
+    public bool IsWatchtowerSeasonPacksEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.season-packs"));
+        return v != null ? bool.Parse(v) : true;
+    }
+
     public bool IsPreviewPar2FilesEnabled()
     {
         var defaultValue = false;

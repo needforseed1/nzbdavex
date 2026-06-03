@@ -941,6 +941,12 @@ public class ProfilePlayController(
             .ToList();
         if (videos.Count == 0) return null;
 
+        if (entry is not null && TryParseSeasonEpisode(entry.Type, entry.Id, out var reqSeason, out var reqEpisode))
+        {
+            var episodeFile = SelectEpisodeFile(videos, reqSeason, reqEpisode);
+            if (episodeFile is not null) return episodeFile;
+        }
+
         if (entry is null)
         {
             return videos.Count == 1
@@ -974,6 +980,38 @@ public class ProfilePlayController(
             }
         }
         return bestScore > 0 ? best : null;
+    }
+
+    private static bool TryParseSeasonEpisode(string? type, string? id, out int season, out int episode)
+    {
+        season = 0;
+        episode = 0;
+        if (type != "series" || string.IsNullOrEmpty(id)) return false;
+        var parts = id.Split(':');
+        if (parts.Length < 3) return false;
+        return int.TryParse(parts[^2], out season) && int.TryParse(parts[^1], out episode);
+    }
+
+    private static DavItem? SelectEpisodeFile(List<DavItem> videos, int season, int episode)
+    {
+        DavItem? best = null;
+        long bestSize = -1;
+        foreach (var v in videos)
+        {
+            if (v.Name.Contains("sample", StringComparison.OrdinalIgnoreCase)) continue;
+            if (FilenameMatcher.ParseEpisode(v.Name) is not { } tag) continue;
+            if (tag.Season != season) continue;
+            if (tag.Episode is not { } start) continue;
+            var end = tag.EpisodeEnd ?? start;
+            if (episode < start || episode > end) continue;
+            var size = v.FileSize ?? 0;
+            if (size > bestSize)
+            {
+                best = v;
+                bestSize = size;
+            }
+        }
+        return best;
     }
 
     private static HashSet<string> TokenizeName(string s)

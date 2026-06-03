@@ -34,4 +34,8 @@ public class WantedItem
     public const string StateReady = "ready";
     public const string StateUnavailable = "unavailable";
     public const string StateParked = "parked";
+    public const string StateExpander = "expander";
+
+    public static bool IsBareSeries(string type, string contentId)
+        => type == "series" && contentId.Split(':').Length < 3;
 }

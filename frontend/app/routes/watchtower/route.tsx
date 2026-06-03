@@ -28,6 +28,15 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
     const addFetcher = useFetcher<typeof action>();
     const revalidator = useRevalidator();
 
+    const expanders = items.filter(it => it.state === "expander");
+    const childrenByExpander = new Map<string, WatchtowerItem[]>();
+    for (const it of items) {
+        if (!it.expanderKey) continue;
+        const arr = childrenByExpander.get(it.expanderKey);
+        if (arr) arr.push(it); else childrenByExpander.set(it.expanderKey, [it]);
+    }
+    const orphans = items.filter(it => it.state !== "expander" && !it.expanderKey);
+
     useEffect(() => {
         const t = setInterval(() => revalidator.revalidate(), POLL_INTERVAL_MS);
         return () => clearInterval(t);
@@ -48,6 +57,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                     <Stat label="Ready" value={stats.ready} tone="ok" />
                     <Stat label="Scouting" value={stats.scouting} tone="warn" />
                     <Stat label="Unavailable" value={stats.unavailable} tone="bad" />
+                    <Stat label="Shows" value={stats.expanders} />
                     <Stat label="Total" value={stats.total} />
                 </div>
             </div>
@@ -111,7 +121,12 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
                 {items.length === 0
                     ? <div className={styles.empty}>Nothing wanted yet.</div>
-                    : <div className={styles.list}>{items.map(it => <ItemRow key={it.key} item={it} />)}</div>}
+                    : <div className={styles.list}>
+                        {expanders.map(ex => (
+                            <ExpanderGroup key={ex.key} expander={ex} episodes={childrenByExpander.get(ex.key) ?? []} />
+                        ))}
+                        {orphans.map(it => <ItemRow key={it.key} item={it} />)}
+                      </div>}
             </section>
         </div>
     );
@@ -157,7 +172,7 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
                 <div className={styles.itemTitleWrap}>
                     <div className={styles.itemTitle} title={item.title}>{item.title}</div>
                     <div className={styles.itemSub}>
-                        <span className={styles.kind}>{item.type}</span>
+                        <span className={styles.kind}>{item.type === "season" ? "season pack" : item.type}</span>
                         <span className={styles.mono}>{item.contentId}</span>
                         {item.state === "ready" && item.winnerTitle && (
                             <span title={item.winnerTitle}>
@@ -178,14 +193,48 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
     );
 }
 
+function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episodes: WatchtowerItem[] }) {
+    const fetcher = useFetcher();
+    const ready = episodes.filter(c => c.state === "ready").length;
+    const sorted = [...episodes].sort((a, b) => a.contentId.localeCompare(b.contentId, undefined, { numeric: true }));
+    return (
+        <div className={styles.group}>
+            <div className={styles.row}>
+                <div className={styles.rowMain}>
+                    <span className={`${styles.chip} ${styles.chipShow}`}>Show</span>
+                    <div className={styles.itemTitleWrap}>
+                        <div className={styles.itemTitle} title={expander.title}>{expander.title}</div>
+                        <div className={styles.itemSub}>
+                            <span className={styles.mono}>{expander.contentId}</span>
+                            <span>{episodes.length === 0 ? "expanding…" : `${episodes.length} tracked · ${ready} ready`}</span>
+                        </div>
+                    </div>
+                </div>
+                <fetcher.Form method="post" className={styles.rowActions}>
+                    <input type="hidden" name="action" value="remove-item" />
+                    <input type="hidden" name="key" value={expander.key} />
+                    <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
+                </fetcher.Form>
+            </div>
+            {sorted.length > 0 && (
+                <div className={styles.children}>
+                    {sorted.map(c => <ItemRow key={c.key} item={c} />)}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function StateChip({ state }: { state: string }) {
     const cls = state === "ready" ? styles.chipReady
         : state === "unavailable" ? styles.chipBad
         : state === "parked" ? styles.chipParked
+        : state === "expander" ? styles.chipShow
         : styles.chipScouting;
     const label = state === "ready" ? "Ready"
         : state === "unavailable" ? "Unavailable"
         : state === "parked" ? "Parked"
+        : state === "expander" ? "Show"
         : "Scouting";
     return <span className={`${styles.chip} ${cls}`}>{label}</span>;
 }
