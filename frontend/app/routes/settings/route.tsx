@@ -87,6 +87,10 @@ const defaultConfig = {
     "watchtower.active-set-cap": "100",
     "watchtower.daily-resolve-budget": "60",
     "watchtower.sync-interval-seconds": "3600",
+    "watchtower.series-scope": "latest-season",
+    "watchtower.season-packs": "true",
+    "watchtower.series-max-episodes": "50",
+    "watchtower.series-recent-count": "3",
 }
 
 export async function loader({ request }: Route.LoaderArgs) {

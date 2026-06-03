@@ -12,6 +12,8 @@ type WatchtowerSettingsProps = {
 export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const enabled = (config["watchtower.enabled"] ?? "false") === "true";
+    const scope = config["watchtower.series-scope"] ?? "latest-season";
+    const seasonPacks = (config["watchtower.season-packs"] ?? "true") === "true";
     const bytesToGb = (b?: string) => { const n = Number(b ?? ""); return n > 0 ? String(+(n / GB).toFixed(2)) : ""; };
     const setGb = (key: string, gb: string) => { const n = Number(gb); set(key, n > 0 ? String(Math.round(n * GB)) : "0"); };
 
@@ -66,6 +68,75 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     would have chosen).
                 </p>
             </Form.Group>
+
+            <div className={styles.section}>
+                <div className={styles.sectionTitle}>Series expansion</div>
+                <div className={styles.sectionDescription}>
+                    How much of a TV show or anime is warmed when a whole series is tracked. Each series
+                    is expanded into its seasons/episodes via TVmaze (TV) or Kitsu (anime), keyless, then
+                    resolved and kept fresh like any other item.
+                </div>
+            </div>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Series scope</Form.Label>
+                <Form.Select className={styles.input}
+                    disabled={!enabled}
+                    value={scope}
+                    onChange={e => set("watchtower.series-scope", e.target.value)}>
+                    <option value="latest-season">Latest season only</option>
+                    <option value="all-aired">All aired seasons</option>
+                    <option value="recent">Most recent episodes</option>
+                    <option value="off">Off — don't expand series</option>
+                </Form.Select>
+                <p className={styles.hint}>
+                    <b>Latest season</b> warms only the newest season (default). <b>All aired</b>
+                    backfills every released season. <b>Recent</b> keeps just the last few episodes
+                    across the whole series. <b>Off</b> stops series from expanding into episodes.
+                </p>
+            </Form.Group>
+
+            {scope === "recent" && (
+                <Form.Group className={styles.section}>
+                    <Form.Label>Recent episode count</Form.Label>
+                    <Form.Control className={styles.input} type="number" min={1} max={100}
+                        disabled={!enabled}
+                        value={config["watchtower.series-recent-count"] ?? "3"}
+                        onChange={e => set("watchtower.series-recent-count", e.target.value)} />
+                    <p className={styles.hint}>How many of the most recent episodes to keep ready. Default 3.</p>
+                </Form.Group>
+            )}
+
+            {(scope === "latest-season" || scope === "all-aired") && (
+                <>
+                    <Form.Group className={styles.section}>
+                        <Form.Check
+                            type="switch"
+                            id="watchtower-season-packs"
+                            label="Prefer season packs for finished seasons"
+                            disabled={!enabled}
+                            checked={seasonPacks}
+                            onChange={e => set("watchtower.season-packs", String(e.target.checked))} />
+                        <p className={styles.hint}>
+                            Warm one season pack per completed season — a single grab covers the whole
+                            season, played per-episode — instead of every episode. Still-airing seasons
+                            always use single episodes. Default on.
+                        </p>
+                    </Form.Group>
+
+                    <Form.Group className={styles.section}>
+                        <Form.Label>Max episodes per series</Form.Label>
+                        <Form.Control className={styles.input} type="number" min={1} max={1000}
+                            disabled={!enabled}
+                            value={config["watchtower.series-max-episodes"] ?? "50"}
+                            onChange={e => set("watchtower.series-max-episodes", e.target.value)} />
+                        <p className={styles.hint}>
+                            Caps how many individual episodes are warmed for seasons that aren't packed
+                            (such as the currently-airing one). Season packs don't count toward this. Default 50.
+                        </p>
+                    </Form.Group>
+                </>
+            )}
 
             <Form.Group className={styles.section}>
                 <Form.Label>Junk floor (GB)</Form.Label>
@@ -154,5 +225,9 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.active-set-cap",
         "watchtower.daily-resolve-budget",
         "watchtower.sync-interval-seconds",
+        "watchtower.series-scope",
+        "watchtower.season-packs",
+        "watchtower.series-max-episodes",
+        "watchtower.series-recent-count",
     ].some(k => config[k] !== newConfig[k]);
 }
