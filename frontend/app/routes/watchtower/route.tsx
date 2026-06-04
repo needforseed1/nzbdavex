@@ -51,6 +51,9 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [discoveryDismissed, setDiscoveryDismissed] = useState(false);
+    const [query, setQuery] = useState("");
+    const [stateFilter, setStateFilter] = useState<string | null>(null);
+    const toggle = (s: string) => setStateFilter(cur => (cur === s ? null : s));
 
     useEffect(() => {
         if (discovered) {
@@ -80,6 +83,24 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
     }
     const orphans = items.filter(it => it.state !== "expander" && !it.expanderKey);
 
+    const q = query.trim().toLowerCase();
+    const textMatch = (it: WatchtowerItem) =>
+        !q || it.title.toLowerCase().includes(q) || it.contentId.toLowerCase().includes(q);
+    const childStateOk = (c: WatchtowerItem) =>
+        !stateFilter || stateFilter === "expander" || c.state === stateFilter;
+    const showAsShow = !stateFilter || stateFilter === "expander";
+    const visibleExpanders = expanders
+        .map(ex => ({
+            ex,
+            kids: (childrenByExpander.get(ex.key) ?? [])
+                .filter(c => (textMatch(c) || textMatch(ex)) && childStateOk(c)),
+        }))
+        .filter(g => g.kids.length > 0 || (showAsShow && textMatch(g.ex)));
+    const visibleOrphans = orphans.filter(it =>
+        textMatch(it) && (!stateFilter || it.state === stateFilter));
+    const filtering = q !== "" || stateFilter !== null;
+    const nothingShown = visibleExpanders.length === 0 && visibleOrphans.length === 0;
+
     useEffect(() => {
         const t = setInterval(() => revalidator.revalidate(), POLL_INTERVAL_MS);
         return () => clearInterval(t);
@@ -97,11 +118,11 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                     </div>
                 </div>
                 <div className={styles.stats}>
-                    <Stat label="Ready" value={stats.ready} tone="ok" />
-                    <Stat label="Scouting" value={stats.scouting} tone="warn" />
-                    <Stat label="Unavailable" value={stats.unavailable} tone="bad" />
-                    <Stat label="Shows" value={stats.expanders} />
-                    <Stat label="Total" value={stats.total} />
+                    <Stat label="Ready" value={stats.ready} tone="ok" active={stateFilter === "ready"} onClick={() => toggle("ready")} />
+                    <Stat label="Scouting" value={stats.scouting} tone="warn" active={stateFilter === "scouting"} onClick={() => toggle("scouting")} />
+                    <Stat label="Unavailable" value={stats.unavailable} tone="bad" active={stateFilter === "unavailable"} onClick={() => toggle("unavailable")} />
+                    <Stat label="Shows" value={stats.expanders} active={stateFilter === "expander"} onClick={() => toggle("expander")} />
+                    <Stat label="Total" value={stats.total} active={stateFilter === null} onClick={() => setStateFilter(null)} />
                 </div>
             </div>
 
@@ -246,14 +267,31 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                     <Button type="submit" variant="primary" disabled={addFetcher.state !== "idle"}>Add item</Button>
                 </addFetcher.Form>
 
+                {items.length > 0 && (
+                    <div className={styles.toolbar}>
+                        <Form.Control
+                            value={query}
+                            onChange={e => setQuery(e.target.value)}
+                            placeholder="Search title or id…"
+                            className={styles.search}
+                        />
+                        {filtering && (
+                            <button type="button" className={styles.linkBtn}
+                                onClick={() => { setQuery(""); setStateFilter(null); }}>clear</button>
+                        )}
+                    </div>
+                )}
+
                 {items.length === 0
                     ? <div className={styles.empty}>Nothing wanted yet.</div>
-                    : <div className={styles.list}>
-                        {expanders.map(ex => (
-                            <ExpanderGroup key={ex.key} expander={ex} episodes={childrenByExpander.get(ex.key) ?? []} />
-                        ))}
-                        {orphans.map(it => <ItemRow key={it.key} item={it} />)}
-                      </div>}
+                    : nothingShown
+                        ? <div className={styles.empty}>No items match.</div>
+                        : <div className={styles.list}>
+                            {visibleExpanders.map(({ ex, kids }) => (
+                                <ExpanderGroup key={ex.key} expander={ex} episodes={kids} />
+                            ))}
+                            {visibleOrphans.map(it => <ItemRow key={it.key} item={it} />)}
+                          </div>}
             </section>
         </div>
     );
@@ -269,11 +307,19 @@ function SourceRow({ source }: { source: WatchtowerSource }) {
                 {source.url && <span className={styles.url} title={source.url}>{source.url}</span>}
             </div>
             <div className={styles.rowActions}>
+                {source.cap > 0 && <span className={styles.meta}>cap {source.cap}</span>}
                 {source.lastSyncError
                     ? <span className={styles.metaBad} title={source.lastSyncError}>sync error</span>
                     : source.lastSyncedAtUnix
                         ? <span className={styles.metaOk}>synced {formatAge(source.lastSyncedAtUnix)}</span>
                         : <span className={styles.meta}>not synced yet</span>}
+                {source.url && (
+                    <fetcher.Form method="post">
+                        <input type="hidden" name="action" value="sync-source" />
+                        <input type="hidden" name="id" value={source.id} />
+                        <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>sync now</button>
+                    </fetcher.Form>
+                )}
                 <fetcher.Form method="post">
                     <input type="hidden" name="action" value="set-source-scope" />
                     <input type="hidden" name="id" value={source.id} />
@@ -314,21 +360,33 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
                     <div className={styles.itemSub}>
                         <span className={styles.kind}>{item.type === "season" ? "season pack" : item.type}</span>
                         <span className={styles.mono}>{item.contentId}</span>
-                        {item.state === "ready" && item.winnerTitle && (
-                            <span title={item.winnerTitle}>
-                                {formatBytes(item.winnerSize)} · {item.shortlistCount} pointer{item.shortlistCount === 1 ? "" : "s"}
-                                {item.lastVerifiedAtUnix ? ` · verified ${formatAge(item.lastVerifiedAtUnix)}` : ""}
-                            </span>
-                        )}
-                        {item.state === "unavailable" && item.failReason && <span>{item.failReason}</span>}
+                        {item.provenanceCount > 1 && <span>on {item.provenanceCount} lists</span>}
+                        {item.state === "ready" && <>
+                            {item.winnerTitle && <span className={styles.rel} title={item.winnerTitle}>{item.winnerTitle}</span>}
+                            <span>{formatBytes(item.winnerSize)} · {item.shortlistCount} pointer{item.shortlistCount === 1 ? "" : "s"}</span>
+                            {item.lastVerifiedAtUnix && <span>verified {formatAge(item.lastVerifiedAtUnix)}</span>}
+                            {item.nextCheckAtUnix && <span>re-checks {formatWhen(item.nextCheckAtUnix)}</span>}
+                        </>}
+                        {item.state === "unavailable" && <>
+                            {item.failReason && <span>{item.failReason}</span>}
+                            {item.nextCheckAtUnix && <span>retries {formatWhen(item.nextCheckAtUnix)}</span>}
+                        </>}
+                        {item.state === "scouting" && <span>searching…</span>}
                     </div>
                 </div>
             </div>
-            <fetcher.Form method="post" className={styles.rowActions}>
-                <input type="hidden" name="action" value="remove-item" />
-                <input type="hidden" name="key" value={item.key} />
-                <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
-            </fetcher.Form>
+            <div className={styles.rowActions}>
+                <fetcher.Form method="post">
+                    <input type="hidden" name="action" value="recheck-item" />
+                    <input type="hidden" name="key" value={item.key} />
+                    <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>check now</button>
+                </fetcher.Form>
+                <fetcher.Form method="post">
+                    <input type="hidden" name="action" value="remove-item" />
+                    <input type="hidden" name="key" value={item.key} />
+                    <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
+                </fetcher.Form>
+            </div>
         </div>
     );
 }
@@ -350,11 +408,18 @@ function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episo
                         </div>
                     </div>
                 </div>
-                <fetcher.Form method="post" className={styles.rowActions}>
-                    <input type="hidden" name="action" value="remove-item" />
-                    <input type="hidden" name="key" value={expander.key} />
-                    <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
-                </fetcher.Form>
+                <div className={styles.rowActions}>
+                    <fetcher.Form method="post">
+                        <input type="hidden" name="action" value="recheck-item" />
+                        <input type="hidden" name="key" value={expander.key} />
+                        <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>check now</button>
+                    </fetcher.Form>
+                    <fetcher.Form method="post">
+                        <input type="hidden" name="action" value="remove-item" />
+                        <input type="hidden" name="key" value={expander.key} />
+                        <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
+                    </fetcher.Form>
+                </div>
             </div>
             {sorted.length > 0 && (
                 <div className={styles.children}>
@@ -379,16 +444,16 @@ function StateChip({ state }: { state: string }) {
     return <span className={`${styles.chip} ${cls}`}>{label}</span>;
 }
 
-function Stat({ label, value, tone }: { label: string, value: number, tone?: "ok" | "warn" | "bad" }) {
+function Stat({ label, value, tone, active, onClick }: { label: string, value: number, tone?: "ok" | "warn" | "bad", active?: boolean, onClick?: () => void }) {
     const toneClass = tone === "ok" ? styles.statOk
         : tone === "warn" ? styles.statWarn
         : tone === "bad" ? styles.statBad
         : "";
     return (
-        <div className={styles.stat}>
+        <button type="button" className={`${styles.stat} ${active ? styles.statActive : ""}`} onClick={onClick}>
             <div className={`${styles.statValue} ${toneClass}`}>{value}</div>
             <div className={styles.statLabel}>{label}</div>
-        </div>
+        </button>
     );
 }
 
@@ -408,4 +473,13 @@ function formatAge(unixSeconds: number): string {
     if (age < 3600) return `${Math.floor(age / 60)}m ago`;
     if (age < 86400) return `${Math.floor(age / 3600)}h ago`;
     return `${Math.floor(age / 86400)}d ago`;
+}
+
+function formatWhen(unixSeconds: number): string {
+    const d = Math.floor(unixSeconds - Date.now() / 1000);
+    if (d <= 0) return "soon";
+    if (d < 60) return `in ${d}s`;
+    if (d < 3600) return `in ${Math.floor(d / 60)}m`;
+    if (d < 86400) return `in ${Math.floor(d / 3600)}h`;
+    return `in ${Math.floor(d / 86400)}d`;
 }

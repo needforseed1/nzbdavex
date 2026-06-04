@@ -45,7 +45,14 @@
     padding: 10px 16px;
     min-width: 84px;
     text-align: center;
+    appearance: none;
+    cursor: pointer;
+    font: inherit;
+    transition: border-color 120ms ease, background 120ms ease;
 }
+
+.stat:hover { border-color: var(--text-muted); }
+.statActive { border-color: var(--text-secondary); background: var(--bg-surface-2); }
 
 .statValue {
     font-size: 20px;
@@ -331,4 +338,20 @@
     margin-left: 14px;
     padding-left: 10px;
     border-left: 2px solid var(--border-subtle);
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.search { max-width: 280px; }
+
+.rel {
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
 }

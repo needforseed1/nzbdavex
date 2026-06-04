@@ -44,6 +44,12 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
             case "remove-item":
                 await RemoveItemAsync(form, ct).ConfigureAwait(false);
                 break;
+            case "recheck-item":
+                await RecheckItemAsync(form, now, ct).ConfigureAwait(false);
+                break;
+            case "sync-source":
+                await SyncSourceAsync(form, ct).ConfigureAwait(false);
+                break;
             default:
                 throw new BadHttpRequestException($"Unknown watchtower action: '{action}'");
         }
@@ -235,6 +241,26 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             await WtReconcile.RemoveWithChildrenAsync(dbClient.Ctx, item, now, ct).ConfigureAwait(false);
         }
+    }
+
+    private async Task RecheckItemAsync(IFormCollection form, long now, CancellationToken ct)
+    {
+        var key = form["key"].ToString();
+        if (string.IsNullOrWhiteSpace(key))
+            throw new BadHttpRequestException("An item key is required.");
+        var item = await dbClient.Ctx.WantedItems.FirstOrDefaultAsync(w => w.Key == key, ct).ConfigureAwait(false);
+        if (item is null) return;
+        item.NextCheckAtUnix = now;
+        item.UpdatedAtUnix = now;
+    }
+
+    private async Task SyncSourceAsync(IFormCollection form, CancellationToken ct)
+    {
+        if (!Guid.TryParse(form["id"].ToString(), out var id))
+            throw new BadHttpRequestException("Invalid source id.");
+        var source = await dbClient.Ctx.ListSources.FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
+        if (source is null) return;
+        source.LastSyncedAtUnix = null;
     }
 
     private async Task<ListSource> GetOrCreateManualSourceAsync(long now, CancellationToken ct)
