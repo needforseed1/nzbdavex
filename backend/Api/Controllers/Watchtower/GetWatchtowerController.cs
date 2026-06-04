@@ -24,14 +24,28 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
         var items = await dbClient.Ctx.WantedItems.AsNoTracking()
             .OrderByDescending(w => w.UpdatedAtUnix)
             .Take(500)
+            .Select(w => new
+            {
+                w.Key,
+                w.Type,
+                w.ContentId,
+                w.Title,
+                w.State,
+                w.Provenance,
+                w.Shortlist,
+                w.LastVerifiedAtUnix,
+                w.NextCheckAtUnix,
+                w.FailReason,
+            })
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        var total = await dbClient.Ctx.WantedItems.CountAsync(ct).ConfigureAwait(false);
-        var ready = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateReady, ct).ConfigureAwait(false);
-        var scouting = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateScouting, ct).ConfigureAwait(false);
-        var unavailable = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateUnavailable, ct).ConfigureAwait(false);
-        var expanders = await dbClient.Ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateExpander, ct).ConfigureAwait(false);
+        var counts = await dbClient.Ctx.WantedItems.AsNoTracking()
+            .GroupBy(w => w.State)
+            .Select(g => new { State = g.Key, Count = g.Count() })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        int CountFor(string s) => counts.FirstOrDefault(c => c.State == s)?.Count ?? 0;
 
         return Ok(new GetWatchtowerResponse
         {
@@ -49,40 +63,38 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
                 LastSyncedAtUnix = s.LastSyncedAtUnix,
                 LastSyncError = s.LastSyncError,
             }).ToList(),
-            Items = items.Select(MapItem).ToList(),
+            Items = items.Select(w =>
+            {
+                var shortlist = WtJson.ReadPointers(w.Shortlist);
+                var winner = shortlist.FirstOrDefault();
+                var provenance = WtJson.ReadStrings(w.Provenance);
+                var expanderTag = provenance.FirstOrDefault(p => p.StartsWith("exp:", StringComparison.Ordinal));
+                return new GetWatchtowerResponse.ItemDto
+                {
+                    Key = w.Key,
+                    Type = w.Type,
+                    ContentId = w.ContentId,
+                    Title = w.Title,
+                    State = w.State,
+                    ProvenanceCount = provenance.Count,
+                    ExpanderKey = expanderTag is null ? null : expanderTag.Substring(4),
+                    ShortlistCount = shortlist.Count,
+                    WinnerTitle = winner?.Title,
+                    WinnerSize = winner?.Size ?? 0,
+                    LastVerifiedAtUnix = w.LastVerifiedAtUnix,
+                    NextCheckAtUnix = w.NextCheckAtUnix,
+                    FailReason = w.FailReason,
+                };
+            }).ToList(),
             Stats = new GetWatchtowerResponse.StatsDto
             {
-                Total = total,
-                Ready = ready,
-                Scouting = scouting,
-                Unavailable = unavailable,
-                Expanders = expanders,
+                Total = counts.Sum(c => c.Count),
+                Ready = CountFor(WantedItem.StateReady),
+                Scouting = CountFor(WantedItem.StateScouting),
+                Unavailable = CountFor(WantedItem.StateUnavailable),
+                Expanders = CountFor(WantedItem.StateExpander),
             },
         });
-    }
-
-    private static GetWatchtowerResponse.ItemDto MapItem(WantedItem w)
-    {
-        var shortlist = WtJson.ReadPointers(w.Shortlist);
-        var winner = shortlist.FirstOrDefault();
-        var provenance = WtJson.ReadStrings(w.Provenance);
-        var expanderTag = provenance.FirstOrDefault(p => p.StartsWith("exp:", StringComparison.Ordinal));
-        return new GetWatchtowerResponse.ItemDto
-        {
-            Key = w.Key,
-            Type = w.Type,
-            ContentId = w.ContentId,
-            Title = w.Title,
-            State = w.State,
-            ProvenanceCount = provenance.Count,
-            ExpanderKey = expanderTag is null ? null : expanderTag.Substring(4),
-            ShortlistCount = shortlist.Count,
-            WinnerTitle = winner?.Title,
-            WinnerSize = winner?.Size ?? 0,
-            LastVerifiedAtUnix = w.LastVerifiedAtUnix,
-            NextCheckAtUnix = w.NextCheckAtUnix,
-            FailReason = w.FailReason,
-        };
     }
 }
 

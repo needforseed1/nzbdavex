@@ -643,6 +643,7 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.HasIndex(i => i.Key).IsUnique();
             e.HasIndex(i => i.NextCheckAtUnix);
             e.HasIndex(i => i.State);
+            e.HasIndex(i => i.UpdatedAtUnix);
         });
     }
 

@@ -539,6 +539,8 @@ namespace NzbWebDAV.Database.Migrations
 
                     b.HasIndex("State");
 
+                    b.HasIndex("UpdatedAtUnix");
+
                     b.ToTable("WantedItems", (string)null);
                 });
 
