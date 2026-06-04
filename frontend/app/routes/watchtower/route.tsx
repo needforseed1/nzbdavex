@@ -350,9 +350,13 @@ function SourceRow({ source }: { source: WatchtowerSource }) {
 }
 
 function ItemRow({ item }: { item: WatchtowerItem }) {
-    const fetcher = useFetcher();
+    const fetcher = useFetcher<typeof action>();
+    const pending = fetcher.formData?.get("action");
+    const removing = pending === "remove-item";
+    const checking = pending === "recheck-item";
+    const error = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
     return (
-        <div className={styles.row}>
+        <div className={`${styles.row} ${removing ? styles.dimmed : ""}`}>
             <div className={styles.rowMain}>
                 <StateChip state={item.state} />
                 <div className={styles.itemTitleWrap}>
@@ -376,15 +380,16 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
                 </div>
             </div>
             <div className={styles.rowActions}>
+                {error && <span className={styles.metaBad} title={error}>failed — retry</span>}
                 <fetcher.Form method="post">
                     <input type="hidden" name="action" value="recheck-item" />
                     <input type="hidden" name="key" value={item.key} />
-                    <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>check now</button>
+                    <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>{checking ? "checking…" : "check now"}</button>
                 </fetcher.Form>
                 <fetcher.Form method="post">
                     <input type="hidden" name="action" value="remove-item" />
                     <input type="hidden" name="key" value={item.key} />
-                    <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
+                    <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`} disabled={fetcher.state !== "idle"}>{removing ? "removing…" : "remove"}</button>
                 </fetcher.Form>
             </div>
         </div>
@@ -392,12 +397,16 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
 }
 
 function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episodes: WatchtowerItem[] }) {
-    const fetcher = useFetcher();
+    const fetcher = useFetcher<typeof action>();
+    const pending = fetcher.formData?.get("action");
+    const removing = pending === "remove-item";
+    const checking = pending === "recheck-item";
+    const error = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
     const ready = episodes.filter(c => c.state === "ready").length;
     const sorted = [...episodes].sort((a, b) => a.contentId.localeCompare(b.contentId, undefined, { numeric: true }));
     return (
         <div className={styles.group}>
-            <div className={styles.row}>
+            <div className={`${styles.row} ${removing ? styles.dimmed : ""}`}>
                 <div className={styles.rowMain}>
                     <span className={`${styles.chip} ${styles.chipShow}`}>Show</span>
                     <div className={styles.itemTitleWrap}>
@@ -409,15 +418,16 @@ function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episo
                     </div>
                 </div>
                 <div className={styles.rowActions}>
+                    {error && <span className={styles.metaBad} title={error}>failed — retry</span>}
                     <fetcher.Form method="post">
                         <input type="hidden" name="action" value="recheck-item" />
                         <input type="hidden" name="key" value={expander.key} />
-                        <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>check now</button>
+                        <button type="submit" className={styles.linkBtn} disabled={fetcher.state !== "idle"}>{checking ? "checking…" : "check now"}</button>
                     </fetcher.Form>
                     <fetcher.Form method="post">
                         <input type="hidden" name="action" value="remove-item" />
                         <input type="hidden" name="key" value={expander.key} />
-                        <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`}>remove</button>
+                        <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`} disabled={fetcher.state !== "idle"}>{removing ? "removing…" : "remove"}</button>
                     </fetcher.Form>
                 </div>
             </div>
