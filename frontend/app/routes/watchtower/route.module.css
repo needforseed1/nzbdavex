@@ -349,9 +349,74 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
 }
 
-.search { max-width: 280px; }
+.search { flex: 1 1 200px; max-width: 320px; }
+
+.sortSelect { max-width: 200px; }
+
+.selectAll {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.selectAll input { cursor: pointer; }
+
+.toolbarRight {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.selectionBar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+}
+
+.selCount {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.rowCheck {
+    flex-shrink: 0;
+    cursor: pointer;
+    margin: 0;
+}
+
+.rowSelected { background: var(--bg-surface-2); }
+
+.disclosure {
+    appearance: none;
+    background: none;
+    border: none;
+    padding: 0;
+    width: 18px;
+    flex-shrink: 0;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    transition: color 120ms ease;
+}
+
+.disclosure:hover { color: var(--text-primary); }
+.disclosure:disabled { cursor: default; opacity: 0.5; }
 
 .rel {
     font-family: var(--font-mono);

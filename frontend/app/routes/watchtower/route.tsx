@@ -1,5 +1,5 @@
 import type { Route } from "./+types/route";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFetcher, useRevalidator } from "react-router";
 import { Form, Button } from "react-bootstrap";
 import styles from "./route.module.css";
@@ -29,6 +29,14 @@ export async function action({ request }: Route.ActionArgs) {
             const discovered = await backendClient.discoverStremioCatalogs(fields.url ?? "");
             return { ok: true as const, discovered };
         }
+        if (fields.action === "bulk-recheck" || fields.action === "bulk-remove") {
+            const keys = (fields.keys ?? "").split("\n").map(s => s.trim()).filter(Boolean);
+            const sub = fields.action === "bulk-recheck" ? "recheck-item" : "remove-item";
+            for (const key of keys) {
+                await backendClient.watchtowerMutate({ action: sub, key });
+            }
+            return { ok: true as const };
+        }
         await backendClient.watchtowerMutate(fields);
         return { ok: true as const };
     } catch (e: any) {
@@ -55,6 +63,23 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
     const [stateFilter, setStateFilter] = useState<string | null>(null);
     const toggle = (s: string) => setStateFilter(cur => (cur === s ? null : s));
 
+    const bulkItemFetcher = useFetcher<typeof action>();
+    const bulkBusy = bulkItemFetcher.state !== "idle";
+    const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+    const [sortKey, setSortKey] = useState("default");
+    const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set());
+    const selectAllRef = useRef<HTMLInputElement>(null);
+    const toggleItem = (key: string) => setSelectedItems(prev => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+    });
+    const toggleShow = (key: string) => setExpandedShows(prev => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+    });
+
     useEffect(() => {
         if (discovered) {
             setSelected(new Set(discovered.catalogs.map(c => c.url)));
@@ -67,6 +92,12 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
             setDiscoveryDismissed(true);
         }
     }, [bulkFetcher.state, bulkFetcher.data]);
+
+    useEffect(() => {
+        if (bulkItemFetcher.state === "idle" && bulkItemFetcher.data?.ok) {
+            setSelectedItems(new Set());
+        }
+    }, [bulkItemFetcher.state, bulkItemFetcher.data]);
 
     const chosenCatalogs = (discovered?.catalogs ?? []).filter(c => selected.has(c.url));
     const sourcesJson = JSON.stringify(chosenCatalogs.map(c => ({
@@ -100,6 +131,34 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
         textMatch(it) && (!stateFilter || it.state === stateFilter));
     const filtering = q !== "" || stateFilter !== null;
     const nothingShown = visibleExpanders.length === 0 && visibleOrphans.length === 0;
+
+    const forceOpenShows = q !== "" || (stateFilter !== null && stateFilter !== "expander");
+    const isShowOpen = (key: string) => forceOpenShows || expandedShows.has(key);
+
+    const entries: WtEntry[] = [
+        ...visibleExpanders.map(g => ({ kind: "show" as const, ex: g.ex, kids: g.kids })),
+        ...visibleOrphans.map(it => ({ kind: "item" as const, it })),
+    ];
+    const sortedEntries = sortEntries(entries, sortKey);
+
+    const renderedLeafKeys = [
+        ...visibleOrphans.map(it => it.key),
+        ...visibleExpanders.filter(g => isShowOpen(g.ex.key)).flatMap(g => g.kids.map(k => k.key)),
+    ];
+    const allVisibleSelected = renderedLeafKeys.length > 0 && renderedLeafKeys.every(k => selectedItems.has(k));
+    const someVisibleSelected = renderedLeafKeys.some(k => selectedItems.has(k));
+    const toggleSelectAllVisible = () => setSelectedItems(prev => {
+        const next = new Set(prev);
+        if (allVisibleSelected) renderedLeafKeys.forEach(k => next.delete(k));
+        else renderedLeafKeys.forEach(k => next.add(k));
+        return next;
+    });
+    const selectedKeysValue = Array.from(selectedItems).join("\n");
+    const unavailableKeys = items.filter(it => it.state === "unavailable").map(it => it.key);
+
+    useEffect(() => {
+        if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+    }, [someVisibleSelected, allVisibleSelected]);
 
     useEffect(() => {
         const t = setInterval(() => revalidator.revalidate(), POLL_INTERVAL_MS);
@@ -269,17 +328,77 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
                 {items.length > 0 && (
                     <div className={styles.toolbar}>
+                        <label className={styles.selectAll} title="Select all items shown">
+                            <input
+                                ref={selectAllRef}
+                                type="checkbox"
+                                checked={allVisibleSelected}
+                                onChange={toggleSelectAllVisible}
+                                disabled={renderedLeafKeys.length === 0}
+                            />
+                            select
+                        </label>
                         <Form.Control
                             value={query}
                             onChange={e => setQuery(e.target.value)}
                             placeholder="Search title or id…"
                             className={styles.search}
                         />
+                        <Form.Select
+                            value={sortKey}
+                            onChange={e => setSortKey(e.target.value)}
+                            className={styles.sortSelect}
+                            title="Sort wanted items"
+                        >
+                            <option value="default">Sort: default</option>
+                            <option value="status">Status (issues first)</option>
+                            <option value="title">Title A–Z</option>
+                            <option value="size">Largest</option>
+                            <option value="recheck">Re-check soonest</option>
+                        </Form.Select>
                         {filtering && (
                             <button type="button" className={styles.linkBtn}
                                 onClick={() => { setQuery(""); setStateFilter(null); }}>clear</button>
                         )}
+                        {stats.unavailable > 0 && (
+                            <bulkItemFetcher.Form method="post" className={styles.toolbarRight}>
+                                <input type="hidden" name="action" value="bulk-recheck" />
+                                <input type="hidden" name="keys" value={unavailableKeys.join("\n")} readOnly />
+                                <button type="submit" className={styles.linkBtn} disabled={bulkBusy}>
+                                    re-check {stats.unavailable} unavailable
+                                </button>
+                            </bulkItemFetcher.Form>
+                        )}
                     </div>
+                )}
+
+                {selectedItems.size > 0 && (
+                    <div className={styles.selectionBar}>
+                        <span className={styles.selCount}>{selectedItems.size} selected</span>
+                        <bulkItemFetcher.Form method="post">
+                            <input type="hidden" name="action" value="bulk-recheck" />
+                            <input type="hidden" name="keys" value={selectedKeysValue} readOnly />
+                            <button type="submit" className={styles.linkBtn} disabled={bulkBusy}>
+                                {bulkBusy ? "working…" : "re-check"}
+                            </button>
+                        </bulkItemFetcher.Form>
+                        <bulkItemFetcher.Form
+                            method="post"
+                            onSubmit={e => {
+                                if (!window.confirm(`Remove ${selectedItems.size} item${selectedItems.size === 1 ? "" : "s"} from Watchtower?`))
+                                    e.preventDefault();
+                            }}
+                        >
+                            <input type="hidden" name="action" value="bulk-remove" />
+                            <input type="hidden" name="keys" value={selectedKeysValue} readOnly />
+                            <button type="submit" className={`${styles.linkBtn} ${styles.linkDanger}`} disabled={bulkBusy}>remove</button>
+                        </bulkItemFetcher.Form>
+                        <button type="button" className={styles.linkBtn} onClick={() => setSelectedItems(new Set())}>clear</button>
+                    </div>
+                )}
+
+                {bulkItemFetcher.data && bulkItemFetcher.data.ok === false && (
+                    <div className="alert alert-danger" role="alert">Bulk action failed: {bulkItemFetcher.data.error}</div>
                 )}
 
                 {items.length === 0
@@ -287,10 +406,23 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                     : nothingShown
                         ? <div className={styles.empty}>No items match.</div>
                         : <div className={styles.list}>
-                            {visibleExpanders.map(({ ex, kids }) => (
-                                <ExpanderGroup key={ex.key} expander={ex} episodes={kids} />
-                            ))}
-                            {visibleOrphans.map(it => <ItemRow key={it.key} item={it} />)}
+                            {sortedEntries.map(e => e.kind === "show"
+                                ? <ExpanderGroup
+                                    key={e.ex.key}
+                                    expander={e.ex}
+                                    episodes={e.kids}
+                                    expanded={isShowOpen(e.ex.key)}
+                                    canToggle={!forceOpenShows}
+                                    onToggle={() => toggleShow(e.ex.key)}
+                                    selectedKeys={selectedItems}
+                                    onToggleSelect={toggleItem}
+                                  />
+                                : <ItemRow
+                                    key={e.it.key}
+                                    item={e.it}
+                                    selected={selectedItems.has(e.it.key)}
+                                    onToggleSelect={toggleItem}
+                                  />)}
                           </div>}
             </section>
         </div>
@@ -349,15 +481,26 @@ function SourceRow({ source }: { source: WatchtowerSource }) {
     );
 }
 
-function ItemRow({ item }: { item: WatchtowerItem }) {
+function ItemRow({ item, selected, onToggleSelect }: {
+    item: WatchtowerItem;
+    selected: boolean;
+    onToggleSelect: (key: string) => void;
+}) {
     const fetcher = useFetcher<typeof action>();
     const pending = fetcher.formData?.get("action");
     const removing = pending === "remove-item";
     const checking = pending === "recheck-item";
     const error = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
     return (
-        <div className={`${styles.row} ${removing ? styles.dimmed : ""}`}>
+        <div className={`${styles.row} ${removing ? styles.dimmed : ""} ${selected ? styles.rowSelected : ""}`}>
             <div className={styles.rowMain}>
+                <input
+                    type="checkbox"
+                    className={styles.rowCheck}
+                    checked={selected}
+                    onChange={() => onToggleSelect(item.key)}
+                    aria-label={`Select ${item.title}`}
+                />
                 <StateChip state={item.state} />
                 <div className={styles.itemTitleWrap}>
                     <div className={styles.itemTitle} title={item.title}>{item.title}</div>
@@ -396,24 +539,45 @@ function ItemRow({ item }: { item: WatchtowerItem }) {
     );
 }
 
-function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episodes: WatchtowerItem[] }) {
+function ExpanderGroup({ expander, episodes, expanded, canToggle, onToggle, selectedKeys, onToggleSelect }: {
+    expander: WatchtowerItem;
+    episodes: WatchtowerItem[];
+    expanded: boolean;
+    canToggle: boolean;
+    onToggle: () => void;
+    selectedKeys: Set<string>;
+    onToggleSelect: (key: string) => void;
+}) {
     const fetcher = useFetcher<typeof action>();
     const pending = fetcher.formData?.get("action");
     const removing = pending === "remove-item";
     const checking = pending === "recheck-item";
     const error = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
     const ready = episodes.filter(c => c.state === "ready").length;
+    const unavailable = episodes.filter(c => c.state === "unavailable").length;
     const sorted = [...episodes].sort((a, b) => a.contentId.localeCompare(b.contentId, undefined, { numeric: true }));
     return (
         <div className={styles.group}>
             <div className={`${styles.row} ${removing ? styles.dimmed : ""}`}>
                 <div className={styles.rowMain}>
+                    <button
+                        type="button"
+                        className={styles.disclosure}
+                        onClick={onToggle}
+                        disabled={!canToggle}
+                        aria-expanded={expanded}
+                        aria-label={expanded ? "Collapse" : "Expand"}
+                        title={canToggle ? (expanded ? "Collapse" : "Expand") : "Pinned open by filter"}
+                    >
+                        {expanded ? "▾" : "▸"}
+                    </button>
                     <span className={`${styles.chip} ${styles.chipShow}`}>Show</span>
                     <div className={styles.itemTitleWrap}>
                         <div className={styles.itemTitle} title={expander.title}>{expander.title}</div>
                         <div className={styles.itemSub}>
                             <span className={styles.mono}>{expander.contentId}</span>
                             <span>{episodes.length === 0 ? "expanding…" : `${episodes.length} tracked · ${ready} ready`}</span>
+                            {unavailable > 0 && <span className={styles.metaBad}>{unavailable} unavailable</span>}
                         </div>
                     </div>
                 </div>
@@ -431,9 +595,9 @@ function ExpanderGroup({ expander, episodes }: { expander: WatchtowerItem, episo
                     </fetcher.Form>
                 </div>
             </div>
-            {sorted.length > 0 && (
+            {expanded && sorted.length > 0 && (
                 <div className={styles.children}>
-                    {sorted.map(c => <ItemRow key={c.key} item={c} />)}
+                    {sorted.map(c => <ItemRow key={c.key} item={c} selected={selectedKeys.has(c.key)} onToggleSelect={onToggleSelect} />)}
                 </div>
             )}
         </div>
@@ -465,6 +629,47 @@ function Stat({ label, value, tone, active, onClick }: { label: string, value: n
             <div className={styles.statLabel}>{label}</div>
         </button>
     );
+}
+
+type WtEntry =
+    | { kind: "show"; ex: WatchtowerItem; kids: WatchtowerItem[] }
+    | { kind: "item"; it: WatchtowerItem };
+
+const STATE_RANK: Record<string, number> = { unavailable: 0, scouting: 1, parked: 2, ready: 3 };
+
+function entryTitle(e: WtEntry): string {
+    return e.kind === "show" ? e.ex.title : e.it.title;
+}
+
+function entryStatusRank(e: WtEntry): number {
+    if (e.kind === "item") return STATE_RANK[e.it.state] ?? 4;
+    if (e.kids.length === 0) return STATE_RANK.scouting;
+    return Math.min(...e.kids.map(k => STATE_RANK[k.state] ?? 4));
+}
+
+function entrySize(e: WtEntry): number {
+    if (e.kind === "item") return e.it.winnerSize || 0;
+    return e.kids.reduce((m, k) => Math.max(m, k.winnerSize || 0), 0);
+}
+
+function entryRecheck(e: WtEntry): number {
+    const vals = e.kind === "item" ? [e.it.nextCheckAtUnix] : e.kids.map(k => k.nextCheckAtUnix);
+    const nums = vals.filter((v): v is number => typeof v === "number" && v > 0);
+    return nums.length ? Math.min(...nums) : Number.POSITIVE_INFINITY;
+}
+
+function sortEntries(entries: WtEntry[], sortKey: string): WtEntry[] {
+    const out = [...entries];
+    const byTitle = (a: WtEntry, b: WtEntry) =>
+        entryTitle(a).localeCompare(entryTitle(b), undefined, { numeric: true, sensitivity: "base" });
+    switch (sortKey) {
+        case "title": out.sort(byTitle); break;
+        case "status": out.sort((a, b) => entryStatusRank(a) - entryStatusRank(b) || byTitle(a, b)); break;
+        case "size": out.sort((a, b) => entrySize(b) - entrySize(a) || byTitle(a, b)); break;
+        case "recheck": out.sort((a, b) => (entryRecheck(a) - entryRecheck(b)) || byTitle(a, b)); break;
+        default: break;
+    }
+    return out;
 }
 
 function formatBytes(bytes: number): string {
