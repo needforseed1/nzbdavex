@@ -446,12 +446,16 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
 function SourceRow({ source }: { source: WatchtowerSource }) {
     const fetcher = useFetcher();
+    const label = sourceLabel(source);
+    const host = source.url ? hostOf(source.url) : "";
     return (
         <div className={`${styles.row} ${source.enabled ? "" : styles.dimmed}`}>
             <div className={styles.rowMain}>
-                <span className={styles.kind}>{source.kind}</span>
-                <span className={styles.name}>{source.name}</span>
-                {source.url && <span className={styles.url} title={source.url}>{source.url}</span>}
+                <span className={styles.kind}>{kindLabel(source.kind)}</span>
+                <div className={styles.itemTitleWrap}>
+                    <div className={styles.itemTitle} title={source.url ?? undefined}>{label}</div>
+                    {host && host !== label && <div className={styles.itemSub}><span>{host}</span></div>}
+                </div>
             </div>
             <div className={styles.rowActions}>
                 {source.cap > 0 && <span className={styles.meta}>cap {source.cap}</span>}
@@ -741,4 +745,57 @@ function formatWhen(unixSeconds: number): string {
     if (d < 3600) return `in ${Math.floor(d / 60)}m`;
     if (d < 86400) return `in ${Math.floor(d / 3600)}h`;
     return `in ${Math.floor(d / 86400)}d`;
+}
+
+function kindLabel(kind: string): string {
+    if (kind === "stremio-catalog") return "catalog";
+    if (kind === "url-list") return "url list";
+    return kind;
+}
+
+function titleCase(value: string): string {
+    return value
+        .replace(/[-_]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .split(" ")
+        .map(w => (w ? w[0].toUpperCase() + w.slice(1) : w))
+        .join(" ");
+}
+
+function hostOf(raw: string): string {
+    try {
+        return new URL(raw).hostname.replace(/^www\./, "");
+    } catch {
+        return "";
+    }
+}
+
+function labelFromUrl(raw: string): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        return raw;
+    }
+    const parts = parsed.pathname.split("/").filter(Boolean).map(p => {
+        try { return decodeURIComponent(p); } catch { return p; }
+    });
+    const ci = parts.indexOf("catalog");
+    if (ci >= 0 && parts.length > ci + 2) {
+        const type = parts[ci + 1];
+        const id = parts[ci + 2].replace(/\.json$/i, "");
+        const pretty = titleCase(id);
+        return type ? `${pretty} · ${titleCase(type)}` : pretty;
+    }
+    const last = parts.length ? parts[parts.length - 1].replace(/\.json$/i, "") : "";
+    return last ? titleCase(last) : hostOf(raw);
+}
+
+function sourceLabel(source: WatchtowerSource): string {
+    const name = (source.name ?? "").trim();
+    const url = (source.url ?? "").trim();
+    if (name && name !== url) return name;
+    if (url) return labelFromUrl(url);
+    return name || "Untitled list";
 }
