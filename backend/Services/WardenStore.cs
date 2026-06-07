@@ -17,8 +17,6 @@ public class WardenStore
         WriteIndented = false,
     };
 
-    private static readonly TimeSpan Ttl = TimeSpan.FromDays(30);
-
     private readonly string _connectionString;
     private readonly ConfigManager _configManager;
 
@@ -28,7 +26,6 @@ public class WardenStore
         var path = Path.Join(DavDatabaseContext.ConfigPath, "warden.db");
         _connectionString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
         Initialize();
-        Prune();
         TryMigrateLegacyJson();
     }
 
@@ -40,8 +37,7 @@ public class WardenStore
             {
                 using var conn = Open();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT COUNT(*) FROM warden_entries WHERE dead_at >= $cutoff";
-                cmd.Parameters.AddWithValue("$cutoff", Cutoff());
+                cmd.CommandText = "SELECT COUNT(*) FROM warden_entries";
                 return Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
             }
             catch (Exception e)
@@ -107,9 +103,8 @@ public class WardenStore
         {
             using var conn = Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT 1 FROM warden_entries WHERE fp = $fp AND dead_at >= $cutoff LIMIT 1";
+            cmd.CommandText = "SELECT 1 FROM warden_entries WHERE fp = $fp LIMIT 1";
             cmd.Parameters.AddWithValue("$fp", fp);
-            cmd.Parameters.AddWithValue("$cutoff", Cutoff());
             return cmd.ExecuteScalar() is not null;
         }
         catch (Exception e)
@@ -127,9 +122,8 @@ public class WardenStore
         {
             using var conn = Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT backbones FROM warden_entries WHERE fp = $fp AND dead_at >= $cutoff LIMIT 1";
+            cmd.CommandText = "SELECT backbones FROM warden_entries WHERE fp = $fp LIMIT 1";
             cmd.Parameters.AddWithValue("$fp", fp);
-            cmd.Parameters.AddWithValue("$cutoff", Cutoff());
             return cmd.ExecuteScalar() is string s && SplitBackbones(s).Contains(bk);
         }
         catch
@@ -160,8 +154,7 @@ public class WardenStore
         await writer.WriteLineAsync("{\"warden\":1}".AsMemory(), ct);
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT fp, dead_at, n, backbones FROM warden_entries WHERE dead_at >= $cutoff";
-        cmd.Parameters.AddWithValue("$cutoff", Cutoff());
+        cmd.CommandText = "SELECT fp, dead_at, n, backbones FROM warden_entries";
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -271,22 +264,6 @@ public class WardenStore
         }
     }
 
-    private void Prune()
-    {
-        try
-        {
-            using var conn = Open();
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "DELETE FROM warden_entries WHERE dead_at < $cutoff";
-            cmd.Parameters.AddWithValue("$cutoff", Cutoff());
-            cmd.ExecuteNonQuery();
-        }
-        catch (Exception e)
-        {
-            Log.Debug(e, "Warden: prune failed");
-        }
-    }
-
     private void TryMigrateLegacyJson()
     {
         try
@@ -334,8 +311,6 @@ public class WardenStore
             Log.Warning(e, "Warden: legacy migration failed");
         }
     }
-
-    private static long Cutoff() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (long)Ttl.TotalSeconds;
 
     private static string MergeBackbones(string existingCsv, IEnumerable<string> add)
     {

@@ -136,15 +136,12 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
 
             <hr />
 
-            <div style={{ marginBottom: 4, fontWeight: 600 }}>
+            <div style={{ marginBottom: 12, fontWeight: 600 }}>
                 {count === null
                     ? "Fingerprints on the list: …"
                     : count === 0
-                        ? "The list is empty — it fills in automatically as dead content is found."
+                        ? "The list is empty. It fills in automatically as unusable items are found."
                         : `Fingerprints on the list: ${count.toLocaleString()}`}
-            </div>
-            <div style={{ marginBottom: 12, fontSize: 13, opacity: 0.6 }}>
-                Entries clear themselves after 30 days.
             </div>
 
             <div
@@ -196,7 +193,7 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
             <ConfirmModal
                 show={showClear}
                 title="Clear the Warden list?"
-                message={`This permanently removes all ${(count ?? 0).toLocaleString()} fingerprint${count === 1 ? "" : "s"} from the list. The list will repopulate automatically over time as dead content is found.`}
+                message={`This permanently removes all ${(count ?? 0).toLocaleString()} fingerprint${count === 1 ? "" : "s"} from the list. The list will repopulate automatically over time as unusable items are found.`}
                 cancelText="Cancel"
                 confirmText="Clear list"
                 onCancel={() => setShowClear(false)}
