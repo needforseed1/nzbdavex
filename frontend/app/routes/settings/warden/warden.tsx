@@ -112,7 +112,7 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                 <input
                     ref={fileRef}
                     type="file"
-                    accept="application/json,.json"
+                    accept=".gz,.ndjson,.json,application/gzip,application/json"
                     style={{ display: "none" }}
                     onChange={onImport} />
                 <Button variant="outline-danger" size="sm" disabled={busy} onClick={onClear}>Clear</Button>
