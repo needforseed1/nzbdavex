@@ -83,7 +83,6 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                     of your search-profile results. The fingerprints are universal: identical on any
                     provider, indexer, or server, and free of credentials. It fills in automatically
                     over time. The exported file drops into any other config or server and just works.
-                    Import anyone's, export yours.
                 </div>
             </div>
 
