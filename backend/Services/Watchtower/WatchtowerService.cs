@@ -586,8 +586,7 @@ public class WatchtowerService(
             if (outcome.Verdict == PlaybackFastVerifier.Verdict.Dead)
             {
                 negativeCache.MarkFailed(c.NzbUrl);
-                wardenStore.MarkDead(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate),
-                    WardenFingerprint.Backbone(outcome.ResponderHost));
+                wardenStore.MarkDead(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate));
                 continue;
             }
             if (outcome.Verdict == PlaybackFastVerifier.Verdict.Timeout) continue;
@@ -766,8 +765,7 @@ public class WatchtowerService(
         }
 
         negativeCache.MarkFailed(shortlist[0].NzbUrl);
-        wardenStore.MarkDead(WardenFingerprint.Compute(shortlist[0].Size, shortlist[0].Poster, shortlist[0].UsenetDate),
-            WardenFingerprint.Backbone(outcome.ResponderHost));
+        wardenStore.MarkDead(WardenFingerprint.Compute(shortlist[0].Size, shortlist[0].Poster, shortlist[0].UsenetDate));
         shortlist.RemoveAt(0);
         await PromoteBackupAsync(item, shortlist, now, ct).ConfigureAwait(false);
     }
@@ -805,8 +803,7 @@ public class WatchtowerService(
             if (outcome.Verdict == PlaybackFastVerifier.Verdict.Dead)
             {
                 negativeCache.MarkFailed(ptr.NzbUrl);
-                wardenStore.MarkDead(WardenFingerprint.Compute(ptr.Size, ptr.Poster, ptr.UsenetDate),
-                    WardenFingerprint.Backbone(outcome.ResponderHost));
+                wardenStore.MarkDead(WardenFingerprint.Compute(ptr.Size, ptr.Poster, ptr.UsenetDate));
             }
             shortlist.RemoveAt(0);
         }

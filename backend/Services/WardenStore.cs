@@ -2,7 +2,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
+using NzbWebDAV.Config;
 using NzbWebDAV.Database;
+using NzbWebDAV.Utils;
 using Serilog;
 
 namespace NzbWebDAV.Services;
@@ -18,9 +20,11 @@ public class WardenStore
     private static readonly TimeSpan Ttl = TimeSpan.FromDays(30);
 
     private readonly string _connectionString;
+    private readonly ConfigManager _configManager;
 
-    public WardenStore()
+    public WardenStore(ConfigManager configManager)
     {
+        _configManager = configManager;
         var path = Path.Join(DavDatabaseContext.ConfigPath, "warden.db");
         _connectionString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
         Initialize();
@@ -48,10 +52,9 @@ public class WardenStore
         }
     }
 
-    public void MarkDead(string? fp, string? backbone)
+    public void MarkDead(string? fp)
     {
         if (string.IsNullOrEmpty(fp)) return;
-        var bk = string.IsNullOrWhiteSpace(backbone) ? "unknown" : backbone;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         try
         {
@@ -69,12 +72,31 @@ public class WardenStore
                 "ON CONFLICT(fp) DO UPDATE SET dead_at = $t, n = n + 1, backbones = $bk";
             cmd.Parameters.AddWithValue("$fp", fp);
             cmd.Parameters.AddWithValue("$t", now);
-            cmd.Parameters.AddWithValue("$bk", MergeBackbones(existing, bk));
+            cmd.Parameters.AddWithValue("$bk", MergeBackbones(existing, CurrentBackbones()));
             cmd.ExecuteNonQuery();
         }
         catch (Exception e)
         {
             Log.Debug(e, "Warden: mark failed");
+        }
+    }
+
+    private string[] CurrentBackbones()
+    {
+        try
+        {
+            var providers = _configManager.GetUsenetProviderConfig().Providers;
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var p in providers)
+            {
+                var bk = WardenFingerprint.Backbone(p.Host);
+                if (bk != "unknown") set.Add(bk);
+            }
+            return set.Count == 0 ? new[] { "unknown" } : set.ToArray();
+        }
+        catch
+        {
+            return new[] { "unknown" };
         }
     }
 
@@ -161,8 +183,13 @@ public class WardenStore
         using var reader = new StreamReader(input);
         using var conn = Open();
         var tx = conn.BeginTransaction();
+
+        using var sel = conn.CreateCommand();
+        sel.CommandText = "SELECT backbones FROM warden_entries WHERE fp = $sfp";
+        var pSfp = new SqliteParameter("$sfp", SqliteType.Text);
+        sel.Parameters.Add(pSfp);
+
         using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
         cmd.CommandText =
             "INSERT INTO warden_entries (fp, dead_at, n, backbones) VALUES ($fp, $t, $n, $bk) " +
             "ON CONFLICT(fp) DO UPDATE SET dead_at = MAX(dead_at, $t), n = n + $n, backbones = $bk";
@@ -175,6 +202,9 @@ public class WardenStore
         cmd.Parameters.Add(pN);
         cmd.Parameters.Add(pBk);
 
+        sel.Transaction = tx;
+        cmd.Transaction = tx;
+
         var processed = 0;
         var inBatch = 0;
         string? line;
@@ -186,10 +216,13 @@ public class WardenStore
             catch { continue; }
             if (rec is null || string.IsNullOrEmpty(rec.Fp)) continue;
 
+            pSfp.Value = rec.Fp;
+            var existing = sel.ExecuteScalar() is string s ? s : "";
+
             pFp.Value = rec.Fp;
             pT.Value = rec.DeadAt;
             pN.Value = rec.Count <= 0 ? 1 : rec.Count;
-            pBk.Value = JoinBackbones(rec.Backbones);
+            pBk.Value = MergeBackbones(existing, rec.Backbones ?? Array.Empty<string>());
             cmd.ExecuteNonQuery();
             processed++;
 
@@ -198,6 +231,7 @@ public class WardenStore
                 await tx.CommitAsync(ct);
                 await tx.DisposeAsync();
                 tx = conn.BeginTransaction();
+                sel.Transaction = tx;
                 cmd.Transaction = tx;
                 inBatch = 0;
             }
@@ -303,10 +337,11 @@ public class WardenStore
 
     private static long Cutoff() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (long)Ttl.TotalSeconds;
 
-    private static string MergeBackbones(string existingCsv, string add)
+    private static string MergeBackbones(string existingCsv, IEnumerable<string> add)
     {
         var set = new HashSet<string>(SplitBackbones(existingCsv), StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(add)) set.Add(add);
+        foreach (var b in add)
+            if (!string.IsNullOrWhiteSpace(b)) set.Add(b);
         return set.Count == 0 ? "unknown" : string.Join(",", set);
     }
 

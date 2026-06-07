@@ -121,7 +121,7 @@ public class PreflightOrchestrator(
         if (outcome.Verdict == PlaybackFastVerifier.Verdict.Dead)
         {
             negativeCache.MarkFailed(candidate.NzbUrl);
-            wardenStore.MarkDead(fp, WardenFingerprint.Backbone(outcome.ResponderHost));
+            wardenStore.MarkDead(fp);
             return false;
         }
 

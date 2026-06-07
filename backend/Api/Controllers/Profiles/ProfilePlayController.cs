@@ -333,8 +333,7 @@ public class ProfilePlayController(
                         break;
                     case PlaybackFastVerifier.Verdict.Dead:
                         negativeCache.MarkFailed(r.Candidate.NzbUrl);
-                        wardenStore.MarkDead(WardenFingerprint.Compute(r.Candidate.Size, r.Candidate.Poster, r.Candidate.UsenetDate),
-                            WardenFingerprint.Backbone(r.ResponderHost));
+                        wardenStore.MarkDead(WardenFingerprint.Compute(r.Candidate.Size, r.Candidate.Poster, r.Candidate.UsenetDate));
                         RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                             rankIndex[r.Candidate.NzbUrl],
                             WatchdogEntry.Outcome.PreVerifyDead,
