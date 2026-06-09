@@ -25,6 +25,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         sort: sp.get("sort") ?? undefined,
         offset: Number(sp.get("offset")) || 0,
         limit: Number(sp.get("limit")) || PAGE_SIZE,
+        expander: sp.get("expander") ?? undefined,
         statsOnly: sp.get("statsOnly") === "1",
     });
 }
@@ -58,6 +59,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
     const filterFetcher = useFetcher<typeof action>();
     const moreFetcher = useFetcher<WatchtowerData>();
     const statsFetcher = useFetcher<WatchtowerData>();
+    const childFetcher = useFetcher<WatchtowerData>();
     const location = useLocation();
     const [searchParams, setSearchParams] = useSearchParams();
 
@@ -85,9 +87,12 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
     const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
     const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set());
+    const [childLoaded, setChildLoaded] = useState<Set<string>>(new Set());
     const selectAllRef = useRef<HTMLInputElement>(null);
     const sentinelRef = useRef<HTMLDivElement>(null);
     const lastOffsetRef = useRef(-1);
+    const pendingChildRef = useRef<string | null>(null);
+    const childLoadedRef = useRef<Set<string>>(new Set());
 
     const toggleItem = (key: string) => setSelectedItems(prev => {
         const next = new Set(prev);
@@ -109,7 +114,10 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
         setSources(loaderData.sources);
         setEnabled(loaderData.enabled);
         setSelectedItems(new Set());
+        setChildLoaded(new Set());
         lastOffsetRef.current = -1;
+        pendingChildRef.current = null;
+        childLoadedRef.current = new Set();
     }, [loaderData]);
 
     useEffect(() => {
@@ -123,6 +131,36 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
             setHasMore(data.hasMore);
         }
     }, [moreFetcher.state, moreFetcher.data]);
+
+    useEffect(() => {
+        if (childFetcher.state === "idle" && childFetcher.data && pendingChildRef.current) {
+            const key = pendingChildRef.current;
+            pendingChildRef.current = null;
+            const incoming = childFetcher.data.items;
+            setItems(prev => {
+                const seen = new Set(prev.map(i => i.key));
+                return [...prev, ...incoming.filter(i => !seen.has(i.key))];
+            });
+            const next = new Set(childLoadedRef.current);
+            next.add(key);
+            childLoadedRef.current = next;
+            setChildLoaded(next);
+        }
+    }, [childFetcher.state, childFetcher.data]);
+
+    useEffect(() => {
+        if (childFetcher.state !== "idle" || pendingChildRef.current) return;
+        const keys = new Set(shows.map(s => s.key));
+        const open = urlQuery !== "" ? shows.map(s => s.key) : [...expandedShows];
+        const next = open.find(k => keys.has(k) && !childLoadedRef.current.has(k));
+        if (!next) return;
+        pendingChildRef.current = next;
+        const sp = new URLSearchParams();
+        if (stateFilter) sp.set("state", stateFilter);
+        if (urlQuery) sp.set("q", urlQuery);
+        sp.set("expander", next);
+        childFetcher.load(`${location.pathname}?${sp.toString()}`);
+    }, [shows, expandedShows, childLoaded, childFetcher.state, stateFilter, urlQuery, location.pathname]);
 
     useEffect(() => {
         if (statsFetcher.state === "idle" && statsFetcher.data) {
@@ -536,6 +574,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
                                 expander={ex}
                                 episodes={childrenByExpander.get(ex.key) ?? []}
                                 expanded={isShowOpen(ex.key)}
+                                childrenLoaded={childLoaded.has(ex.key)}
                                 canToggle={!forceOpenShows}
                                 onToggle={() => toggleShow(ex.key)}
                                 selectedKeys={selectedItems}
@@ -675,10 +714,11 @@ function ItemRow({ item, selected, onToggleSelect }: {
     );
 }
 
-function ExpanderGroup({ expander, episodes, expanded, canToggle, onToggle, selectedKeys, onToggleSelect, onSelectMany }: {
+function ExpanderGroup({ expander, episodes, expanded, childrenLoaded, canToggle, onToggle, selectedKeys, onToggleSelect, onSelectMany }: {
     expander: WatchtowerItem;
     episodes: WatchtowerItem[];
     expanded: boolean;
+    childrenLoaded: boolean;
     canToggle: boolean;
     onToggle: () => void;
     selectedKeys: Set<string>;
@@ -762,10 +802,14 @@ function ExpanderGroup({ expander, episodes, expanded, canToggle, onToggle, sele
                     </fetcher.Form>
                 </div>
             </div>
-            {expanded && sorted.length > 0 && (
-                <div className={styles.children}>
-                    {sorted.map(c => <ItemRow key={c.key} item={c} selected={selectedKeys.has(c.key)} onToggleSelect={onToggleSelect} />)}
-                </div>
+            {expanded && (
+                sorted.length > 0
+                    ? <div className={styles.children}>
+                        {sorted.map(c => <ItemRow key={c.key} item={c} selected={selectedKeys.has(c.key)} onToggleSelect={onToggleSelect} />)}
+                      </div>
+                    : <div className={styles.children}>
+                        <div className={styles.empty}>{childrenLoaded ? "No episodes yet." : "Loading episodes…"}</div>
+                      </div>
             )}
         </div>
     );

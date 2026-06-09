@@ -328,6 +328,7 @@ class BackendClient {
         if (params.sort) qs.set("sort", params.sort);
         if (params.offset) qs.set("offset", String(params.offset));
         if (params.limit) qs.set("limit", String(params.limit));
+        if (params.expander) qs.set("expander", params.expander);
         if (params.statsOnly) qs.set("statsOnly", "1");
         const query = qs.toString();
         const url = process.env.BACKEND_URL + "/api/get-watchtower" + (query ? `?${query}` : "");
@@ -458,6 +459,7 @@ export type WatchtowerQuery = {
     sort?: string,
     offset?: number,
     limit?: number,
+    expander?: string,
     statsOnly?: boolean,
 }
 

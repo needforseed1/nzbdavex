@@ -73,8 +73,13 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
         var stateFilter = query["state"].ToString();
         var q = query["q"].ToString().Trim();
 
-        var browsingShows = stateFilter == WantedItem.StateExpander;
+        var expanderParam = query["expander"].ToString();
+        var fetchingChildren = !string.IsNullOrEmpty(expanderParam);
+        var browsingShows = !fetchingChildren && stateFilter == WantedItem.StateExpander;
+
         var leaves = dbClient.Ctx.WantedItems.AsNoTracking().Where(w => w.State != WantedItem.StateExpander);
+        if (fetchingChildren)
+            leaves = leaves.Where(w => w.Provenance.Contains(WtReconcile.ExpanderTag(expanderParam)));
         if (browsingShows)
             leaves = leaves.Where(_ => false);
         else if (IsLeafState(stateFilter))
@@ -83,9 +88,9 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
             leaves = leaves.Where(w => w.Title.Contains(q) || w.ContentId.Contains(q));
 
         var total = browsingShows ? 0 : await leaves.CountAsync(ct).ConfigureAwait(false);
-        var page = await ApplySort(leaves, query["sort"].ToString())
-            .Skip(offset)
-            .Take(limit)
+        var ordered = ApplySort(leaves, query["sort"].ToString());
+        if (!fetchingChildren) ordered = ordered.Skip(offset).Take(limit);
+        var page = await ordered
             .Select(w => new
             {
                 w.Key,
@@ -102,7 +107,7 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        var shows = offset == 0
+        var shows = offset == 0 && !fetchingChildren
             ? await BuildShowsAsync(stateFilter, q, ct).ConfigureAwait(false)
             : new List<GetWatchtowerResponse.ItemDto>();
 
