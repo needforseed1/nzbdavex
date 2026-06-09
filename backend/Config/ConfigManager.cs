@@ -523,7 +523,13 @@ public class ConfigManager
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.series-max-episodes"));
         if (v == null) return 50;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 1000) : 50;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 0, 1000) : 50;
+    }
+
+    public string GetWatchtowerSeriesCapKeep()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.series-cap-keep"));
+        return v == "oldest" ? "oldest" : "newest";
     }
 
     public int GetWatchtowerSeriesRecentCount()

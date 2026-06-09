@@ -91,6 +91,7 @@ const defaultConfig = {
     "watchtower.series-scope": "latest-season",
     "watchtower.season-bundles": "true",
     "watchtower.series-max-episodes": "50",
+    "watchtower.series-cap-keep": "newest",
     "watchtower.series-recent-count": "3",
     "watchtower.season-bundle-fallback": "false",
     "watchtower.season-bundle-fallback-scope": "latest-season",

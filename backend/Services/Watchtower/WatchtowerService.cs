@@ -339,7 +339,7 @@ public class WatchtowerService(
             foreach (var scope in scopes)
                 foreach (var (k, v) in BuildDesiredRows(episodes, expander.Title, imdb, scope, now, parked))
                     desired[k] = v;
-            return desired;
+            return ClampSeries(desired);
         }
 
         var kitsuId = ParseKitsuId(expander.ContentId);
@@ -351,7 +351,7 @@ public class WatchtowerService(
             foreach (var scope in scopes)
                 foreach (var (k, v) in BuildAnimeDesiredRows(episodes, expander.Title, kitsuId, scope, now))
                     desired[k] = v;
-            return desired;
+            return ClampSeries(desired);
         }
 
         return null;
@@ -368,9 +368,11 @@ public class WatchtowerService(
             ? configManager.GetWatchtowerSeriesRecentCount()
             : configManager.GetWatchtowerSeriesMaxEpisodes();
 
-        var selected = scope == "first-season"
-            ? aired.Take(count)
-            : aired.Skip(Math.Max(0, aired.Count - count));
+        var selected = count <= 0
+            ? (IEnumerable<EpisodeEnumerator.Episode>)aired
+            : scope == "first-season"
+                ? aired.Take(count)
+                : aired.Skip(Math.Max(0, aired.Count - count));
 
         foreach (var ep in selected)
         {
@@ -428,7 +430,6 @@ public class WatchtowerService(
             return desired;
         }
 
-        var maxEpisodes = configManager.GetWatchtowerSeriesMaxEpisodes();
         var bundlesEnabled = configManager.IsWatchtowerSeasonBundlesEnabled();
         var fallbackCap = configManager.GetWatchtowerSeasonBundleFallbackMaxEpisodes();
         var seasons = scope switch
@@ -438,7 +439,6 @@ public class WatchtowerService(
             _ => new List<int> { aired.Max(e => e.Season) },
         };
 
-        var singleBudget = maxEpisodes;
         foreach (var season in seasons)
         {
             if (bundlesEnabled && SeasonComplete(episodes, season, now))
@@ -452,13 +452,35 @@ public class WatchtowerService(
                 continue;
             }
             foreach (var ep in aired.Where(e => e.Season == season).OrderBy(e => e.Number))
-            {
-                if (singleBudget <= 0) break;
                 AddEpisodeRow(desired, imdb, seriesTitle, ep);
-                singleBudget--;
-            }
         }
         return desired;
+    }
+
+    private Dictionary<string, DesiredRow> ClampSeries(Dictionary<string, DesiredRow> desired)
+    {
+        var cap = configManager.GetWatchtowerSeriesMaxEpisodes();
+        if (cap <= 0 || desired.Count <= cap) return desired;
+        var keepOldest = configManager.GetWatchtowerSeriesCapKeep() == "oldest";
+
+        IEnumerable<KeyValuePair<string, DesiredRow>> Ordered(IEnumerable<KeyValuePair<string, DesiredRow>> src) =>
+            keepOldest ? src.OrderBy(kv => RowOrder(kv.Value)) : src.OrderByDescending(kv => RowOrder(kv.Value));
+
+        var bundles = Ordered(desired.Where(kv => kv.Value.Type == "season"));
+        var episodes = Ordered(desired.Where(kv => kv.Value.Type != "season"));
+        return bundles.Concat(episodes).Take(cap).ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    private static (int Season, int Number) RowOrder(DesiredRow row)
+    {
+        var parts = row.ContentId.Split(':');
+        if (row.Type == "season")
+            return (parts.Length >= 2 && int.TryParse(parts[^1], out var s) ? s : 0, int.MaxValue);
+        if (parts.Length >= 1 && parts[0].Equals("kitsu", StringComparison.OrdinalIgnoreCase))
+            return (1, parts.Length >= 3 && int.TryParse(parts[^1], out var kn) ? kn : 0);
+        var season = parts.Length >= 3 && int.TryParse(parts[^2], out var se) ? se : 0;
+        var number = parts.Length >= 3 && int.TryParse(parts[^1], out var ne) ? ne : 0;
+        return (season, number);
     }
 
     private static void AddEpisodeRow(

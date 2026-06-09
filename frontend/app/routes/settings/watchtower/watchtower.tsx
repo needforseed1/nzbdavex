@@ -193,16 +193,36 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     )}
 
                     <Form.Group className={styles.section}>
-                        <Form.Label>Max episodes per series</Form.Label>
-                        <Form.Control className={styles.input} type="number" min={1} max={1000}
+                        <Form.Label>Max items per series</Form.Label>
+                        <Form.Control className={styles.input} type="number" min={0} max={1000}
                             disabled={!enabled}
                             value={config["watchtower.series-max-episodes"] ?? "50"}
                             onChange={e => set("watchtower.series-max-episodes", e.target.value)} />
                         <p className={styles.hint}>
-                            Caps how many individual episodes are warmed for seasons that aren't bundled
-                            (such as the currently-airing one). Season bundles don't count toward this. Default 50.
+                            Hard ceiling on how many items a single series may warm: individual episodes and
+                            season bundles combined, across every season. No series can expand past this on any
+                            scope, so a very long title stays bounded instead of fanning out. A season bundle
+                            counts as one item. 0 = unlimited. Default 50.
                         </p>
                     </Form.Group>
+
+                    {(config["watchtower.series-max-episodes"] ?? "50") !== "0" && (
+                        <Form.Group className={styles.section}>
+                            <Form.Label>When over the cap, keep</Form.Label>
+                            <Form.Select className={styles.input}
+                                disabled={!enabled}
+                                value={config["watchtower.series-cap-keep"] ?? "newest"}
+                                onChange={e => set("watchtower.series-cap-keep", e.target.value)}>
+                                <option value="newest">Newest seasons &amp; episodes</option>
+                                <option value="oldest">Oldest seasons &amp; episodes</option>
+                            </Form.Select>
+                            <p className={styles.hint}>
+                                Which end of the series to keep when it hits the cap. <b>Newest</b> stays
+                                current with the latest episodes and season packs. <b>Oldest</b> starts from
+                                season one, useful when you plan to watch a series from the beginning.
+                            </p>
+                        </Form.Group>
+                    )}
                 </>
             )}
 
@@ -296,6 +316,7 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.series-scope",
         "watchtower.season-bundles",
         "watchtower.series-max-episodes",
+        "watchtower.series-cap-keep",
         "watchtower.series-recent-count",
         "watchtower.season-bundle-fallback",
         "watchtower.season-bundle-fallback-scope",
