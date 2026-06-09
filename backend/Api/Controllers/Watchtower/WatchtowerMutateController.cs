@@ -33,7 +33,7 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
                 await RemoveSourceAsync(form, now, ct).ConfigureAwait(false);
                 break;
             case "toggle-source":
-                await ToggleSourceAsync(form, ct).ConfigureAwait(false);
+                await ToggleSourceAsync(form, now, ct).ConfigureAwait(false);
                 break;
             case "set-source-scope":
                 await SetSourceScopeAsync(form, now, ct).ConfigureAwait(false);
@@ -150,18 +150,22 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
         var source = await dbClient.Ctx.ListSources.FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (source is null) return;
         dbClient.Ctx.ListSources.Remove(source);
+        await DetachSourceItemsAsync(id.ToString(), now, ct).ConfigureAwait(false);
+    }
 
-        var srcId = id.ToString();
+    private async Task DetachSourceItemsAsync(string srcId, long now, CancellationToken ct)
+    {
         var claimed = await dbClient.Ctx.WantedItems
             .Where(w => w.Provenance.Contains(srcId))
             .ToListAsync(ct).ConfigureAwait(false);
         foreach (var item in claimed)
         {
+            if (dbClient.Ctx.Entry(item).State == EntityState.Deleted) continue;
             var prov = WtJson.ReadStrings(item.Provenance);
             prov.Remove(srcId);
             if (prov.Count == 0)
             {
-                dbClient.Ctx.WantedItems.Remove(item);
+                await WtReconcile.RemoveWithChildrenAsync(dbClient.Ctx, item, now, ct).ConfigureAwait(false);
             }
             else
             {
@@ -171,13 +175,17 @@ public class WatchtowerMutateController(DavDatabaseClient dbClient) : BaseApiCon
         }
     }
 
-    private async Task ToggleSourceAsync(IFormCollection form, CancellationToken ct)
+    private async Task ToggleSourceAsync(IFormCollection form, long now, CancellationToken ct)
     {
         if (!Guid.TryParse(form["id"].ToString(), out var id))
             throw new BadHttpRequestException("Invalid source id.");
         var source = await dbClient.Ctx.ListSources.FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
         if (source is null) return;
         source.Enabled = form["enabled"].ToString() == "true";
+        if (source.Enabled)
+            source.LastSyncedAtUnix = null;
+        else
+            await DetachSourceItemsAsync(source.Id.ToString(), now, ct).ConfigureAwait(false);
     }
 
     private async Task SetSourceScopeAsync(IFormCollection form, long now, CancellationToken ct)

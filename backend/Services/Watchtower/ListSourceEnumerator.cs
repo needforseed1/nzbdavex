@@ -175,7 +175,8 @@ public class ListSourceEnumerator
     {
         if (string.IsNullOrWhiteSpace(url)) return Array.Empty<WtContentRef>();
         var body = await HttpGetStringAsync(url!, ct).ConfigureAwait(false);
-        if (body is null) return Array.Empty<WtContentRef>();
+        if (body is null)
+            throw new InvalidOperationException("List request failed or returned an empty response.");
 
         var trimmed = body.TrimStart();
         if (trimmed.StartsWith("[") || trimmed.StartsWith("{"))
@@ -268,6 +269,10 @@ public class ListSourceEnumerator
             using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return null;
             return await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception e)
         {

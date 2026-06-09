@@ -31,35 +31,67 @@ public class WatchtowerService(
     private int _resolveDayKey = -1;
     private int _resolvesToday;
 
+    private readonly object _ctsLock = new();
+    private CancellationTokenSource? _disabledCts;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        configManager.OnConfigChanged += OnConfigChanged;
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                if (!configManager.IsWatchtowerEnabled())
+                try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
-                    continue;
+                    if (!configManager.IsWatchtowerEnabled())
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    using var cycleCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    lock (_ctsLock) _disabledCts = cycleCts;
+                    var ct = cycleCts.Token;
+                    try
+                    {
+                        await SyncDueSourcesAsync(ct).ConfigureAwait(false);
+                        await ExpandDueExpandersAsync(ct).ConfigureAwait(false);
+                        await ResolveDueItemsAsync(ct).ConfigureAwait(false);
+                        await KeepFreshDueItemsAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        continue;
+                    }
+                    finally
+                    {
+                        lock (_ctsLock) _disabledCts = null;
+                    }
+
+                    await Task.Delay(Tick, stoppingToken).ConfigureAwait(false);
                 }
-
-                await SyncDueSourcesAsync(stoppingToken).ConfigureAwait(false);
-                await ExpandDueExpandersAsync(stoppingToken).ConfigureAwait(false);
-                await ResolveDueItemsAsync(stoppingToken).ConfigureAwait(false);
-                await KeepFreshDueItemsAsync(stoppingToken).ConfigureAwait(false);
-
-                await Task.Delay(Tick, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (SigtermUtil.IsSigtermTriggered() || stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception e)
-            {
-                Log.Error(e, "Watchtower loop error: {Message}", e.Message);
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
+                catch (OperationCanceledException) when (SigtermUtil.IsSigtermTriggered() || stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "Watchtower loop error: {Message}", e.Message);
+                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
+                }
             }
         }
+        finally
+        {
+            configManager.OnConfigChanged -= OnConfigChanged;
+        }
+    }
+
+    private void OnConfigChanged(object? sender, ConfigManager.ConfigEventArgs e)
+    {
+        if (!e.ChangedConfig.ContainsKey("watchtower.enabled")) return;
+        if (configManager.IsWatchtowerEnabled()) return;
+        lock (_ctsLock) _disabledCts?.Cancel();
     }
 
     private async Task SyncDueSourcesAsync(CancellationToken ct)
@@ -74,6 +106,7 @@ public class WatchtowerService(
 
         foreach (var source in sources)
         {
+            ct.ThrowIfCancellationRequested();
             if (source.LastSyncedAtUnix is { } last && now - last < interval) continue;
             try
             {
@@ -81,7 +114,7 @@ public class WatchtowerService(
                 await ReconcileSourceAsync(ctx, source, refs, now, ct).ConfigureAwait(false);
                 source.LastSyncError = null;
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OperationCanceledException)
             {
                 source.LastSyncError = e.Message;
                 Log.Warning(e, "Watchtower: sync failed for source {Name}", source.Name);
@@ -846,6 +879,10 @@ public class WatchtowerService(
             var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
             _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
             return bytes;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception e)
         {
