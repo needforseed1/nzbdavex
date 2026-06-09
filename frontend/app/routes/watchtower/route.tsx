@@ -76,6 +76,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
     const [discoveryDismissed, setDiscoveryDismissed] = useState(false);
 
     const [items, setItems] = useState<WatchtowerItem[]>(loaderData.items);
+    const [shows, setShows] = useState<WatchtowerItem[]>(loaderData.shows);
     const [total, setTotal] = useState(loaderData.total);
     const [hasMore, setHasMore] = useState(loaderData.hasMore);
     const [stats, setStats] = useState(loaderData.stats);
@@ -101,6 +102,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
     useEffect(() => {
         setItems(loaderData.items);
+        setShows(loaderData.shows);
         setTotal(loaderData.total);
         setHasMore(loaderData.hasMore);
         setStats(loaderData.stats);
@@ -212,7 +214,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
         name: discovered?.addonName ? `${discovered.addonName}: ${c.name}` : c.name,
     })));
 
-    const expanders = items.filter(it => it.state === "expander");
+    const expanders = shows;
     const expanderKeys = new Set(expanders.map(ex => ex.key));
     const childrenByExpander = new Map<string, WatchtowerItem[]>();
     for (const it of items) {
@@ -247,7 +249,7 @@ export default function Watchtower({ loaderData }: Route.ComponentProps) {
 
     const bulkBusy = bulkItemFetcher.state !== "idle";
     const filterBusy = filterFetcher.state !== "idle";
-    const nothingShown = items.length === 0;
+    const nothingShown = items.length === 0 && shows.length === 0;
 
     useEffect(() => {
         if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
@@ -689,15 +691,16 @@ function ExpanderGroup({ expander, episodes, expanded, canToggle, onToggle, sele
     const removing = pending === "remove-item";
     const checking = pending === "recheck-item";
     const error = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
-    const countable = episodes.filter(c => c.state !== "parked");
-    const ready = countable.filter(c => c.state === "ready").length;
-    const unavailable = countable.filter(c => c.state === "unavailable").length;
+    const loaded = episodes.filter(c => c.state !== "parked");
+    const totalCount = expander.childTotal ?? loaded.length;
+    const ready = expander.childReady ?? loaded.filter(c => c.state === "ready").length;
+    const unavailable = expander.childUnavailable ?? loaded.filter(c => c.state === "unavailable").length;
     const sorted = [...episodes].sort((a, b) => a.contentId.localeCompare(b.contentId, undefined, { numeric: true }));
 
     const childKeys = episodes.map(c => c.key);
     const allSel = childKeys.length > 0 && childKeys.every(k => selectedKeys.has(k));
     const someSel = childKeys.some(k => selectedKeys.has(k));
-    const pct = countable.length > 0 ? Math.round((ready / countable.length) * 100) : 0;
+    const pct = totalCount > 0 ? Math.round((ready / totalCount) * 100) : 0;
 
     useEffect(() => {
         if (seriesCheckRef.current) seriesCheckRef.current.indeterminate = someSel && !allSel;
@@ -736,11 +739,11 @@ function ExpanderGroup({ expander, episodes, expanded, canToggle, onToggle, sele
                     <div className={styles.itemTitle} title={expander.title}>{expander.title}</div>
                     <div className={styles.itemSub}>
                         <span className={styles.mono}>{expander.contentId}</span>
-                        {countable.length === 0
+                        {totalCount === 0
                             ? <span>expanding…</span>
                             : <span className={styles.readyLine}>
                                 <span className={styles.meter}><span className={styles.meterFill} style={{ width: `${pct}%` }} /></span>
-                                <span>{ready}/{countable.length} ready</span>
+                                <span>{ready}/{totalCount} ready</span>
                               </span>}
                         {unavailable > 0 && <span className={styles.metaBad}>{unavailable} unavailable</span>}
                     </div>

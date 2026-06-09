@@ -61,6 +61,7 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
                 Enabled = configManager.IsWatchtowerEnabled(),
                 Sources = sourceDtos,
                 Items = new List<GetWatchtowerResponse.ItemDto>(),
+                Shows = new List<GetWatchtowerResponse.ItemDto>(),
                 Total = stats.Total,
                 HasMore = false,
                 Stats = stats,
@@ -69,11 +70,20 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
 
         var offset = int.TryParse(query["offset"].ToString(), out var o) ? Math.Max(0, o) : 0;
         var limit = int.TryParse(query["limit"].ToString(), out var l) ? Math.Clamp(l, 1, 200) : 100;
+        var stateFilter = query["state"].ToString();
+        var q = query["q"].ToString().Trim();
 
-        var filtered = FilteredItems(query["state"].ToString(), query["q"].ToString().Trim());
-        var total = await filtered.CountAsync(ct).ConfigureAwait(false);
+        var browsingShows = stateFilter == WantedItem.StateExpander;
+        var leaves = dbClient.Ctx.WantedItems.AsNoTracking().Where(w => w.State != WantedItem.StateExpander);
+        if (browsingShows)
+            leaves = leaves.Where(_ => false);
+        else if (IsLeafState(stateFilter))
+            leaves = leaves.Where(w => w.State == stateFilter);
+        if (!string.IsNullOrWhiteSpace(q))
+            leaves = leaves.Where(w => w.Title.Contains(q) || w.ContentId.Contains(q));
 
-        var page = await ApplySort(filtered, query["sort"].ToString())
+        var total = browsingShows ? 0 : await leaves.CountAsync(ct).ConfigureAwait(false);
+        var page = await ApplySort(leaves, query["sort"].ToString())
             .Skip(offset)
             .Take(limit)
             .Select(w => new
@@ -91,6 +101,10 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
             })
             .ToListAsync(ct)
             .ConfigureAwait(false);
+
+        var shows = offset == 0
+            ? await BuildShowsAsync(stateFilter, q, ct).ConfigureAwait(false)
+            : new List<GetWatchtowerResponse.ItemDto>();
 
         return Ok(new GetWatchtowerResponse
         {
@@ -120,24 +134,75 @@ public class GetWatchtowerController(DavDatabaseClient dbClient, ConfigManager c
                     FailReason = w.FailReason,
                 };
             }).ToList(),
+            Shows = shows,
             Total = total,
             HasMore = offset + page.Count < total,
             Stats = stats,
         });
     }
 
-    private IQueryable<WantedItem> FilteredItems(string? state, string? q)
+    private async Task<List<GetWatchtowerResponse.ItemDto>> BuildShowsAsync(string? stateFilter, string? q, CancellationToken ct)
     {
-        var filtered = dbClient.Ctx.WantedItems.AsNoTracking();
-        if (IsValidState(state))
-            filtered = filtered.Where(w => w.State == state);
-        if (!string.IsNullOrWhiteSpace(q))
-            filtered = filtered.Where(w => w.Title.Contains(q) || w.ContentId.Contains(q));
-        return filtered;
+        var expanders = await dbClient.Ctx.WantedItems.AsNoTracking()
+            .Where(w => w.State == WantedItem.StateExpander)
+            .Select(w => new { w.Key, w.Type, w.ContentId, w.Title, w.Provenance, w.NextCheckAtUnix })
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (expanders.Count == 0) return new List<GetWatchtowerResponse.ItemDto>();
+
+        var children = await dbClient.Ctx.WantedItems.AsNoTracking()
+            .Where(w => w.State != WantedItem.StateExpander)
+            .Select(w => new { w.State, w.Title, w.ContentId, w.Provenance })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var hasState = IsLeafState(stateFilter);
+        var hasQ = !string.IsNullOrWhiteSpace(q);
+        var tally = new Dictionary<string, int[]>(StringComparer.Ordinal);
+        var relevant = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var c in children)
+        {
+            var tag = WtJson.ReadStrings(c.Provenance).FirstOrDefault(p => p.StartsWith("exp:", StringComparison.Ordinal));
+            if (tag is null) continue;
+            var key = tag.Substring(4);
+            if (!tally.TryGetValue(key, out var n)) tally[key] = n = new int[3];
+            if (c.State != WantedItem.StateParked) n[0]++;
+            if (c.State == WantedItem.StateReady) n[1]++;
+            if (c.State == WantedItem.StateUnavailable) n[2]++;
+
+            var matches = (!hasState || c.State == stateFilter)
+                          && (!hasQ || c.Title.Contains(q!, StringComparison.OrdinalIgnoreCase)
+                                    || c.ContentId.Contains(q!, StringComparison.OrdinalIgnoreCase));
+            if (matches) relevant.Add(key);
+        }
+
+        var showAll = !hasState && !hasQ;
+        var result = new List<GetWatchtowerResponse.ItemDto>();
+        foreach (var ex in expanders.OrderBy(e => e.Title, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!showAll && !relevant.Contains(ex.Key)) continue;
+            tally.TryGetValue(ex.Key, out var n);
+            n ??= new int[3];
+            result.Add(new GetWatchtowerResponse.ItemDto
+            {
+                Key = ex.Key,
+                Type = ex.Type,
+                ContentId = ex.ContentId,
+                Title = ex.Title,
+                State = WantedItem.StateExpander,
+                ProvenanceCount = WtJson.ReadStrings(ex.Provenance).Count,
+                ShortlistCount = 0,
+                WinnerSize = 0,
+                NextCheckAtUnix = ex.NextCheckAtUnix,
+                ChildTotal = n[0],
+                ChildReady = n[1],
+                ChildUnavailable = n[2],
+            });
+        }
+        return result;
     }
 
-    private static bool IsValidState(string? s) => s is WantedItem.StateReady or WantedItem.StateScouting
-        or WantedItem.StateUnavailable or WantedItem.StateParked or WantedItem.StateExpander;
+    private static bool IsLeafState(string? s) => s is WantedItem.StateReady or WantedItem.StateScouting
+        or WantedItem.StateUnavailable or WantedItem.StateParked;
 
     private static IQueryable<WantedItem> ApplySort(IQueryable<WantedItem> q, string? sort) => sort switch
     {
@@ -161,6 +226,7 @@ public class GetWatchtowerResponse : BaseApiResponse
     [JsonPropertyName("enabled")] public required bool Enabled { get; init; }
     [JsonPropertyName("sources")] public required List<SourceDto> Sources { get; init; }
     [JsonPropertyName("items")] public required List<ItemDto> Items { get; init; }
+    [JsonPropertyName("shows")] public required List<ItemDto> Shows { get; init; }
     [JsonPropertyName("total")] public required int Total { get; init; }
     [JsonPropertyName("hasMore")] public required bool HasMore { get; init; }
     [JsonPropertyName("stats")] public required StatsDto Stats { get; init; }
@@ -187,6 +253,9 @@ public class GetWatchtowerResponse : BaseApiResponse
         [JsonPropertyName("state")] public required string State { get; init; }
         [JsonPropertyName("provenanceCount")] public required int ProvenanceCount { get; init; }
         [JsonPropertyName("expanderKey")] public string? ExpanderKey { get; init; }
+        [JsonPropertyName("childTotal")] public int? ChildTotal { get; init; }
+        [JsonPropertyName("childReady")] public int? ChildReady { get; init; }
+        [JsonPropertyName("childUnavailable")] public int? ChildUnavailable { get; init; }
         [JsonPropertyName("shortlistCount")] public required int ShortlistCount { get; init; }
         [JsonPropertyName("winnerTitle")] public string? WinnerTitle { get; init; }
         [JsonPropertyName("winnerSize")] public required long WinnerSize { get; init; }
