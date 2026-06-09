@@ -9,7 +9,8 @@ namespace NzbWebDAV.Api.Controllers.Profiles.Adapters;
 [Route("api/search/{token}/nzb/{playToken}.nzb")]
 public class NzbProxyController(
     SearchProfileService searchService,
-    NzbResolutionCache cache
+    NzbResolutionCache cache,
+    NzbFetchCoalescer nzbFetchCoalescer
 ) : ControllerBase
 {
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(60);
@@ -32,25 +33,22 @@ public class NzbProxyController(
         var candidate = entry.Primary;
         if (string.IsNullOrWhiteSpace(candidate.NzbUrl)) return NotFound();
 
+        byte[]? bytes;
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, candidate.NzbUrl);
-            req.Headers.TryAddWithoutValidation("User-Agent", candidate.IndexerUserAgent);
-            var client = ProxyHttpClientPool.GetClient(candidate.ProxyUrl);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
-            cts.CancelAfter(FetchTimeout);
-            using var resp = await client
-                .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
-                .ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            bytes = await nzbFetchCoalescer.GetOrFetchAsync(candidate.NzbUrl, async innerCt =>
             {
-                return StatusCode((int)resp.StatusCode, "Source indexer failed to return the NZB.");
-            }
-
-            var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-            Response.Headers["Content-Disposition"] =
-                $"attachment; filename=\"{SanitizeFileName(candidate.Title)}.nzb\"";
-            return File(bytes, "application/x-nzb");
+                using var req = new HttpRequestMessage(HttpMethod.Get, candidate.NzbUrl);
+                req.Headers.TryAddWithoutValidation("User-Agent", candidate.IndexerUserAgent);
+                var client = ProxyHttpClientPool.GetClient(candidate.ProxyUrl);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                cts.CancelAfter(FetchTimeout);
+                using var resp = await client
+                    .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+                    .ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode) return null;
+                return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+            }, HttpContext.RequestAborted).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -61,6 +59,15 @@ public class NzbProxyController(
             Log.Debug(e, "NZB proxy fetch failed for {Url}", candidate.NzbUrl);
             return StatusCode(502, "Failed to fetch NZB from source indexer.");
         }
+
+        if (bytes is null)
+        {
+            return StatusCode(502, "Source indexer failed to return the NZB.");
+        }
+
+        Response.Headers["Content-Disposition"] =
+            $"attachment; filename=\"{SanitizeFileName(candidate.Title)}.nzb\"";
+        return File(bytes, "application/x-nzb");
     }
 
     private static string SanitizeFileName(string name)

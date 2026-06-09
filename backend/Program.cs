@@ -119,6 +119,7 @@ class Program
             .AddSingleton<NzbWebDAV.Services.LazyRarResolver>()
             .AddSingleton<QueueManager>()
             .AddSingleton<NzbResolutionCache>()
+            .AddSingleton<NzbFetchCoalescer>()
             .AddSingleton<CandidateNegativeCache>()
             .AddSingleton<WardenStore>()
             .AddSingleton<WardenRemoteSourceService>()

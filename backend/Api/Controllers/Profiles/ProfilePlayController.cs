@@ -32,6 +32,7 @@ public class ProfilePlayController(
     WebsocketManager websocketManager,
     QueueItemSourceTracker sourceTracker,
     LazyRarResolver lazyRarResolver,
+    NzbFetchCoalescer nzbFetchCoalescer,
     PreflightCache preflightCache,
     PreflightSessionRegistry preflightSessions,
     VariantResolver variantResolver,
@@ -96,16 +97,15 @@ public class ProfilePlayController(
             if (existingResolved is not null) return existingResolved;
         }
 
-        if (variantResolver.IsEnabled)
+        var inFlight = variantResolver.IsEnabled
+            ? await variantResolver.FindInFlightAsync(dbClient.Ctx, entry, HttpContext.RequestAborted)
+                .ConfigureAwait(false)
+            : await FindInFlightQueueItemAsync(entry, HttpContext.RequestAborted).ConfigureAwait(false);
+        if (inFlight.HasValue)
         {
-            var inFlight = await variantResolver.FindInFlightAsync(dbClient.Ctx, entry, HttpContext.RequestAborted)
+            var waitRedirect = await WaitForInFlightAsync(inFlight.Value, entry, HttpContext.RequestAborted)
                 .ConfigureAwait(false);
-            if (inFlight.HasValue)
-            {
-                var waitRedirect = await WaitForInFlightAsync(inFlight.Value, entry, HttpContext.RequestAborted)
-                    .ConfigureAwait(false);
-                if (waitRedirect is not null) return waitRedirect;
-            }
+            if (waitRedirect is not null) return waitRedirect;
         }
 
         var totalBudget = TimeSpan.FromSeconds(configManager.GetPlayTotalBudgetSeconds());
@@ -638,46 +638,49 @@ public class ProfilePlayController(
 
     private async Task<byte[]?> FetchNzbBytesAsync(NzbResolutionCache.Candidate c, CancellationToken ct)
     {
-        try
-        {
-            var preflighted = preflightCache.Get(c.NzbUrl);
-            if (preflighted?.NzbBytes is { } cachedBytes) return cachedBytes;
+        var preflighted = preflightCache.Get(c.NzbUrl);
+        if (preflighted?.NzbBytes is { } cachedBytes) return cachedBytes;
 
-            // Throttle NZB downloads to respect each indexer's configured rate limit
-            // (MaxRequestsPerMinute). Candidates from a saturated indexer wait their turn while
-            // candidates from other indexers in the same batch proceed in parallel.
-            var indexer = configManager.GetIndexerConfig().Indexers
-                .FirstOrDefault(x => x.Name == c.IndexerName);
-            if (indexer is not null)
+        return await nzbFetchCoalescer.GetOrFetchAsync(c.NzbUrl, async innerCt =>
+        {
+            try
             {
-                var hitCheck = await hitTracker
-                    .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, ct)
-                    .ConfigureAwait(false);
-                if (hitCheck is { Allowed: false })
+                // Throttle NZB downloads to respect each indexer's configured rate limit
+                // (MaxRequestsPerMinute). Candidates from a saturated indexer wait their turn while
+                // candidates from other indexers in the same batch proceed in parallel.
+                var indexer = configManager.GetIndexerConfig().Indexers
+                    .FirstOrDefault(x => x.Name == c.IndexerName);
+                if (indexer is not null)
                 {
-                    Log.Information("NZB download skipped for {Indexer}: {Reason}",
-                        c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
-                    return null;
+                    var hitCheck = await hitTracker
+                        .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
+                        .ConfigureAwait(false);
+                    if (hitCheck is { Allowed: false })
+                    {
+                        Log.Information("NZB download skipped for {Indexer}: {Reason}",
+                            c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                        return null;
+                    }
+                    await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
                 }
-                await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, ct).ConfigureAwait(false);
-            }
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
-            req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
-            var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(NzbFetchTimeout);
-            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode) return null;
-            var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-            _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
-            return bytes;
-        }
-        catch (Exception e) when (!e.IsCancellationException())
-        {
-            Log.Debug("NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
-            return null;
-        }
+                using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+                req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+                var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                cts.CancelAfter(NzbFetchTimeout);
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode) return null;
+                var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+                _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
+                return bytes;
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                Log.Debug("NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
+                return null;
+            }
+        }, ct).ConfigureAwait(false);
     }
 
     private async Task<(IActionResult? Result, CommitReason Reason, Guid? NewlyEnqueuedNzoId)> CommitAsync(
@@ -853,6 +856,23 @@ public class ProfilePlayController(
         }
         Response.Headers["Retry-After"] = retryAfterSeconds.ToString();
         return StatusCode(statusCode, message);
+    }
+
+    private async Task<Guid?> FindInFlightQueueItemAsync(NzbResolutionCache.Entry entry, CancellationToken ct)
+    {
+        var fileNames = entry.Candidates
+            .Select(c => $"{SanitizeFileName(c.Title)}.nzb")
+            .Distinct()
+            .ToList();
+        var contentGroupKey = VariantResolver.BuildContentGroupKey(entry);
+        if (fileNames.Count == 0 && contentGroupKey is null) return null;
+
+        return await dbClient.Ctx.QueueItems.AsNoTracking()
+            .Where(q => fileNames.Contains(q.FileName)
+                        || (contentGroupKey != null && q.ContentGroupKey == contentGroupKey))
+            .OrderByDescending(q => q.CreatedAt)
+            .Select(q => (Guid?)q.Id)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
     }
 
     // Match against ANY candidate in this group — the winning fallback can land on a
