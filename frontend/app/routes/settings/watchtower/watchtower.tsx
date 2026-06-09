@@ -4,6 +4,19 @@ import styles from "./watchtower.module.css";
 
 const GB = 1024 * 1024 * 1024;
 
+type ProfileOption = { token: string; name: string };
+
+function parseProfiles(raw?: string): ProfileOption[] {
+    try {
+        const list = (JSON.parse(raw || "{}").Profiles ?? []) as Array<{ Token?: string; Name?: string }>;
+        return list
+            .filter(p => p?.Token)
+            .map(p => ({ token: String(p.Token), name: String(p.Name ?? "").trim() }));
+    } catch {
+        return [];
+    }
+}
+
 type WatchtowerSettingsProps = {
     config: Record<string, string>
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
@@ -12,6 +25,9 @@ type WatchtowerSettingsProps = {
 export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const enabled = (config["watchtower.enabled"] ?? "false") === "true";
+    const profiles = parseProfiles(config["profiles.instances"]);
+    const profileToken = config["watchtower.profile-token"] ?? "";
+    const orphanToken = profileToken.length > 0 && !profiles.some(p => p.token === profileToken);
     const scope = config["watchtower.series-scope"] ?? "latest-season";
     const seasonBundles = (config["watchtower.season-bundles"] ?? "true") === "true";
     const bundleFallback = (config["watchtower.season-bundle-fallback"] ?? "false") === "true";
@@ -45,13 +61,24 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
             </Form.Group>
 
             <Form.Group className={styles.section}>
-                <Form.Label>Search profile token (optional)</Form.Label>
-                <Form.Control className={styles.input} type="text"
-                    placeholder="empty = use the first configured profile"
-                    disabled={!enabled}
-                    value={config["watchtower.profile-token"] ?? ""}
-                    onChange={e => set("watchtower.profile-token", e.target.value)} />
-                <p className={styles.hint}>Which Search Profile the resolver uses. Leave blank to use the first one.</p>
+                <Form.Label>Search profile</Form.Label>
+                <Form.Select className={styles.input}
+                    disabled={!enabled || profiles.length === 0}
+                    value={profileToken}
+                    onChange={e => set("watchtower.profile-token", e.target.value)}>
+                    <option value="">First configured profile (default)</option>
+                    {profiles.map(p => (
+                        <option key={p.token} value={p.token}>{p.name || `Untitled (${p.token.slice(0, 8)}…)`}</option>
+                    ))}
+                    {orphanToken && (
+                        <option value={profileToken}>Unknown profile ({profileToken.slice(0, 8)}…)</option>
+                    )}
+                </Form.Select>
+                <p className={styles.hint}>
+                    {profiles.length === 0
+                        ? <>No Search Profiles yet — create one under <b>Settings → Profiles</b> first.</>
+                        : "Which Search Profile the resolver uses — this decides which indexers get queried. Default uses the first one."}
+                </p>
             </Form.Group>
 
             <Form.Group className={styles.section}>
