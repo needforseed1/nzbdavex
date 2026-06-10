@@ -26,6 +26,7 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const enabled = (config["watchtower.enabled"] ?? "false") === "true";
     const autoThroughput = (config["watchtower.auto-throughput"] ?? "false") === "true";
+    const verboseLogging = (config["watchtower.verbose-logging"] ?? "false") === "true";
     const profiles = parseProfiles(config["profiles.instances"]);
     const profileToken = config["watchtower.profile-token"] ?? "";
     const orphanToken = profileToken.length > 0 && !profiles.some(p => p.token === profileToken);
@@ -410,6 +411,29 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     onChange={e => set("watchtower.sync-interval-seconds", e.target.value)} />
                 <p className={styles.hint}>How often remote lists are re-fetched to catch additions/removals. Default 3600.</p>
             </Form.Group>
+
+            <div className={styles.section}>
+                <div className={styles.sectionTitle}>Diagnostics</div>
+                <div className={styles.sectionDescription}>
+                    Extra visibility into what the engine is doing, for troubleshooting. Off by default.
+                </div>
+            </div>
+
+            <Form.Group className={styles.section}>
+                <Form.Check
+                    type="switch"
+                    id="watchtower-verbose-logging"
+                    label="Verbose activity logging"
+                    checked={verboseLogging}
+                    onChange={e => set("watchtower.verbose-logging", String(e.target.checked))} />
+                <p className={styles.hint}>
+                    Writes Watchtower's per-item activity to the <b>Logs</b> page at the Information
+                    level: each resolve, why an item is left unavailable, dead releases it skips or
+                    finds, backup promotions, and a short heartbeat every cycle so you can confirm it's
+                    still running. Useful when an item gets stuck or stops updating. Only emits while
+                    Watchtower is enabled. Leave off for normal use — it's chatty.
+                </p>
+            </Form.Group>
         </div>
     );
 }
@@ -441,5 +465,6 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.keepfresh-base-seconds",
         "watchtower.keepfresh-max-seconds",
         "watchtower.unavailable-retry-seconds",
+        "watchtower.verbose-logging",
     ].some(k => config[k] !== newConfig[k]);
 }

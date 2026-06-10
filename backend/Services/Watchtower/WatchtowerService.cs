@@ -61,6 +61,7 @@ public class WatchtowerService(
                         await ExpandDueExpandersAsync(ct).ConfigureAwait(false);
                         await ResolveDueItemsAsync(ct).ConfigureAwait(false);
                         await KeepFreshDueItemsAsync(ct).ConfigureAwait(false);
+                        await LogCycleHeartbeatAsync(ct).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
@@ -92,9 +93,47 @@ public class WatchtowerService(
 
     private void OnConfigChanged(object? sender, ConfigManager.ConfigEventArgs e)
     {
+        if (e.ChangedConfig.ContainsKey("watchtower.verbose-logging"))
+            Log.Information("Watchtower: verbose activity logging {State}",
+                configManager.IsWatchtowerVerboseLoggingEnabled() ? "enabled" : "disabled");
+
         if (!e.ChangedConfig.ContainsKey("watchtower.enabled")) return;
         if (configManager.IsWatchtowerEnabled()) return;
         lock (_ctsLock) _disabledCts?.Cancel();
+    }
+
+    private void LogActivity(string template, params object?[] args)
+    {
+        if (configManager.IsWatchtowerVerboseLoggingEnabled())
+            Log.Information(template, args);
+        else
+            Log.Debug(template, args);
+    }
+
+    private void LogActivity(Exception exception, string template, params object?[] args)
+    {
+        if (configManager.IsWatchtowerVerboseLoggingEnabled())
+            Log.Information(exception, template, args);
+        else
+            Log.Debug(exception, template, args);
+    }
+
+    private async Task LogCycleHeartbeatAsync(CancellationToken ct)
+    {
+        if (!configManager.IsWatchtowerVerboseLoggingEnabled()) return;
+
+        await using var ctx = new DavDatabaseContext();
+        var grouped = await ctx.WantedItems
+            .GroupBy(w => w.State)
+            .Select(g => new { State = g.Key, Count = g.Count() })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var counts = grouped.ToDictionary(x => x.State, x => x.Count);
+        int Get(string state) => counts.GetValueOrDefault(state);
+
+        Log.Information(
+            "Watchtower: cycle complete — {Ready} ready, {Scouting} scouting, {Unavailable} unavailable, {Series} series, {Parked} parked",
+            Get(WantedItem.StateReady), Get(WantedItem.StateScouting), Get(WantedItem.StateUnavailable),
+            Get(WantedItem.StateExpander), Get(WantedItem.StateParked));
     }
 
     private async Task SyncDueSourcesAsync(CancellationToken ct)
@@ -238,7 +277,7 @@ public class WatchtowerService(
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
-                    Log.Debug(e, "Watchtower: expand failed for {Key}", expander.Key);
+                    LogActivity(e, "Watchtower: expand failed for {Key}", expander.Key);
                 }
             }
             expander.NextCheckAtUnix = now + interval;
@@ -552,7 +591,7 @@ public class WatchtowerService(
         var profileToken = ResolveProfileToken();
         if (profileToken is null)
         {
-            Log.Debug("Watchtower: no search profile configured; skipping resolve");
+            LogActivity("Watchtower: no search profile configured; skipping resolve");
             return;
         }
 
@@ -591,7 +630,7 @@ public class WatchtowerService(
                 if (ct.IsCancellationRequested) break;
                 if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, ct).ConfigureAwait(false))
                 {
-                    Log.Debug("Watchtower: all indexers out of headroom; pausing resolve until caps reset");
+                    LogActivity("Watchtower: all indexers out of headroom; pausing resolve until caps reset");
                     return;
                 }
                 await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
@@ -643,12 +682,19 @@ public class WatchtowerService(
         byte[]? winnerBytes = null;
         string? responderHost = null;
         var grabs = 0;
+        var knownDead = 0;
+        var verifiedDead = 0;
+        var timedOut = 0;
 
         foreach (var c in ranked)
         {
             if (shortlist.Count >= depth || grabs >= grabCap || ct.IsCancellationRequested) break;
             if (negativeCache.IsFailed(c.NzbUrl)
-                || wardenStore.IsDeadAnywhere(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate))) continue;
+                || wardenStore.IsDeadAnywhere(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)))
+            {
+                knownDead++;
+                continue;
+            }
 
             var bytes = await FetchNzbBytesAsync(c, ct).ConfigureAwait(false);
             grabs++;
@@ -660,11 +706,16 @@ public class WatchtowerService(
 
             if (outcome.Verdict == PlaybackFastVerifier.Verdict.Dead)
             {
+                verifiedDead++;
                 negativeCache.MarkFailed(c.NzbUrl);
                 wardenStore.MarkDead(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate));
                 continue;
             }
-            if (outcome.Verdict == PlaybackFastVerifier.Verdict.Timeout) continue;
+            if (outcome.Verdict == PlaybackFastVerifier.Verdict.Timeout)
+            {
+                timedOut++;
+                continue;
+            }
 
             var ptr = new WtPointer
             {
@@ -703,6 +754,10 @@ public class WatchtowerService(
                 PlaybackFastVerifier.Verdict.Available, responderHost);
             Log.Information("Watchtower: ready {Key} -> {Title} ({Size} bytes, {Count} pointer(s))",
                 item.Key, shortlist[0].Title, shortlist[0].Size, shortlist.Count);
+            if (knownDead + verifiedDead + timedOut > 0)
+                LogActivity(
+                    "Watchtower: {Key} readied after skipping {KnownDead} known-dead, {VerifiedDead} verified-dead, {TimedOut} timed-out candidate(s)",
+                    item.Key, knownDead, verifiedDead, timedOut);
         }
         else
         {
@@ -714,7 +769,9 @@ public class WatchtowerService(
             item.FailReason = candidates.Count == 0 ? "No releases found" : "No healthy release found";
             item.NextCheckAtUnix = now + configManager.GetWatchtowerUnavailableRetrySeconds();
             item.UpdatedAtUnix = now;
-            Log.Debug("Watchtower: unavailable {Key} ({Reason})", item.Key, item.FailReason);
+            LogActivity(
+                "Watchtower: unavailable {Key} ({Reason}) — {Candidates} candidate(s), {KnownDead} known-dead, {VerifiedDead} verified-dead, {TimedOut} timed-out",
+                item.Key, item.FailReason, candidates.Count, knownDead, verifiedDead, timedOut);
         }
     }
 
@@ -839,6 +896,8 @@ public class WatchtowerService(
             return;
         }
 
+        LogActivity("Watchtower: re-check found winner dead for {Key} ({Title}); promoting backup",
+            item.Key, shortlist[0].Title);
         negativeCache.MarkFailed(shortlist[0].NzbUrl);
         wardenStore.MarkDead(WardenFingerprint.Compute(shortlist[0].Size, shortlist[0].Poster, shortlist[0].UsenetDate));
         shortlist.RemoveAt(0);
@@ -888,7 +947,7 @@ public class WatchtowerService(
         item.WinnerNzb = null;
         item.NextCheckAtUnix = now;
         item.UpdatedAtUnix = now;
-        Log.Debug("Watchtower: shortlist exhausted for {Key}; re-resolving", item.Key);
+        LogActivity("Watchtower: shortlist exhausted for {Key}; re-resolving", item.Key);
     }
 
     private async Task<byte[]?> FetchNzbBytesAsync(NzbResolutionCache.Candidate c, CancellationToken ct)
@@ -928,7 +987,7 @@ public class WatchtowerService(
         }
         catch (Exception e)
         {
-            Log.Debug(e, "Watchtower: NZB fetch failed for {Url}", c.NzbUrl);
+            LogActivity(e, "Watchtower: NZB fetch failed for {Url}", c.NzbUrl);
             return null;
         }
     }

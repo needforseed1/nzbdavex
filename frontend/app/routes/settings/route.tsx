@@ -103,6 +103,7 @@ const defaultConfig = {
     "watchtower.keepfresh-base-seconds": "21600",
     "watchtower.keepfresh-max-seconds": "604800",
     "watchtower.unavailable-retry-seconds": "21600",
+    "watchtower.verbose-logging": "false",
     "warden.hide-dead": "true",
     "warden.quorum": "2",
 }

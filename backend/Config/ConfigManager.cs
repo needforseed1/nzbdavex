@@ -411,6 +411,12 @@ public class ConfigManager
         return v != null ? bool.Parse(v) : false;
     }
 
+    public bool IsWatchtowerVerboseLoggingEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.verbose-logging"));
+        return v != null ? bool.Parse(v) : false;
+    }
+
     public string GetWatchtowerProfileToken()
     {
         return StringUtil.EmptyToNull(GetConfigValue("watchtower.profile-token")) ?? "";
