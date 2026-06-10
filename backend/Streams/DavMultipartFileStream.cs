@@ -3,6 +3,7 @@ using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
+using Serilog;
 
 namespace NzbWebDAV.Streams;
 
@@ -17,11 +18,6 @@ public class DavMultipartFileStream : Stream
     private long _position;
     private CombinedStream? _innerStream;
     private bool _disposed;
-    // Kicked off in the constructor; first read awaits it so the player can't
-    // win the race and seek into still-pending volumes. Shared by every read
-    // on this stream, and the resolver coalesces concurrent calls across
-    // streams via its in-flight cache plus persisted Meta.
-    private readonly Task? _preWarmTask;
 
     public DavMultipartFileStream(
         DavMultipartFile mpf,
@@ -39,11 +35,37 @@ public class DavMultipartFileStream : Stream
             && _mpf.Metadata.IsLazy
             && (_mpf.Metadata.PendingParts?.Length ?? 0) > 0)
         {
-            // CancellationToken.None on the shared work — one reader bailing
-            // mustn't kill resolution for everyone else waiting on it. The
-            // first read awaits this with its own CT via WaitAsync.
-            _preWarmTask = _resolver
-                .EnsureResolvedThroughAsync(_mpf, long.MaxValue, CancellationToken.None);
+            // Fire-and-forget: resolve every trailing volume's header in the
+            // BACKGROUND so reads never block on it. The first volume is already
+            // resolved at import, so byte 0 streams immediately while the rest
+            // fill in behind the player at Low priority (CancellationToken.None
+            // carries no High-priority context, so these fetches always yield to
+            // live playback). A seek that outruns this pass is covered on demand
+            // by EnsureCoveringAsync — the resolver coalesces the two by segment
+            // id so a volume is never fetched twice, and persists the result so
+            // the next open of this file resolves nothing at all.
+            _ = PreWarmAsync();
+        }
+    }
+
+    // Background resolution of every trailing volume. Self-observing: a missing
+    // or unreachable trailing volume must neither surface as an unobserved task
+    // fault nor break playback — byte 0 and every volume up to the failure still
+    // stream fine. If the player actually reaches the bad volume, the on-demand
+    // read path raises the error there, in context.
+    private async Task PreWarmAsync()
+    {
+        try
+        {
+            await _resolver!
+                .EnsureResolvedThroughAsync(_mpf, long.MaxValue, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e,
+                "Background RAR pre-warm for {Id} did not finish; trailing volumes will resolve on demand.",
+                _mpf.Id);
         }
     }
 
@@ -133,13 +155,13 @@ public class DavMultipartFileStream : Stream
 
     private async Task<CombinedStream> GetFileStreamAsync(long rangeStart, CancellationToken ct)
     {
-        // Wait for the constructor's pre-warm to finish before opening the
-        // inner stream. After this returns, every FilePart is resolved and
-        // persisted, so seeks land in O(1) instead of forcing per-volume
-        // resolution behind the player's Range requests.
-        if (_preWarmTask is not null && !_preWarmTask.IsCompleted)
-            await _preWarmTask.WaitAsync(ct).ConfigureAwait(false);
-
+        // Resolve only enough trailing volumes to cover the requested offset —
+        // no waiting on the background pre-warm. For byte 0 that's nothing (the
+        // first volume is resolved at import), so playback starts immediately.
+        // A seek into a not-yet-resolved volume resolves the gap up to it here,
+        // sharing in-flight work with the pre-warm via the resolver, so the
+        // player only ever waits for volumes up to where it actually jumped —
+        // never the whole archive.
         var meta = await EnsureCoveringAsync(rangeStart, ct).ConfigureAwait(false);
 
         if (rangeStart == 0)
