@@ -440,7 +440,7 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                         </div>
                     </div>
                     <div className={styles.headerActions}>
-                        <Button variant="primary" size="sm" onClick={() => setShowAddRemote(true)}>Add remote list</Button>
+                        <Button variant="primary" size="sm" onClick={() => setShowAddRemote(true)}>Add remote backup</Button>
                         <Button variant="outline-secondary" size="sm" disabled={busy !== null}
                             onClick={() => setShowBulk(true)}>
                             Bundle
@@ -596,11 +596,11 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                 style={{ display: "none" }} onChange={onFilePicked} />
 
             <Modal show={showAddRemote} onHide={() => setShowAddRemote(false)} centered>
-                <Modal.Header closeButton><Modal.Title>Add a remote list</Modal.Title></Modal.Header>
+                <Modal.Header closeButton><Modal.Title>Add a remote backup</Modal.Title></Modal.Header>
                 <Modal.Body>
                     <Form.Group className={styles.modalGroup}>
-                        <Form.Label>List URL</Form.Label>
-                        <Form.Control type="url" placeholder="https://raw.githubusercontent.com/…/warden.ndjson.gz"
+                        <Form.Label>Backup URL</Form.Label>
+                        <Form.Control type="url" placeholder="https://raw.githubusercontent.com/…/backup.ndjson.gz"
                             value={remoteUrl} onChange={e => setRemoteUrl(e.target.value)} />
                         <Form.Text muted>A raw .ndjson or .ndjson.gz file. GitHub raw URLs work great.</Form.Text>
                     </Form.Group>
