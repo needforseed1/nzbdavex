@@ -97,6 +97,11 @@ const defaultConfig = {
     "watchtower.season-bundle-fallback-scope": "latest-season",
     "watchtower.season-bundle-fallback-recent-count": "2",
     "watchtower.season-bundle-fallback-max-episodes": "50",
+    "watchtower.min-grabs": "0",
+    "watchtower.verify-sample-count": "3",
+    "watchtower.keepfresh-base-seconds": "21600",
+    "watchtower.keepfresh-max-seconds": "604800",
+    "watchtower.unavailable-retry-seconds": "21600",
     "warden.hide-dead": "true",
     "warden.quorum": "2",
 }

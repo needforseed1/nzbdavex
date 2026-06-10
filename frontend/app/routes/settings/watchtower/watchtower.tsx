@@ -273,6 +273,18 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
             </Form.Group>
 
             <Form.Group className={styles.section}>
+                <Form.Label>Minimum grabs</Form.Label>
+                <Form.Control className={styles.input} type="number" min={0}
+                    disabled={!enabled}
+                    value={config["watchtower.min-grabs"] ?? "0"}
+                    onChange={e => set("watchtower.min-grabs", e.target.value)} />
+                <p className={styles.hint}>
+                    Only consider releases with at least this many grabs (recorded downloads) on the
+                    indexer. Higher = more proven releases but fewer candidates. 0 = no minimum. Default 0.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
                 <Form.Label>Active warm-set cap</Form.Label>
                 <Form.Control className={styles.input} type="number" min={1} max={100000}
                     disabled={!enabled}
@@ -317,6 +329,62 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
             </Form.Group>
 
             <Form.Group className={styles.section}>
+                <Form.Label>Verify sample count</Form.Label>
+                <Form.Control className={styles.input} type="number" min={1} max={20}
+                    disabled={!enabled}
+                    value={config["watchtower.verify-sample-count"] ?? "3"}
+                    onChange={e => set("watchtower.verify-sample-count", e.target.value)} />
+                <p className={styles.hint}>
+                    How many segments are sampled to confirm a release is alive on Usenet, on both the
+                    first resolve and every re-check. Higher = more thorough but slower. Default 3.
+                </p>
+            </Form.Group>
+
+            <div className={styles.section}>
+                <div className={styles.sectionTitle}>Re-check &amp; retry timing</div>
+                <div className={styles.sectionDescription}>
+                    How often the engine re-verifies items over time. Re-checks are Usenet-only — they
+                    confirm a release is still downloadable and do not query your indexers or spend the
+                    daily resolve budget.
+                </div>
+            </div>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Re-check interval (seconds)</Form.Label>
+                <Form.Control className={styles.input} type="number" min={300} max={604800}
+                    disabled={!enabled}
+                    value={config["watchtower.keepfresh-base-seconds"] ?? "21600"}
+                    onChange={e => set("watchtower.keepfresh-base-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    How often a ready item is re-verified on Usenet to confirm it's still downloadable.
+                    Items that stay healthy gradually stretch toward the max below. Default 21600 (6 hours).
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Max re-check interval (seconds)</Form.Label>
+                <Form.Control className={styles.input} type="number" min={600} max={2592000}
+                    disabled={!enabled}
+                    value={config["watchtower.keepfresh-max-seconds"] ?? "604800"}
+                    onChange={e => set("watchtower.keepfresh-max-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    The longest a repeatedly-healthy item waits between re-checks. Default 604800 (7 days).
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Dead-item retry interval (seconds)</Form.Label>
+                <Form.Control className={styles.input} type="number" min={600} max={604800}
+                    disabled={!enabled}
+                    value={config["watchtower.unavailable-retry-seconds"] ?? "21600"}
+                    onChange={e => set("watchtower.unavailable-retry-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    How long an unavailable ("dead") item waits before it's searched again. Lower retries
+                    more often but spends more of your daily resolve budget. Default 21600 (6 hours).
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
                 <Form.Label>List sync interval (seconds)</Form.Label>
                 <Form.Control className={styles.input} type="number" min={60} max={86400}
                     disabled={!enabled}
@@ -349,5 +417,10 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.season-bundle-fallback-scope",
         "watchtower.season-bundle-fallback-recent-count",
         "watchtower.season-bundle-fallback-max-episodes",
+        "watchtower.min-grabs",
+        "watchtower.verify-sample-count",
+        "watchtower.keepfresh-base-seconds",
+        "watchtower.keepfresh-max-seconds",
+        "watchtower.unavailable-retry-seconds",
     ].some(k => config[k] !== newConfig[k]);
 }
