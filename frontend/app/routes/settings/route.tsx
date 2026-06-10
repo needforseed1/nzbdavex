@@ -87,6 +87,7 @@ const defaultConfig = {
     "watchtower.grab-cap-per-resolve": "3",
     "watchtower.active-set-cap": "100",
     "watchtower.daily-resolve-budget": "60",
+    "watchtower.auto-throughput": "false",
     "watchtower.sync-interval-seconds": "3600",
     "watchtower.series-scope": "latest-season",
     "watchtower.season-bundles": "true",

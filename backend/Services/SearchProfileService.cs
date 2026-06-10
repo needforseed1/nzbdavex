@@ -39,6 +39,33 @@ public class SearchProfileService(
         return profile.EnabledAdapters.Contains(adapter, StringComparer.OrdinalIgnoreCase);
     }
 
+    public async Task<bool> HasResolveHeadroomAsync(string profileToken, CancellationToken ct)
+    {
+        var profile = GetProfile(profileToken);
+        if (profile is null) return false;
+
+        var indexerConfig = configManager.GetIndexerConfig();
+        var allIndexers = indexerConfig.Indexers.Where(x => x.Enabled).ToList();
+        var indexers = profile.IndexerNames.Count == 0
+            ? allIndexers
+            : allIndexers.Where(x => profile.IndexerNames.Contains(x.Name)).ToList();
+        if (indexers.Count == 0) return false;
+
+        foreach (var x in indexers)
+        {
+            var search = await hitTracker
+                .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                .ConfigureAwait(false);
+            if (search is { Allowed: false }) continue;
+            var download = await hitTracker
+                .CheckAsync(x.Name, IndexerApiHit.HitType.Download, x.DownloadLimit, x.HitLimitResetTime, ct)
+                .ConfigureAwait(false);
+            if (download is { Allowed: false }) continue;
+            return true;
+        }
+        return false;
+    }
+
     public async Task<IReadOnlyDictionary<string, string>?> BuildImdbQueryAsync(
         string type, string id, CancellationToken ct)
     {

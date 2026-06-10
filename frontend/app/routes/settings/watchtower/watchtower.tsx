@@ -25,6 +25,7 @@ type WatchtowerSettingsProps = {
 export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const enabled = (config["watchtower.enabled"] ?? "false") === "true";
+    const autoThroughput = (config["watchtower.auto-throughput"] ?? "false") === "true";
     const profiles = parseProfiles(config["profiles.instances"]);
     const profileToken = config["watchtower.profile-token"] ?? "";
     const orphanToken = profileToken.length > 0 && !profiles.some(p => p.token === profileToken);
@@ -297,14 +298,31 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
             </Form.Group>
 
             <Form.Group className={styles.section}>
+                <Form.Check
+                    type="switch"
+                    id="watchtower-auto-throughput"
+                    label="Auto throughput (match indexer limits)"
+                    disabled={!enabled}
+                    checked={autoThroughput}
+                    onChange={e => set("watchtower.auto-throughput", String(e.target.checked))} />
+                <p className={styles.hint}>
+                    Resolve as fast as your indexers allow instead of pacing with the daily budget below.
+                    Every search and grab still obeys each indexer's requests-per-minute and daily caps
+                    from <b>Indexer settings</b>, and the engine pauses automatically when an indexer is
+                    tapped out. Best for clearing a large backlog. Default off.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
                 <Form.Label>Daily resolve budget</Form.Label>
                 <Form.Control className={styles.input} type="number" min={0}
-                    disabled={!enabled}
+                    disabled={!enabled || autoThroughput}
                     value={config["watchtower.daily-resolve-budget"] ?? "60"}
                     onChange={e => set("watchtower.daily-resolve-budget", e.target.value)} />
                 <p className={styles.hint}>
-                    Soft cap on new resolves per day (0 = unlimited; your per-indexer caps always apply).
-                    Drips the backlog instead of hammering indexers. Default 60.
+                    {autoThroughput
+                        ? <>Ignored while <b>Auto throughput</b> is on — your indexer limits set the pace.</>
+                        : "Soft cap on new resolves per day (0 = unlimited; your per-indexer caps always apply). Drips the backlog instead of hammering indexers. Default 60."}
                 </p>
             </Form.Group>
 
@@ -407,6 +425,7 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.grab-cap-per-resolve",
         "watchtower.active-set-cap",
         "watchtower.daily-resolve-budget",
+        "watchtower.auto-throughput",
         "watchtower.sync-interval-seconds",
         "watchtower.series-scope",
         "watchtower.season-bundles",

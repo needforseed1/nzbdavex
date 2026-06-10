@@ -405,6 +405,12 @@ public class ConfigManager
         return v != null ? bool.Parse(v) : false;
     }
 
+    public bool IsWatchtowerAutoThroughput()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.auto-throughput"));
+        return v != null ? bool.Parse(v) : false;
+    }
+
     public string GetWatchtowerProfileToken()
     {
         return StringUtil.EmptyToNull(GetConfigValue("watchtower.profile-token")) ?? "";

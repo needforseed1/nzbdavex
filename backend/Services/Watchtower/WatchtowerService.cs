@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Config;
@@ -24,6 +25,8 @@ public class WatchtowerService(
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(15);
     private const int ResolvesPerTick = 3;
+    private const int AutoResolveBatch = 25;
+    private static readonly TimeSpan AutoStageBudget = TimeSpan.FromSeconds(120);
     private const int KeepFreshPerTick = 5;
     private const int ExpandsPerTick = 5;
     private const long SeasonBundleGraceSeconds = 14L * 86400L;
@@ -542,10 +545,9 @@ public class WatchtowerService(
 
     private async Task ResolveDueItemsAsync(CancellationToken ct)
     {
+        var auto = configManager.IsWatchtowerAutoThroughput();
         var dailyBudget = configManager.GetWatchtowerDailyResolveBudget();
         RollDailyBudget();
-        var budgetRoom = dailyBudget == 0 ? int.MaxValue : dailyBudget - _resolvesToday;
-        if (budgetRoom <= 0) return;
 
         var profileToken = ResolveProfileToken();
         if (profileToken is null)
@@ -554,32 +556,50 @@ public class WatchtowerService(
             return;
         }
 
-        var now = Now();
-        await using var ctx = new DavDatabaseContext();
-
-        var cap = configManager.GetWatchtowerActiveSetCap();
-        var activeReady = await ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateReady, ct).ConfigureAwait(false);
-        var capRoom = cap - activeReady;
-        if (capRoom <= 0) return;
-
-        var take = Math.Min(ResolvesPerTick, Math.Min(capRoom, budgetRoom));
-        if (take <= 0) return;
-
-        var due = await ctx.WantedItems
-            .Where(w => w.State == WantedItem.StateScouting
-                        || (w.State == WantedItem.StateUnavailable
-                            && w.NextCheckAtUnix != null && w.NextCheckAtUnix <= now))
-            .OrderByDescending(w => w.CreatedAtUnix)
-            .Take(take)
-            .ToListAsync(ct).ConfigureAwait(false);
-
-        foreach (var item in due)
+        var stageWatch = Stopwatch.StartNew();
+        do
         {
-            if (ct.IsCancellationRequested) break;
-            await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
-            _resolvesToday++;
-            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested) return;
+
+            var budgetRoom = auto || dailyBudget == 0 ? int.MaxValue : dailyBudget - _resolvesToday;
+            if (budgetRoom <= 0) return;
+
+            var now = Now();
+            await using var ctx = new DavDatabaseContext();
+
+            var cap = configManager.GetWatchtowerActiveSetCap();
+            var activeReady = await ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateReady, ct).ConfigureAwait(false);
+            var capRoom = cap - activeReady;
+            if (capRoom <= 0) return;
+
+            var batch = auto ? AutoResolveBatch : ResolvesPerTick;
+            var take = Math.Min(batch, Math.Min(capRoom, budgetRoom));
+            if (take <= 0) return;
+
+            var due = await ctx.WantedItems
+                .Where(w => w.State == WantedItem.StateScouting
+                            || (w.State == WantedItem.StateUnavailable
+                                && w.NextCheckAtUnix != null && w.NextCheckAtUnix <= now))
+                .OrderByDescending(w => w.CreatedAtUnix)
+                .Take(take)
+                .ToListAsync(ct).ConfigureAwait(false);
+
+            if (due.Count == 0) return;
+
+            foreach (var item in due)
+            {
+                if (ct.IsCancellationRequested) break;
+                if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, ct).ConfigureAwait(false))
+                {
+                    Log.Debug("Watchtower: all indexers out of headroom; pausing resolve until caps reset");
+                    return;
+                }
+                await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
+                _resolvesToday++;
+                await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
         }
+        while (auto && stageWatch.Elapsed < AutoStageBudget);
     }
 
     private async Task ResolveOneAsync(DavDatabaseContext ctx, string profileToken, WantedItem item, CancellationToken ct)
