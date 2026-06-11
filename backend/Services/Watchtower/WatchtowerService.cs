@@ -163,6 +163,7 @@ public class WatchtowerService(
             }
             source.LastSyncedAtUnix = now;
             await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            DetachWantedItems(ctx);
         }
     }
 
@@ -178,10 +179,12 @@ public class WatchtowerService(
             yielded[$"{r.Type}:{r.ContentId}"] = r;
         }
 
+        var existing = await LoadRowsByKeysAsync(ctx, yielded.Keys, ct).ConfigureAwait(false);
+        var existingByKey = existing.ToDictionary(w => w.Key);
+
         foreach (var (key, r) in yielded)
         {
-            var item = await ctx.WantedItems.FirstOrDefaultAsync(w => w.Key == key, ct).ConfigureAwait(false);
-            if (item is null)
+            if (!existingByKey.TryGetValue(key, out var row))
             {
                 ctx.WantedItems.Add(new WantedItem
                 {
@@ -197,48 +200,102 @@ public class WatchtowerService(
                     UpdatedAtUnix = now,
                     NextCheckAtUnix = now,
                 });
+                continue;
             }
-            else
+
+            var prov = WtJson.ReadStrings(row.Provenance);
+            if (!prov.Contains(srcId))
             {
-                var prov = WtJson.ReadStrings(item.Provenance);
-                if (!prov.Contains(srcId))
-                {
-                    prov.Add(srcId);
-                    item.Provenance = WtJson.WriteStrings(prov);
-                    item.UpdatedAtUnix = now;
-                }
-                if (string.IsNullOrWhiteSpace(item.Title) && !string.IsNullOrWhiteSpace(r.Title))
-                    item.Title = r.Title!;
-                if (item.State != WantedItem.StateExpander && WantedItem.IsBareSeries(item.Type, item.ContentId))
-                {
-                    item.State = WantedItem.StateExpander;
-                    item.Shortlist = "[]";
-                    item.WinnerNzb = null;
-                    item.FailReason = null;
-                    item.NextCheckAtUnix = now;
-                    item.UpdatedAtUnix = now;
-                }
+                prov.Add(srcId);
+                await ctx.WantedItems.Where(w => w.Id == row.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.Provenance, WtJson.WriteStrings(prov))
+                        .SetProperty(w => w.UpdatedAtUnix, now), ct).ConfigureAwait(false);
             }
+            if (string.IsNullOrWhiteSpace(row.Title) && !string.IsNullOrWhiteSpace(r.Title))
+                await ctx.WantedItems.Where(w => w.Id == row.Id)
+                    .ExecuteUpdateAsync(s => s.SetProperty(w => w.Title, r.Title!), ct).ConfigureAwait(false);
+            if (row.State != WantedItem.StateExpander && WantedItem.IsBareSeries(row.Type, row.ContentId))
+                await ctx.WantedItems.Where(w => w.Id == row.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.State, WantedItem.StateExpander)
+                        .SetProperty(w => w.Shortlist, "[]")
+                        .SetProperty(w => w.WinnerNzb, (byte[]?)null)
+                        .SetProperty(w => w.FailReason, (string?)null)
+                        .SetProperty(w => w.NextCheckAtUnix, (long?)now)
+                        .SetProperty(w => w.UpdatedAtUnix, now), ct).ConfigureAwait(false);
         }
 
-        var previouslyClaimed = await ctx.WantedItems
-            .Where(w => w.Provenance.Contains(srcId))
-            .ToListAsync(ct).ConfigureAwait(false);
-        foreach (var item in previouslyClaimed)
+        async Task<List<ClaimRow>> LoadClaimedAsync() =>
+            await ctx.WantedItems.AsNoTracking()
+                .Where(w => w.Provenance.Contains(srcId))
+                .Select(w => new ClaimRow(w.Id, w.Key, w.State, w.Provenance))
+                .ToListAsync(ct).ConfigureAwait(false);
+
+        var claimed = await LoadClaimedAsync().ConfigureAwait(false);
+        var cascaded = false;
+        foreach (var c in claimed)
         {
-            if (yielded.ContainsKey(item.Key)) continue;
-            var prov = WtJson.ReadStrings(item.Provenance);
+            if (yielded.ContainsKey(c.Key) || c.State != WantedItem.StateExpander) continue;
+            var prov = WtJson.ReadStrings(c.Provenance);
+            prov.Remove(srcId);
+            if (prov.Count != 0) continue;
+            await WtReconcile.RemoveWithChildrenByRefAsync(ctx, c.Id, c.Key, c.State, now, ct).ConfigureAwait(false);
+            cascaded = true;
+        }
+
+        var staleIds = new List<Guid>();
+        foreach (var c in cascaded ? await LoadClaimedAsync().ConfigureAwait(false) : claimed)
+        {
+            if (yielded.ContainsKey(c.Key)) continue;
+            var prov = WtJson.ReadStrings(c.Provenance);
             prov.Remove(srcId);
             if (prov.Count == 0)
             {
-                await WtReconcile.RemoveWithChildrenAsync(ctx, item, now, ct).ConfigureAwait(false);
+                if (c.State == WantedItem.StateExpander)
+                    await WtReconcile.RemoveWithChildrenByRefAsync(ctx, c.Id, c.Key, c.State, now, ct).ConfigureAwait(false);
+                else
+                    staleIds.Add(c.Id);
             }
             else
             {
-                item.Provenance = WtJson.WriteStrings(prov);
-                item.UpdatedAtUnix = now;
+                await ctx.WantedItems.Where(w => w.Id == c.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.Provenance, WtJson.WriteStrings(prov))
+                        .SetProperty(w => w.UpdatedAtUnix, now), ct).ConfigureAwait(false);
             }
         }
+        await WtReconcile.DeleteByIdsAsync(ctx, staleIds, ct).ConfigureAwait(false);
+    }
+
+    private sealed record ClaimRow(Guid Id, string Key, string State, string Provenance);
+
+    private sealed record WantedRow(
+        Guid Id, string Key, string Type, string ContentId, string Title, string State, string Provenance);
+
+    private static async Task<List<WantedRow>> LoadRowsByKeysAsync(
+        DavDatabaseContext ctx, IReadOnlyCollection<string> keys, CancellationToken ct)
+    {
+        var result = new List<WantedRow>(keys.Count);
+        if (keys.Count == 0) return result;
+        var all = keys as string[] ?? keys.ToArray();
+        const int chunk = 400;
+        for (var i = 0; i < all.Length; i += chunk)
+        {
+            var slice = all.Skip(i).Take(chunk).ToArray();
+            var rows = await ctx.WantedItems.AsNoTracking()
+                .Where(w => slice.Contains(w.Key))
+                .Select(w => new WantedRow(w.Id, w.Key, w.Type, w.ContentId, w.Title, w.State, w.Provenance))
+                .ToListAsync(ct).ConfigureAwait(false);
+            result.AddRange(rows);
+        }
+        return result;
+    }
+
+    private static void DetachWantedItems(DavDatabaseContext ctx)
+    {
+        foreach (var entry in ctx.ChangeTracker.Entries<WantedItem>().ToList())
+            entry.State = EntityState.Detached;
     }
 
     private async Task ExpandDueExpandersAsync(CancellationToken ct)
@@ -305,10 +362,7 @@ public class WatchtowerService(
         var desired = await BuildDesiredAsync(ctx, expander, scopes, now, ct).ConfigureAwait(false);
         if (desired is null) return;
 
-        var desiredKeys = desired.Keys.ToList();
-        var existing = desiredKeys.Count == 0
-            ? new List<WantedItem>()
-            : await ctx.WantedItems.Where(w => desiredKeys.Contains(w.Key)).ToListAsync(ct).ConfigureAwait(false);
+        var existing = await LoadRowsByKeysAsync(ctx, desired.Keys, ct).ConfigureAwait(false);
         var existingByKey = existing.ToDictionary(w => w.Key);
 
         foreach (var (childKey, row) in desired)
@@ -319,8 +373,10 @@ public class WatchtowerService(
                 if (!prov.Contains(tag))
                 {
                     prov.Add(tag);
-                    child.Provenance = WtJson.WriteStrings(prov);
-                    child.UpdatedAtUnix = now;
+                    await ctx.WantedItems.Where(w => w.Id == child.Id)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(w => w.Provenance, WtJson.WriteStrings(prov))
+                            .SetProperty(w => w.UpdatedAtUnix, now), ct).ConfigureAwait(false);
                 }
             }
             else
@@ -342,9 +398,11 @@ public class WatchtowerService(
             }
         }
 
-        var tagged = await ctx.WantedItems
+        var tagged = await ctx.WantedItems.AsNoTracking()
             .Where(w => w.Provenance.Contains(tag))
+            .Select(w => new { w.Id, w.Key, w.Provenance })
             .ToListAsync(ct).ConfigureAwait(false);
+        var orphanIds = new List<Guid>();
         foreach (var child in tagged)
         {
             var prov = WtJson.ReadStrings(child.Provenance);
@@ -352,15 +410,14 @@ public class WatchtowerService(
             if (desired.ContainsKey(child.Key)) continue;
             prov.Remove(tag);
             if (prov.Count == 0)
-            {
-                ctx.WantedItems.Remove(child);
-            }
+                orphanIds.Add(child.Id);
             else
-            {
-                child.Provenance = WtJson.WriteStrings(prov);
-                child.UpdatedAtUnix = now;
-            }
+                await ctx.WantedItems.Where(w => w.Id == child.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.Provenance, WtJson.WriteStrings(prov))
+                        .SetProperty(w => w.UpdatedAtUnix, now), ct).ConfigureAwait(false);
         }
+        await WtReconcile.DeleteByIdsAsync(ctx, orphanIds, ct).ConfigureAwait(false);
 
         Log.Information("Watchtower: expanded {Key} -> {Count} row(s) (scope {Scope})",
             expander.Key, desired.Count, string.Join("+", scopes));
