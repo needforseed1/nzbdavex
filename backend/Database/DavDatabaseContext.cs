@@ -18,7 +18,7 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
 
     private static readonly Lazy<DbContextOptions<DavDatabaseContext>> Options = new(() =>
         new DbContextOptionsBuilder<DavDatabaseContext>()
-            .UseSqlite($"Data Source={DatabaseFilePath}")
+            .UseSqlite($"Data Source={DatabaseFilePath};Pooling=False")
             .AddInterceptors(new SqliteForeignKeyEnabler())
             .ReplaceService<IMigrationsSqlGenerator, SqliteMigrationsSqlGenerator<SqliteMigrationsSqlGenerator>>()
             .Options
