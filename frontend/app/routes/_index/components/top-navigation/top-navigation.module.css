@@ -26,16 +26,16 @@
 
 .title {
     color: var(--text-primary);
-    font-size: 17px;
+    font-size: 20px;
     font-weight: 600;
     letter-spacing: -0.02em;
 }
 
 .logo {
-    width: 28px;
-    height: 28px;
+    width: 34px;
+    height: 34px;
     margin: auto;
-    border-radius: 7px;
+    border-radius: 8px;
 }
 
 /* mobile */
