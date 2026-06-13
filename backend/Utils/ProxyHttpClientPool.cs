@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 
 namespace NzbWebDAV.Utils;
 
@@ -17,7 +18,13 @@ public static class ProxyHttpClientPool
         var key = Normalize(proxyUrl) ?? "";
         return Clients.GetOrAdd(key, k =>
         {
-            var handler = new HttpClientHandler();
+            var handler = new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
+                ConnectTimeout = TimeSpan.FromSeconds(15),
+            };
+
             if (k.Length > 0 && Uri.TryCreate(k, UriKind.Absolute, out var uri))
             {
                 handler.Proxy = new WebProxy(uri) { BypassProxyOnLocal = false };
@@ -26,9 +33,39 @@ public static class ProxyHttpClientPool
             else
             {
                 handler.UseProxy = false;
+                handler.ConnectCallback = KeepAliveConnectAsync;
             }
+
             return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
         });
+    }
+
+    private static async ValueTask<Stream> KeepAliveConnectAsync(
+        SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        TrySetKeepAliveTuning(socket);
+        try
+        {
+            await socket.ConnectAsync(context.DnsEndPoint, ct).ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private static void TrySetKeepAliveTuning(Socket socket)
+    {
+        try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30); }
+        catch { }
+        try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5); }
+        catch { }
+        try { socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3); }
+        catch { }
     }
 
     private static string? Normalize(string? raw)

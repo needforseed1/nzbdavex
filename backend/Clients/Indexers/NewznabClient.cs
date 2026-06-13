@@ -63,9 +63,19 @@ public class NewznabClient(
 
     private async Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.UserAgent.ParseAdd(userAgent);
-        return await _http.SendAsync(req, ct).ConfigureAwait(false);
+        for (var attempt = 0; ; attempt++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.UserAgent.ParseAdd(userAgent);
+            try
+            {
+                return await _http.SendAsync(req, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (attempt == 0 && !ct.IsCancellationRequested
+                                      && e is HttpRequestException or IOException)
+            {
+            }
+        }
     }
 
     public Task<bool> TestAsync(CancellationToken ct = default)
