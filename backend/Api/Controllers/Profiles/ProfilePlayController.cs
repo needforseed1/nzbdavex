@@ -39,7 +39,8 @@ public class ProfilePlayController(
     VariantResolver variantResolver,
     WatchtowerStore watchtowerStore,
     WardenStore wardenStore,
-    PlayResolutionCoalescer playCoalescer
+    PlayResolutionCoalescer playCoalescer,
+    PreferredOrderStore preferredOrderStore
 ) : ControllerBase
 {
     private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(8);
@@ -224,7 +225,8 @@ public class ProfilePlayController(
         // Batch retry loop: try up to maxCandidates candidates in parallel per batch;
         // if all in a batch fail, advance to the next batch — until a winner, budget elapses,
         // total attempts (maxAttempts) are exhausted, or we run out of cached candidates.
-        var fallbackQueue = BuildFallbackQueue(entry);
+        var preferredOrder = preferredOrderStore.GetOrder(entry.ProfileToken, entry.Type, entry.Id);
+        var fallbackQueue = BuildFallbackQueue(entry, preferredOrder);
         var rankIndex = new Dictionary<string, int>();
         var displayRank = 0;
         var queueIndex = 0;
@@ -311,7 +313,8 @@ public class ProfilePlayController(
             HttpContext.RequestAborted).ConfigureAwait(false);
     }
 
-    private static List<NzbResolutionCache.Candidate> BuildFallbackQueue(NzbResolutionCache.Entry entry)
+    private static List<NzbResolutionCache.Candidate> BuildFallbackQueue(
+        NzbResolutionCache.Entry entry, IReadOnlyList<string>? preferredOrder)
     {
         var primary = entry.Primary;
         var queue = new List<NzbResolutionCache.Candidate>(entry.Candidates.Count) { primary };
@@ -319,6 +322,12 @@ public class ProfilePlayController(
         var others = entry.Candidates
             .Where((_, i) => i != entry.StartIndex)
             .ToList();
+
+        if (preferredOrder is { Count: > 0 })
+        {
+            queue.AddRange(PreferredOrderStore.ApplyOrder(others, KeyOf, preferredOrder));
+            return queue;
+        }
 
         if (primary.Size <= 0)
         {
@@ -331,6 +340,9 @@ public class ProfilePlayController(
 
         return queue;
     }
+
+    private static string KeyOf(NzbResolutionCache.Candidate c) =>
+        ReleaseIdentity.Key(c.Size, c.Poster, c.UsenetDate, c.NzbUrl);
 
     private enum BatchOutcome { Winner, AllFailed, Cancelled, BudgetTimeout }
 

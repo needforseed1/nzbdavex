@@ -41,12 +41,13 @@ public class ProfileReadController(
                     ? c.SourceIndexerName!
                     : c.IndexerName;
                 var description = BuildDescription(c, displayIndexer);
+                var failoverId = result.PlayTokens[i];
                 return new
                 {
                     name = $"[NZB] {displayIndexer}",
                     description,
                     title = description,
-                    url = $"{baseUrl}/adapters/addon/{token}/play/{result.PlayTokens[i]}.mkv",
+                    url = $"{baseUrl}/adapters/addon/{token}/play/{failoverId}.mkv",
                     behaviorHints = new
                     {
                         filename = c.Title,
@@ -55,6 +56,8 @@ public class ProfileReadController(
                         notWebReady = true,
                     },
                     meta = new { indexer = displayIndexer },
+                    failoverId,
+                    extra = new { failoverId },
                 };
             })
             .ToList();

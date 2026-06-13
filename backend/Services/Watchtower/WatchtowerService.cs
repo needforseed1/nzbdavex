@@ -19,7 +19,8 @@ public class WatchtowerService(
     WardenStore wardenStore,
     PreflightCache preflightCache,
     ListSourceEnumerator enumerator,
-    EpisodeEnumerator episodeEnumerator
+    EpisodeEnumerator episodeEnumerator,
+    PreferredOrderStore preferredOrderStore
 ) : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
@@ -701,6 +702,9 @@ public class WatchtowerService(
         while (auto && stageWatch.Elapsed < AutoStageBudget);
     }
 
+    private static string KeyOf(NzbResolutionCache.Candidate c) =>
+        ReleaseIdentity.Key(c.Size, c.Poster, c.UsenetDate, c.NzbUrl);
+
     private async Task ResolveOneAsync(DavDatabaseContext ctx, string profileToken, WantedItem item, CancellationToken ct)
     {
         var now = Now();
@@ -728,11 +732,13 @@ public class WatchtowerService(
             .Where(c => floor <= 0 || c.Size <= 0 || c.Size >= floor)
             .Where(c => ceiling <= 0 || c.Size <= 0 || c.Size <= ceiling)
             .Where(c => minGrabs <= 0 || (c.Grabs ?? 0) >= minGrabs);
-        IEnumerable<NzbResolutionCache.Candidate> ordered =
-            configManager.GetWatchtowerRanking() == "largest"
-                ? filtered.OrderByDescending(c => c.Size)
-                : filtered;
-        var ranked = ordered.ToList();
+        var filteredList = filtered.ToList();
+        var preferredOrder = preferredOrderStore.GetOrder(profileToken, item.Type, item.ContentId);
+        var ranked = preferredOrder is { Count: > 0 }
+            ? PreferredOrderStore.ApplyOrder(filteredList, KeyOf, preferredOrder)
+            : configManager.GetWatchtowerRanking() == "largest"
+                ? filteredList.OrderByDescending(c => c.Size).ToList()
+                : filteredList;
 
         var depth = configManager.GetWatchtowerShortlistDepth();
         var grabCap = configManager.GetWatchtowerGrabCapPerResolve();
