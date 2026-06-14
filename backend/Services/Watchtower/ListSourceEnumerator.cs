@@ -9,49 +9,79 @@ public class ListSourceEnumerator
 {
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(20);
 
+    private const int MaxCatalogPages = 100;
+
     public async Task<IReadOnlyList<WtContentRef>> EnumerateAsync(ListSource source, CancellationToken ct)
     {
         return source.Kind switch
         {
-            ListSource.KindStremioCatalog => await FetchStremioCatalogAsync(source.Url, ct).ConfigureAwait(false),
+            ListSource.KindStremioCatalog => await FetchStremioCatalogAsync(source.Url, source.Cap, ct).ConfigureAwait(false),
             ListSource.KindUrlList => await FetchUrlListAsync(source.Url, ct).ConfigureAwait(false),
             _ => Array.Empty<WtContentRef>(),
         };
     }
 
-    private static async Task<IReadOnlyList<WtContentRef>> FetchStremioCatalogAsync(string? url, CancellationToken ct)
+    private static async Task<IReadOnlyList<WtContentRef>> FetchStremioCatalogAsync(
+        string? url, int cap, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(url)) return Array.Empty<WtContentRef>();
-        var json = await HttpGetStringAsync(url!, ct).ConfigureAwait(false);
-        if (json is null)
-            throw new InvalidOperationException("Catalog request failed or returned an empty response.");
 
-        using var doc = ParseOrThrow(json);
-        var root = doc.RootElement;
+        var refs = new List<WtContentRef>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var limit = cap > 0 ? cap : int.MaxValue;
+        var pageSize = 0;
 
-        if (root.ValueKind == JsonValueKind.Object &&
-            root.TryGetProperty("metas", out var metas) && metas.ValueKind == JsonValueKind.Array)
+        var page = 0;
+        for (; page < MaxCatalogPages; page++)
         {
-            var refs = new List<WtContentRef>();
+            var skip = pageSize > 0 ? page * pageSize : 0;
+            var json = await HttpGetStringAsync(BuildPagedUrl(url!, skip), ct).ConfigureAwait(false);
+            if (json is null)
+            {
+                if (page == 0)
+                    throw new InvalidOperationException("Catalog request failed or returned an empty response.");
+                break;
+            }
+
+            using var doc = ParseOrThrow(json);
+            var root = doc.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("metas", out var metas) || metas.ValueKind != JsonValueKind.Array)
+            {
+                if (page > 0) break;
+                if (root.ValueKind == JsonValueKind.Object &&
+                    (root.TryGetProperty("catalogs", out _) || root.TryGetProperty("resources", out _)))
+                    throw new InvalidOperationException(
+                        "This URL is an addon manifest, not a catalog. Use \"Discover catalogs\" to pick which " +
+                        "catalogs to add, or point this list at a catalog endpoint such as .../catalog/movie/<id>.json.");
+                throw new InvalidOperationException("Catalog response did not contain a \"metas\" array.");
+            }
+
+            int pageCount = 0, newCount = 0;
             foreach (var meta in metas.EnumerateArray())
             {
+                pageCount++;
                 var type = GetStr(meta, "type");
                 var id = GetStr(meta, "id");
                 if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(id)) continue;
+                if (!seen.Add($"{NormalizeType(type!)}:{id!}")) continue;
+                newCount++;
                 refs.Add(new WtContentRef { Type = NormalizeType(type!), ContentId = id!, Title = GetStr(meta, "name") });
+                if (refs.Count >= limit) return refs;
             }
-            return refs;
+
+            if (pageSize == 0) pageSize = pageCount;
+            if (pageCount == 0 || newCount == 0) break;
+            if (pageCount < pageSize) break;
         }
 
-        if (root.ValueKind == JsonValueKind.Object &&
-            (root.TryGetProperty("catalogs", out _) || root.TryGetProperty("resources", out _)))
-        {
-            throw new InvalidOperationException(
-                "This URL is an addon manifest, not a catalog. Use \"Discover catalogs\" to pick which " +
-                "catalogs to add, or point this list at a catalog endpoint such as .../catalog/movie/<id>.json.");
-        }
+        if (page >= MaxCatalogPages)
+            Log.Information(
+                "Watchtower: catalog {Url} reached the {Max}-page ceiling ({Count} titles); later titles were not pulled",
+                url, MaxCatalogPages, refs.Count);
 
-        throw new InvalidOperationException("Catalog response did not contain a \"metas\" array.");
+        return refs;
     }
 
     public async Task<DiscoverResult> DiscoverCatalogsAsync(string url, CancellationToken ct)
@@ -122,6 +152,34 @@ public class ListSourceEnumerator
 
     private static string BuildCatalogUrl(string baseUrl, string type, string id)
         => $"{baseUrl}/catalog/{Uri.EscapeDataString(type)}/{Uri.EscapeDataString(id)}.json";
+
+    private static string BuildPagedUrl(string url, int skip)
+    {
+        if (skip <= 0) return url;
+
+        const string ext = ".json";
+        if (!url.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+            return url.Contains('?') ? $"{url}&skip={skip}" : $"{url}?skip={skip}";
+
+        var stem = url[..^ext.Length];
+        const string marker = "/catalog/";
+        var markerIdx = stem.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIdx < 0) return $"{stem}/skip={skip}{ext}";
+
+        var head = stem[..(markerIdx + marker.Length)];
+        var segments = stem[(markerIdx + marker.Length)..].Split('/');
+
+        if (segments.Length >= 3 && segments[^1].Contains('='))
+        {
+            var merged = segments[^1].Split('&')
+                .Where(p => !p.StartsWith("skip=", StringComparison.OrdinalIgnoreCase))
+                .Append($"skip={skip}");
+            segments[^1] = string.Join('&', merged);
+            return $"{head}{string.Join('/', segments)}{ext}";
+        }
+
+        return $"{stem}/skip={skip}{ext}";
+    }
 
     private static string? DescribeRequiredExtra(JsonElement cat)
     {
