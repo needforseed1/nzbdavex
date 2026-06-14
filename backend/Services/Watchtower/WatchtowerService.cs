@@ -760,7 +760,7 @@ public class WatchtowerService(
             return;
         }
         var search = await searchProfileService
-            .SearchByImdbAsync(profileToken, item.Type, item.ContentId, ct, verifyIdentity: true)
+            .SearchByImdbAsync(profileToken, item.Type, item.ContentId, ct, verifyIdentity: true, startPreflight: false)
             .ConfigureAwait(false);
         var candidates = search?.Candidates ?? (IReadOnlyList<NzbResolutionCache.Candidate>)Array.Empty<NzbResolutionCache.Candidate>();
 

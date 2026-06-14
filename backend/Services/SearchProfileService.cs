@@ -292,11 +292,11 @@ public class SearchProfileService(
 
     public async Task<SearchResult?> SearchByImdbAsync(
         string profileToken, string type, string id, CancellationToken ct,
-        string? clientQuery = null, bool verifyIdentity = false)
+        string? clientQuery = null, bool verifyIdentity = false, bool startPreflight = true)
     {
         var queryParams = await BuildImdbQueryAsync(type, id, ct).ConfigureAwait(false);
         if (queryParams is null) return Empty(profileToken, type, id);
-        return await SearchAsync(profileToken, type, id, queryParams, ct, clientQuery, verifyIdentity).ConfigureAwait(false);
+        return await SearchAsync(profileToken, type, id, queryParams, ct, clientQuery, verifyIdentity, startPreflight).ConfigureAwait(false);
     }
 
     public async Task<SearchResult?> SearchAsync(
@@ -306,7 +306,8 @@ public class SearchProfileService(
         IReadOnlyDictionary<string, string> queryParams,
         CancellationToken ct,
         string? clientQuery = null,
-        bool verifyIdentity = false)
+        bool verifyIdentity = false,
+        bool startPreflight = true)
     {
         var profile = GetProfile(profileToken);
         if (profile is null) return null;
@@ -475,7 +476,8 @@ public class SearchProfileService(
         }
 
         var tokens = cache.AddGroup(candidates, type, profileToken, id);
-        preflightOrchestrator.Start(profileToken, type, id, candidates);
+        if (startPreflight)
+            preflightOrchestrator.Start(profileToken, type, id, candidates);
 
         return new SearchResult
         {
