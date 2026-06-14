@@ -166,7 +166,7 @@ public class WatchtowerService(
                 Log.Warning(e, "Watchtower: sync failed for source {Name}", source.Name);
             }
             source.LastSyncedAtUnix = now;
-            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false);
             DetachWantedItems(ctx);
         }
     }
@@ -302,6 +302,24 @@ public class WatchtowerService(
             entry.State = EntityState.Detached;
     }
 
+    private static async Task<bool> TrySaveBatchItemAsync(DavDatabaseContext ctx, CancellationToken ct)
+    {
+        try
+        {
+            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException e)
+        {
+            foreach (var entry in e.Entries)
+                entry.State = EntityState.Detached;
+            foreach (var entry in ctx.ChangeTracker.Entries().Where(en => en.State == EntityState.Added).ToList())
+                entry.State = EntityState.Detached;
+            Log.Debug(e, "Watchtower: batch item removed concurrently during save; skipping");
+            return false;
+        }
+    }
+
     private async Task ExpandDueExpandersAsync(CancellationToken ct)
     {
         var globalScope = configManager.GetWatchtowerSeriesScope();
@@ -343,7 +361,7 @@ public class WatchtowerService(
             }
             expander.NextCheckAtUnix = now + interval;
             expander.UpdatedAtUnix = now;
-            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false);
         }
     }
 
@@ -696,7 +714,7 @@ public class WatchtowerService(
                 }
                 await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
                 _resolvesToday++;
-                await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+                await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false);
             }
         }
         while (auto && stageWatch.Elapsed < AutoStageBudget);
@@ -921,7 +939,7 @@ public class WatchtowerService(
         {
             if (ct.IsCancellationRequested) break;
             await KeepFreshOneAsync(item, ct).ConfigureAwait(false);
-            await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false);
         }
     }
 
