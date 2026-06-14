@@ -60,24 +60,19 @@ public class PlaybackFastVerifier
 
     private async Task<Verdict> CheckSegmentAsync(string messageId, string mode, TimeSpan timeout, CancellationToken ct)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
+        var work = CheckSegmentCoreAsync(messageId, mode, timeoutCts.Token);
         try
         {
-            if (mode == "body")
+            var winner = await Task.WhenAny(work, Task.Delay(timeout, ct)).ConfigureAwait(false);
+            if (winner != work)
             {
-                var resp = await _usenetClient.DecodedBodyAsync(messageId, timeoutCts.Token).ConfigureAwait(false);
-                return resp.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
-                    ? Verdict.Available
-                    : Verdict.Dead;
+                ct.ThrowIfCancellationRequested();
+                Log.Debug("Fast-verify timed out after {Timeout:n0}s on {Segment}", timeout.TotalSeconds, messageId);
+                return Verdict.Timeout;
             }
-            else
-            {
-                var resp = await _usenetClient.StatAsync(messageId, timeoutCts.Token).ConfigureAwait(false);
-                return resp.ResponseType == UsenetResponseType.ArticleExists
-                    ? Verdict.Available
-                    : Verdict.Dead;
-            }
+            return await work.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -93,6 +88,30 @@ public class PlaybackFastVerifier
             Log.Debug("Fast-verify errored on {Segment}: {Message}", messageId, e.Message);
             return Verdict.Timeout;
         }
+        finally
+        {
+            _ = work.ContinueWith(static (t, s) =>
+            {
+                _ = t.Exception;
+                ((CancellationTokenSource)s!).Dispose();
+            }, timeoutCts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+    }
+
+    private async Task<Verdict> CheckSegmentCoreAsync(string messageId, string mode, CancellationToken ct)
+    {
+        if (mode == "body")
+        {
+            var resp = await _usenetClient.DecodedBodyAsync(messageId, ct).ConfigureAwait(false);
+            return resp.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
+                ? Verdict.Available
+                : Verdict.Dead;
+        }
+
+        var stat = await _usenetClient.StatAsync(messageId, ct).ConfigureAwait(false);
+        return stat.ResponseType == UsenetResponseType.ArticleExists
+            ? Verdict.Available
+            : Verdict.Dead;
     }
 
     public readonly record struct VerifyOutcome(Verdict Verdict, string? ResponderHost);

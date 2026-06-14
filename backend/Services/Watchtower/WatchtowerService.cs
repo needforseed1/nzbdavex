@@ -28,6 +28,7 @@ public class WatchtowerService(
     private const int ResolvesPerTick = 3;
     private const int AutoResolveBatch = 25;
     private static readonly TimeSpan AutoStageBudget = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan CycleWatchdog = TimeSpan.FromMinutes(15);
     private const int KeepFreshPerTick = 5;
     private const int ExpandsPerTick = 5;
     private const long SeasonBundleGraceSeconds = 14L * 86400L;
@@ -60,11 +61,21 @@ public class WatchtowerService(
                     LogActivity("Watchtower: cycle starting");
                     try
                     {
-                        await SyncDueSourcesAsync(ct).ConfigureAwait(false);
-                        await ExpandDueExpandersAsync(ct).ConfigureAwait(false);
-                        await ResolveDueItemsAsync(ct).ConfigureAwait(false);
-                        await KeepFreshDueItemsAsync(ct).ConfigureAwait(false);
-                        await LogCycleHeartbeatAsync(cycleWatch, ct).ConfigureAwait(false);
+                        var cycle = RunCycleAsync(cycleWatch, ct);
+                        var winner = await Task.WhenAny(cycle, Task.Delay(CycleWatchdog, stoppingToken)).ConfigureAwait(false);
+                        if (winner != cycle)
+                        {
+                            Log.Warning("Watchtower: cycle exceeded {Budget:n0}s watchdog; abandoning and restarting",
+                                CycleWatchdog.TotalSeconds);
+                            lock (_ctsLock) cycleCts.Cancel();
+                            _ = cycle.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+                                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                                TaskScheduler.Default);
+                        }
+                        else
+                        {
+                            await cycle.ConfigureAwait(false);
+                        }
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
@@ -92,6 +103,15 @@ public class WatchtowerService(
         {
             configManager.OnConfigChanged -= OnConfigChanged;
         }
+    }
+
+    private async Task RunCycleAsync(Stopwatch cycleWatch, CancellationToken ct)
+    {
+        await SyncDueSourcesAsync(ct).ConfigureAwait(false);
+        await ExpandDueExpandersAsync(ct).ConfigureAwait(false);
+        await ResolveDueItemsAsync(ct).ConfigureAwait(false);
+        await KeepFreshDueItemsAsync(ct).ConfigureAwait(false);
+        await LogCycleHeartbeatAsync(cycleWatch, ct).ConfigureAwait(false);
     }
 
     private void OnConfigChanged(object? sender, ConfigManager.ConfigEventArgs e)
@@ -713,8 +733,8 @@ public class WatchtowerService(
                     return;
                 }
                 await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
-                _resolvesToday++;
-                await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false);
+                if (await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false))
+                    _resolvesToday++;
             }
         }
         while (auto && stageWatch.Elapsed < AutoStageBudget);
