@@ -43,6 +43,15 @@ Image tags:
 - `:edge` — latest commit on `main` (for testing; may be unstable)
 - `:latest` — alias for `:stable`
 
+> [!NOTE]
+> **On an IPv6-only host?** GitHub Container Registry (`ghcr.io`) is not reachable over IPv6, so an IPv6-only server can't pull from it. The same images, with the same tags, are mirrored to Docker Hub, which does support IPv6 — pull from there instead:
+>
+> ```bash
+> docker run --rm -it -p 3000:3000 qooode/nzbdavex:stable
+> ```
+>
+> Anywhere this guide shows `ghcr.io/qooode/nzbdavex`, substitute `qooode/nzbdavex` (Docker Hub).
+
 To update, pull the newer image and recreate the container:
 
 ```bash

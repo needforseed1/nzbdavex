@@ -41,6 +41,8 @@ We start with a basic NzbDavEx container.
 
 We use the pre-built multi-arch image published to GHCR (`ghcr.io/qooode/nzbdavex`). No clone or build needed.
 
+> **IPv6-only host?** `ghcr.io` is not reachable over IPv6. The same images are mirrored to Docker Hub (IPv6-capable) — replace `ghcr.io/qooode/nzbdavex` with `qooode/nzbdavex` in the `image:` lines throughout this guide.
+
 > Prefer to build from source? Clone the repo (`git clone https://github.com/qooode/nzbdavex.git`) and replace the `image:` line in the compose below with `build: /path/to/nzbdavex`.
 
 ### 1. `docker-compose.yml` (Part 1)
