@@ -797,6 +797,10 @@ public class ProfilePlayController(
             {
                 nzoId = existingQueue.Value;
             }
+            else if (await FindCompletedReleaseAsync(fileName, category, ct).ConfigureAwait(false) is { } completedId)
+            {
+                nzoId = completedId;
+            }
             else
             {
                 using var buffer = new MemoryStream(nzbBytes, writable: false);
@@ -897,6 +901,21 @@ public class ProfilePlayController(
         // Budget exhausted — caller is expected to schedule orphan cleanup so the
         // queue item doesn't keep downloading a release the player gave up on.
         return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId);
+    }
+
+    private async Task<Guid?> FindCompletedReleaseAsync(string fileName, string category, CancellationToken ct)
+    {
+        var brokenIds = negativeCache.SnapshotBrokenHistoryItems();
+        var query = dbClient.Ctx.HistoryItems.AsNoTracking()
+            .Where(h => h.FileName == fileName
+                        && h.Category == category
+                        && h.DownloadStatus == HistoryItem.DownloadStatusOption.Completed);
+        if (brokenIds.Count > 0)
+            query = query.Where(h => !brokenIds.Contains(h.Id));
+        return await query
+            .OrderByDescending(h => h.CreatedAt)
+            .Select(h => (Guid?)h.Id)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
     }
 
     // Before returning a transient error, re-check whether ANY prior or concurrent download
