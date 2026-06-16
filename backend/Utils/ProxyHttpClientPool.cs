@@ -27,7 +27,16 @@ public static class ProxyHttpClientPool
 
             if (k.Length > 0 && Uri.TryCreate(k, UriKind.Absolute, out var uri))
             {
-                handler.Proxy = new WebProxy(uri) { BypassProxyOnLocal = false };
+                var address = new UriBuilder(uri) { UserName = "", Password = "" }.Uri;
+                var proxy = new WebProxy(address) { BypassProxyOnLocal = false };
+                if (!string.IsNullOrEmpty(uri.UserInfo))
+                {
+                    var creds = uri.UserInfo.Split(':', 2);
+                    proxy.Credentials = new NetworkCredential(
+                        Uri.UnescapeDataString(creds[0]),
+                        creds.Length > 1 ? Uri.UnescapeDataString(creds[1]) : string.Empty);
+                }
+                handler.Proxy = proxy;
                 handler.UseProxy = true;
             }
             else

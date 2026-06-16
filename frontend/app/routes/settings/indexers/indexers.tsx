@@ -203,6 +203,11 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
         setNewConfig({ ...config, "search.exclude-patterns": value });
     }, [config, setNewConfig]);
 
+    const defaultUserAgent = config["api.user-agent"] ?? "";
+    const handleUserAgentChange = useCallback((value: string) => {
+        setNewConfig({ ...config, "api.user-agent": value });
+    }, [config, setNewConfig]);
+
     const proxyUrl = indexerConfig.ProxyUrl ?? "";
     const proxyValid = isProxyUrlValid(proxyUrl);
     const globalTimeoutRaw = typeof indexerConfig.TimeoutSeconds === "number" && indexerConfig.TimeoutSeconds > 0
@@ -234,6 +239,22 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             value={proxyUrl}
                             onChange={e => handleProxyChange(e.target.value)}
                         />
+                    </div>
+                    <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <label htmlFor="indexers-default-user-agent" className={styles["form-label"]}>
+                            Default User-Agent <span className={styles["label-hint"]}>(sent on searches and grabs; per-indexer override below)</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="indexers-default-user-agent"
+                            className={styles["form-input"]}
+                            placeholder="nzbdav/<version>"
+                            value={defaultUserAgent}
+                            onChange={e => handleUserAgentChange(e.target.value)}
+                        />
+                        <div className={styles["section-description"]}>
+                            Avoid aggregator names like Prowlarr, NZBHydra or Jackett — some indexers ban those as proxy grabs.
+                        </div>
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
                         <label htmlFor="indexers-default-timeout" className={styles["form-label"]}>
@@ -1187,6 +1208,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
 
 export function isIndexersSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["indexers.instances"] !== newConfig["indexers.instances"]
+        || (config["api.user-agent"] ?? "") !== (newConfig["api.user-agent"] ?? "")
         || (config["search.exclude-patterns"] ?? "") !== (newConfig["search.exclude-patterns"] ?? "");
 }
 
