@@ -260,8 +260,7 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             onChange={e => handleSearchUserAgentChange(e.target.value)}
                         />
                         <div className={styles["section-description"]}>
-                            Sent on the Newznab search/caps queries. Use a searching client or leave blank for the default.
-                            Don't set a download-only client like <code>SABnzbd</code> here — it never searches, which strict indexers flag.
+                            Sent on indexer search and caps queries. Leave blank to use the default.
                         </div>
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
@@ -277,8 +276,7 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             onChange={e => handleRetrieveUserAgentChange(e.target.value)}
                         />
                         <div className={styles["section-description"]}>
-                            Sent when retrieving the .nzb file. A real client string (e.g. <code>SABnzbd/4.5.3</code>) is fine here, or leave blank for the default.
-                            Never an aggregator name (<code>Prowlarr</code> / <code>NZBHydra</code> / <code>Jackett</code>) — that's what triggers "proxied grab" bans.
+                            Sent when retrieving the .nzb file. Leave blank to use the default.
                         </div>
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
