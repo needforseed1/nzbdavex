@@ -18,11 +18,12 @@ public class AddUrlRequest() : AddFileRequest
     {
         var nzbUrl = context.GetRequestParam("name");
         var nzbName = context.GetRequestParam("nzbname");
-        var userAgent = configManager.GetUserAgent();
         var indexerConfig = configManager.GetIndexerConfig();
-        var proxyUrl = indexerConfig.ProxyUrl;
-
         var matchedIndexer = MatchIndexerByHost(nzbUrl, indexerConfig);
+
+        var userAgent = StringUtil.EmptyToNull(matchedIndexer?.UserAgent) ?? configManager.GetUserAgent();
+        var proxyUrl = StringUtil.EmptyToNull(matchedIndexer?.ProxyUrl) ?? indexerConfig.ProxyUrl;
+
         if (matchedIndexer is not null)
         {
             var hitCheck = await hitTracker
