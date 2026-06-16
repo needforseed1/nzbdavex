@@ -463,7 +463,10 @@ public class SearchProfileService(
             .ToList();
 
         if (configManager.IsWatchtowerEnabled())
+        {
+            await AddWarmedExactAsync(candidates, type, id, ct).ConfigureAwait(false);
             await AddWarmedSeasonBundleAsync(candidates, type, id, ct).ConfigureAwait(false);
+        }
 
         if (candidates.Count == 0) return Empty(profileToken, type, id);
 
@@ -487,6 +490,60 @@ public class SearchProfileService(
             Candidates = candidates,
             PlayTokens = tokens,
         };
+    }
+
+    private async Task AddWarmedExactAsync(
+        List<NzbResolutionCache.Candidate> candidates, string type, string id, CancellationToken ct)
+    {
+        if (type != "series" && type != "movie") return;
+
+        try
+        {
+            await using var ctx = new DavDatabaseContext();
+            var row = await ctx.WantedItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Key == $"{type}:{id}" && w.State == WantedItem.StateReady, ct)
+                .ConfigureAwait(false);
+            if (row is null) return;
+
+            var verified = WtJson.ReadPointers(row.Shortlist)
+                .Where(p => p.Verdict == "available" && !string.IsNullOrWhiteSpace(p.NzbUrl))
+                .ToList();
+            if (verified.Count == 0) return;
+
+            var ordered = new List<NzbResolutionCache.Candidate>(candidates.Count + verified.Count);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var p in verified)
+            {
+                if (!seen.Add(p.NzbUrl)) continue;
+                var existing = candidates.FirstOrDefault(c => c.NzbUrl == p.NzbUrl);
+                ordered.Add(existing ?? new NzbResolutionCache.Candidate
+                {
+                    IndexerName = p.IndexerName,
+                    IndexerUserAgent = p.IndexerUserAgent,
+                    NzbUrl = p.NzbUrl,
+                    Title = p.Title,
+                    Size = p.Size,
+                    Grabs = p.Grabs,
+                    Poster = p.Poster,
+                    UsenetDate = p.UsenetDate,
+                    ProxyUrl = p.ProxyUrl,
+                });
+            }
+
+            foreach (var c in candidates)
+                if (c.NzbUrl is null || seen.Add(c.NzbUrl)) ordered.Add(c);
+
+            candidates.Clear();
+            candidates.AddRange(ordered);
+            Log.Debug("Watchtower: boosted {Count} verified pick(s) to top for {Type}/{Id}",
+                verified.Count, type, id);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Watchtower: exact-match candidate boost failed for {Type}/{Id}", type, id);
+        }
     }
 
     private async Task AddWarmedSeasonBundleAsync(
