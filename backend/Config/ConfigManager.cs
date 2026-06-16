@@ -718,6 +718,14 @@ public class ConfigManager
                ?? defaultValue;
     }
 
+    public string GetSearchUserAgent()
+    {
+        var defaultValue = $"nzbdav/{AppVersion}";
+        return StringUtil.EmptyToNull(GetConfigValue("api.search-user-agent"))
+               ?? EnvironmentUtil.GetEnvironmentVariable("NZB_SEARCH_USER_AGENT")
+               ?? defaultValue;
+    }
+
     public bool IsDatabaseStartupVacuumEnabled()
     {
         var defaultValue = false;

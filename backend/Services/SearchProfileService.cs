@@ -611,11 +611,12 @@ public class SearchProfileService(
                     return Enumerable.Empty<IndexerHit>();
                 }
 
-                var ua = string.IsNullOrWhiteSpace(x.UserAgent) ? configManager.GetUserAgent() : x.UserAgent;
+                var searchUa = IndexerConfig.PerIndexerSearchUserAgent(x) ?? configManager.GetSearchUserAgent();
+                var retrieveUa = IndexerConfig.PerIndexerRetrieveUserAgent(x) ?? configManager.GetUserAgent();
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
                 var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
                 var target = indexerConfig.GetEffectiveSearchResultLimit(x);
-                var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
+                var client = new NewznabClient(x.Url, x.ApiKey, searchUa, proxy, timeout);
                 var baseQuery = ApplyIndexerCategoryOverrides(queryParams, x);
 
                 // Page through the indexer (offset += 100) until we've gathered `target` results,
@@ -651,7 +652,7 @@ public class SearchProfileService(
 
                 var limited = collected.Count > target ? collected.GetRange(0, target) : collected;
                 var filtered = IndexerResultFilter.Apply(limited, x.Filter, now);
-                return filtered.Select(i => new IndexerHit(x.Name, ua, proxy, i));
+                return filtered.Select(i => new IndexerHit(x.Name, retrieveUa, proxy, i));
             }
             catch (Exception e)
             {

@@ -32,6 +32,7 @@ const defaultConfig = {
     "api.import-strategy": "symlinks",
     "api.completed-downloads-dir": "",
     "api.user-agent": "",
+    "api.search-user-agent": "",
     "usenet.providers": "",
     "usenet.max-download-connections": "15",
     "usenet.max-queue-connections": "",

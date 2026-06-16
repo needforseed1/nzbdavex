@@ -163,7 +163,7 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
             </Form.Group>
             <hr />
             <Form.Group>
-                <Form.Label htmlFor="user-agent-input">User Agent</Form.Label>
+                <Form.Label htmlFor="user-agent-input">Retrieve User Agent</Form.Label>
                 <ExpandingTextInput
                     className={styles.input}
                     id="user-agent-input"
@@ -174,7 +174,8 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                 <Form.Text id="user-agent-help" muted>
                     The user-agent used by the&nbsp;
                     <a href="https://sabnzbd.org/wiki/configuration/4.5/api#addurl">addurl</a> api
-                    for fetching nzb files.
+                    for fetching nzb files. The user-agent for indexer searches is set separately
+                    under Settings → Indexers.
                 </Form.Text>
             </Form.Group>
             <hr />

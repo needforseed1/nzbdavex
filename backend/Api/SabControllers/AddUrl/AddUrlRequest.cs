@@ -21,7 +21,7 @@ public class AddUrlRequest() : AddFileRequest
         var indexerConfig = configManager.GetIndexerConfig();
         var matchedIndexer = MatchIndexerByHost(nzbUrl, indexerConfig);
 
-        var userAgent = StringUtil.EmptyToNull(matchedIndexer?.UserAgent) ?? configManager.GetUserAgent();
+        var userAgent = IndexerConfig.PerIndexerRetrieveUserAgent(matchedIndexer) ?? configManager.GetUserAgent();
         var proxyUrl = StringUtil.EmptyToNull(matchedIndexer?.ProxyUrl) ?? indexerConfig.ProxyUrl;
 
         if (matchedIndexer is not null)

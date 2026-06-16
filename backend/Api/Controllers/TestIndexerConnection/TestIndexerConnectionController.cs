@@ -13,7 +13,7 @@ public class TestIndexerConnectionController(NzbWebDAV.Config.ConfigManager conf
         try
         {
             var indexerConfig = configManager.GetIndexerConfig();
-            var ua = string.IsNullOrWhiteSpace(request.UserAgent) ? configManager.GetUserAgent() : request.UserAgent;
+            var ua = string.IsNullOrWhiteSpace(request.UserAgent) ? configManager.GetSearchUserAgent() : request.UserAgent;
             var proxy = string.IsNullOrWhiteSpace(request.ProxyUrl)
                 ? indexerConfig.ProxyUrl
                 : request.ProxyUrl;

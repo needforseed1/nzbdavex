@@ -36,6 +36,8 @@ interface ConnectionDetails {
     ApiKey: string;
     Enabled: boolean;
     UserAgent?: string;
+    SearchUserAgent?: string;
+    RetrieveUserAgent?: string;
     MaxRequestsPerMinute?: number;
     EnableStrictMatching?: boolean;
     ProxyUrl?: string;
@@ -203,8 +205,13 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
         setNewConfig({ ...config, "search.exclude-patterns": value });
     }, [config, setNewConfig]);
 
-    const defaultUserAgent = config["api.user-agent"] ?? "";
-    const handleUserAgentChange = useCallback((value: string) => {
+    const defaultSearchUserAgent = config["api.search-user-agent"] ?? "";
+    const handleSearchUserAgentChange = useCallback((value: string) => {
+        setNewConfig({ ...config, "api.search-user-agent": value });
+    }, [config, setNewConfig]);
+
+    const defaultRetrieveUserAgent = config["api.user-agent"] ?? "";
+    const handleRetrieveUserAgentChange = useCallback((value: string) => {
         setNewConfig({ ...config, "api.user-agent": value });
     }, [config, setNewConfig]);
 
@@ -241,19 +248,37 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                         />
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
-                        <label htmlFor="indexers-default-user-agent" className={styles["form-label"]}>
-                            Default User-Agent <span className={styles["label-hint"]}>(sent on searches and grabs; per-indexer override below)</span>
+                        <label htmlFor="indexers-default-search-user-agent" className={styles["form-label"]}>
+                            Default Search User-Agent <span className={styles["label-hint"]}>(sent when searching indexers; per-indexer override below)</span>
                         </label>
                         <input
                             type="text"
-                            id="indexers-default-user-agent"
+                            id="indexers-default-search-user-agent"
                             className={styles["form-input"]}
                             placeholder="nzbdav/<version>"
-                            value={defaultUserAgent}
-                            onChange={e => handleUserAgentChange(e.target.value)}
+                            value={defaultSearchUserAgent}
+                            onChange={e => handleSearchUserAgentChange(e.target.value)}
                         />
                         <div className={styles["section-description"]}>
-                            Sent to indexers for both searches and grabs. A single, consistent value works best or leave blank to use the default.
+                            Sent on the Newznab search/caps queries. Use a searching client or leave blank for the default.
+                            Don't set a download-only client like <code>SABnzbd</code> here — it never searches, which strict indexers flag.
+                        </div>
+                    </div>
+                    <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <label htmlFor="indexers-default-retrieve-user-agent" className={styles["form-label"]}>
+                            Default Retrieve User-Agent <span className={styles["label-hint"]}>(sent when retrieving the .nzb; per-indexer override below)</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="indexers-default-retrieve-user-agent"
+                            className={styles["form-input"]}
+                            placeholder="nzbdav/<version>"
+                            value={defaultRetrieveUserAgent}
+                            onChange={e => handleRetrieveUserAgentChange(e.target.value)}
+                        />
+                        <div className={styles["section-description"]}>
+                            Sent when retrieving the .nzb file. A real client string (e.g. <code>SABnzbd/4.5.3</code>) is fine here, or leave blank for the default.
+                            Never an aggregator name (<code>Prowlarr</code> / <code>NZBHydra</code> / <code>Jackett</code>) — that's what triggers "proxied grab" bans.
                         </div>
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
@@ -368,7 +393,8 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
     const rateLimit = indexer.MaxRequestsPerMinute && indexer.MaxRequestsPerMinute > 0
         ? `${indexer.MaxRequestsPerMinute} / min`
         : "Unlimited";
-    const userAgent = indexer.UserAgent?.trim() ? indexer.UserAgent : "Default";
+    const searchUserAgent = indexer.SearchUserAgent?.trim() || indexer.UserAgent?.trim() || "Default";
+    const retrieveUserAgent = indexer.RetrieveUserAgent?.trim() || indexer.UserAgent?.trim() || "Default";
     const proxy = indexer.ProxyUrl?.trim() ? indexer.ProxyUrl : "Default";
     const timeout = indexer.TimeoutSeconds && indexer.TimeoutSeconds > 0
         ? `${indexer.TimeoutSeconds}s`
@@ -489,13 +515,27 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
                         <div className={styles["indexer-detail-item"]}>
                             <div className={styles["indexer-detail-icon"]}>
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                    <circle cx="12" cy="7" r="4" />
+                                    <circle cx="11" cy="11" r="8" />
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
                                 </svg>
                             </div>
                             <div className={styles["indexer-detail-content"]}>
-                                <span className={styles["indexer-detail-label"]}>User-Agent</span>
-                                <span className={styles["indexer-detail-value"]} title={indexer.UserAgent ?? ""}>{userAgent}</span>
+                                <span className={styles["indexer-detail-label"]}>Search UA</span>
+                                <span className={styles["indexer-detail-value"]} title={indexer.SearchUserAgent ?? indexer.UserAgent ?? ""}>{searchUserAgent}</span>
+                            </div>
+                        </div>
+
+                        <div className={styles["indexer-detail-item"]}>
+                            <div className={styles["indexer-detail-icon"]}>
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                    <polyline points="7 10 12 15 17 10" />
+                                    <line x1="12" y1="15" x2="12" y2="3" />
+                                </svg>
+                            </div>
+                            <div className={styles["indexer-detail-content"]}>
+                                <span className={styles["indexer-detail-label"]}>Retrieve UA</span>
+                                <span className={styles["indexer-detail-value"]} title={indexer.RetrieveUserAgent ?? indexer.UserAgent ?? ""}>{retrieveUserAgent}</span>
                             </div>
                         </div>
 
@@ -611,7 +651,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
     const [name, setName] = useState("");
     const [url, setUrl] = useState("");
     const [apiKey, setApiKey] = useState("");
-    const [userAgent, setUserAgent] = useState("");
+    const [searchUserAgent, setSearchUserAgent] = useState("");
+    const [retrieveUserAgent, setRetrieveUserAgent] = useState("");
     const [proxyUrl, setProxyUrl] = useState("");
     const [timeoutSeconds, setTimeoutSeconds] = useState("");
     const [searchResultLimit, setSearchResultLimit] = useState("");
@@ -648,7 +689,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             setName(indexer?.Name || "");
             setUrl(indexer?.Url || "");
             setApiKey(indexer?.ApiKey || "");
-            setUserAgent(indexer?.UserAgent || "");
+            setSearchUserAgent(indexer?.SearchUserAgent || indexer?.UserAgent || "");
+            setRetrieveUserAgent(indexer?.RetrieveUserAgent || indexer?.UserAgent || "");
             setProxyUrl(indexer?.ProxyUrl || "");
             setTimeoutSeconds(
                 indexer?.TimeoutSeconds && indexer.TimeoutSeconds > 0
@@ -681,7 +723,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         }
     }, [show, indexer]);
 
-    useEffect(() => { setTestState('idle'); }, [url, apiKey, userAgent, proxyUrl, timeoutSeconds]);
+    useEffect(() => { setTestState('idle'); }, [url, apiKey, searchUserAgent, proxyUrl, timeoutSeconds]);
 
     useEffect(() => {
         const handleEscape = (e: KeyboardEvent) => {
@@ -700,7 +742,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             const fd = new FormData();
             fd.append('url', url);
             fd.append('apiKey', apiKey);
-            if (userAgent.trim()) fd.append('userAgent', userAgent);
+            if (searchUserAgent.trim()) fd.append('userAgent', searchUserAgent);
             if (proxyUrl.trim()) fd.append('proxyUrl', proxyUrl);
             if (timeoutSeconds.trim()) fd.append('timeoutSeconds', timeoutSeconds);
             const r = await fetch('/api/test-indexer-connection', { method: 'POST', body: fd });
@@ -709,7 +751,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         } catch {
             setTestState('error');
         }
-    }, [url, apiKey, userAgent, proxyUrl, timeoutSeconds]);
+    }, [url, apiKey, searchUserAgent, proxyUrl, timeoutSeconds]);
 
     const handleSave = useCallback(() => {
         const rpm = parseInt(maxRpm || "0", 10);
@@ -737,7 +779,9 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             Url: url.trim(),
             ApiKey: apiKey.trim(),
             Enabled: enabled,
-            UserAgent: userAgent.trim() || undefined,
+            UserAgent: undefined,
+            SearchUserAgent: searchUserAgent.trim() || undefined,
+            RetrieveUserAgent: retrieveUserAgent.trim() || undefined,
             ProxyUrl: proxyUrl.trim() || undefined,
             TimeoutSeconds: Number.isFinite(timeout) && timeout > 0 ? timeout : undefined,
             SearchResultLimit: Number.isFinite(srl) && srl > 0 ? srl : undefined,
@@ -758,7 +802,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                 PreferDownloaded: filterPreferDownloaded,
             },
         });
-    }, [name, url, apiKey, userAgent, proxyUrl, timeoutSeconds, searchResultLimit, maxRpm, hitLimit, downloadLimit, hitResetTime, enabled, strict,
+    }, [name, url, apiKey, searchUserAgent, retrieveUserAgent, proxyUrl, timeoutSeconds, searchResultLimit, maxRpm, hitLimit, downloadLimit, hitResetTime, enabled, strict,
         extraMovieCategories, extraTvCategories, ignoreCategoryFilter,
         filterEnabled, filterSkipPassworded, filterMinGrabs, filterGrabsGraceHours,
         filterMaxAgeDaysWithoutGrabs, filterPreferDownloaded, onSave]);
@@ -847,16 +891,30 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                         </div>
 
                         <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
-                            <label htmlFor="indexer-ua" className={styles["form-label"]}>
-                                User-Agent <span className={styles["label-hint"]}>(optional)</span>
+                            <label htmlFor="indexer-search-ua" className={styles["form-label"]}>
+                                Search User-Agent <span className={styles["label-hint"]}>(optional; overrides the global Search default)</span>
                             </label>
                             <input
                                 type="text"
-                                id="indexer-ua"
+                                id="indexer-search-ua"
                                 className={styles["form-input"]}
                                 placeholder="Leave blank to use global default"
-                                value={userAgent}
-                                onChange={e => setUserAgent(e.target.value)}
+                                value={searchUserAgent}
+                                onChange={e => setSearchUserAgent(e.target.value)}
+                            />
+                        </div>
+
+                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                            <label htmlFor="indexer-retrieve-ua" className={styles["form-label"]}>
+                                Retrieve User-Agent <span className={styles["label-hint"]}>(optional; overrides the global Retrieve default)</span>
+                            </label>
+                            <input
+                                type="text"
+                                id="indexer-retrieve-ua"
+                                className={styles["form-input"]}
+                                placeholder="Leave blank to use global default"
+                                value={retrieveUserAgent}
+                                onChange={e => setRetrieveUserAgent(e.target.value)}
                             />
                         </div>
 
@@ -1209,6 +1267,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
 export function isIndexersSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["indexers.instances"] !== newConfig["indexers.instances"]
         || (config["api.user-agent"] ?? "") !== (newConfig["api.user-agent"] ?? "")
+        || (config["api.search-user-agent"] ?? "") !== (newConfig["api.search-user-agent"] ?? "")
         || (config["search.exclude-patterns"] ?? "") !== (newConfig["search.exclude-patterns"] ?? "");
 }
 

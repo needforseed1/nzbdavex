@@ -37,6 +37,15 @@ public class IndexerConfig
         return DefaultSearchResultLimit;
     }
 
+    public static string? PerIndexerSearchUserAgent(ConnectionDetails? indexer)
+        => indexer is null ? null : FirstNonBlank(indexer.SearchUserAgent, indexer.UserAgent);
+
+    public static string? PerIndexerRetrieveUserAgent(ConnectionDetails? indexer)
+        => indexer is null ? null : FirstNonBlank(indexer.RetrieveUserAgent, indexer.UserAgent);
+
+    private static string? FirstNonBlank(string? a, string? b)
+        => !string.IsNullOrWhiteSpace(a) ? a : (!string.IsNullOrWhiteSpace(b) ? b : null);
+
     public class ConnectionDetails
     {
         public required string Name { get; set; }
@@ -44,6 +53,8 @@ public class IndexerConfig
         public required string ApiKey { get; set; }
         public bool Enabled { get; set; } = true;
         public string? UserAgent { get; set; }
+        public string? SearchUserAgent { get; set; }
+        public string? RetrieveUserAgent { get; set; }
         public int MaxRequestsPerMinute { get; set; } = 0;
         public bool EnableStrictMatching { get; set; } = false;
         // Per-indexer HTTP(S) proxy URL. Overrides the global ProxyUrl. Empty/null = inherit global.
