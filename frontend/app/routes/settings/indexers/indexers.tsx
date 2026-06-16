@@ -253,7 +253,7 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             onChange={e => handleUserAgentChange(e.target.value)}
                         />
                         <div className={styles["section-description"]}>
-                            Avoid aggregator names like Prowlarr, NZBHydra or Jackett — some indexers ban those as proxy grabs.
+                            Sent to indexers for both searches and grabs. A single, consistent value works best or leave blank to use the default.
                         </div>
                     </div>
                     <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
