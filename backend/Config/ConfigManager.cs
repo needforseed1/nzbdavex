@@ -499,6 +499,13 @@ public class ConfigManager
         return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 100000) : 100;
     }
 
+    public int GetWatchtowerResolveConcurrency()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.resolve-concurrency"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 16) : 3;
+    }
+
     public int GetWatchtowerDailyResolveBudget()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("watchtower.daily-resolve-budget"));

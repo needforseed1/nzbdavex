@@ -39,6 +39,8 @@ public class WatchtowerService(
     private readonly object _ctsLock = new();
     private CancellationTokenSource? _disabledCts;
 
+    private readonly SemaphoreSlim _indexerGate = new(1, 1);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         configManager.OnConfigChanged += OnConfigChanged;
@@ -697,6 +699,7 @@ public class WatchtowerService(
             return;
         }
 
+        var concurrency = configManager.GetWatchtowerResolveConcurrency();
         var stageWatch = Stopwatch.StartNew();
         do
         {
@@ -717,28 +720,50 @@ public class WatchtowerService(
             var take = Math.Min(batch, Math.Min(capRoom, budgetRoom));
             if (take <= 0) return;
 
-            var due = await ctx.WantedItems
+            var dueIds = await ctx.WantedItems
                 .Where(w => w.State == WantedItem.StateScouting
                             || (w.State == WantedItem.StateUnavailable
                                 && w.NextCheckAtUnix != null && w.NextCheckAtUnix <= now))
                 .OrderByDescending(w => w.CreatedAtUnix)
                 .Take(take)
+                .Select(w => w.Id)
                 .ToListAsync(ct).ConfigureAwait(false);
 
-            if (due.Count == 0) return;
+            if (dueIds.Count == 0) return;
 
-            foreach (var item in due)
+            if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, ct).ConfigureAwait(false))
             {
-                if (ct.IsCancellationRequested) break;
-                if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, ct).ConfigureAwait(false))
-                {
-                    LogActivity("Watchtower: all indexers out of headroom; pausing resolve until caps reset");
-                    return;
-                }
-                await ResolveOneAsync(ctx, profileToken, item, ct).ConfigureAwait(false);
-                if (await TrySaveBatchItemAsync(ctx, ct).ConfigureAwait(false))
-                    _resolvesToday++;
+                LogActivity("Watchtower: all indexers out of headroom; pausing resolve until caps reset");
+                return;
             }
+
+            await Parallel.ForEachAsync(dueIds, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = concurrency,
+                CancellationToken = ct,
+            }, async (id, itemCt) =>
+            {
+                if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, itemCt).ConfigureAwait(false))
+                    return;
+
+                await using var itemCtx = new DavDatabaseContext();
+                var item = await itemCtx.WantedItems.FirstOrDefaultAsync(w => w.Id == id, itemCt).ConfigureAwait(false);
+                if (item is null) return;
+
+                var resolved = false;
+                try
+                {
+                    await ResolveOneAsync(itemCtx, profileToken, item, itemCt).ConfigureAwait(false);
+                    resolved = true;
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    LogActivity(e, "Watchtower: resolve failed for {Key}", item.Key);
+                }
+
+                if (resolved && await TrySaveBatchItemAsync(itemCtx, itemCt).ConfigureAwait(false))
+                    Interlocked.Increment(ref _resolvesToday);
+            }).ConfigureAwait(false);
         }
         while (auto && stageWatch.Elapsed < AutoStageBudget);
     }
@@ -759,9 +784,18 @@ public class WatchtowerService(
             item.UpdatedAtUnix = now;
             return;
         }
-        var search = await searchProfileService
-            .SearchByImdbAsync(profileToken, item.Type, item.ContentId, ct, verifyIdentity: true, startPreflight: false)
-            .ConfigureAwait(false);
+        SearchProfileService.SearchResult? search;
+        await _indexerGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            search = await searchProfileService
+                .SearchByImdbAsync(profileToken, item.Type, item.ContentId, ct, verifyIdentity: true, startPreflight: false)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _indexerGate.Release();
+        }
         var candidates = search?.Candidates ?? (IReadOnlyList<NzbResolutionCache.Candidate>)Array.Empty<NzbResolutionCache.Candidate>();
 
         var floor = configManager.GetWatchtowerSizeFloorBytes();
@@ -1080,24 +1114,34 @@ public class WatchtowerService(
                         c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
                     return null;
                 }
-                await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, ct).ConfigureAwait(false);
             }
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
-            req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
-            var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(NzbFetchTimeout);
-            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            await _indexerGate.WaitAsync(ct).ConfigureAwait(false);
+            try
             {
-                LogActivity("Watchtower: NZB fetch HTTP {Status} from {Indexer} for {Url}",
-                    (int)resp.StatusCode, c.IndexerName, c.NzbUrl);
-                return null;
+                if (indexer is not null)
+                    await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, ct).ConfigureAwait(false);
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+                req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+                var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(NzbFetchTimeout);
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    LogActivity("Watchtower: NZB fetch HTTP {Status} from {Indexer} for {Url}",
+                        (int)resp.StatusCode, c.IndexerName, c.NzbUrl);
+                    return null;
+                }
+                var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+                _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
+                return bytes;
             }
-            var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-            _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
-            return bytes;
+            finally
+            {
+                _indexerGate.Release();
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
