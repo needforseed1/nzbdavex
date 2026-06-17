@@ -20,6 +20,9 @@ public sealed class ProviderBytesTracker
     private readonly ConcurrentDictionary<string, long> _lifetime = new();
     private long _lifetimeAll;
 
+    private readonly ConcurrentDictionary<string, double> _bytesPerMs = new();
+    private const double SpeedEwmaAlpha = 0.3;
+
     public void Add(string host, long bytes)
     {
         if (bytes <= 0 || string.IsNullOrEmpty(host)) return;
@@ -50,6 +53,19 @@ public sealed class ProviderBytesTracker
     {
         if (string.IsNullOrEmpty(host)) return 0;
         return _lifetime.TryGetValue(host, out var v) ? v : 0;
+    }
+
+    public void RecordSegmentThroughput(string host, long bytes, double activeMs)
+    {
+        if (string.IsNullOrEmpty(host) || bytes <= 0 || activeMs <= 0) return;
+        var sample = bytes / activeMs;
+        _bytesPerMs.AddOrUpdate(host, sample, (_, prev) => prev + SpeedEwmaAlpha * (sample - prev));
+    }
+
+    public double GetBytesPerMs(string host)
+    {
+        if (string.IsNullOrEmpty(host)) return 0;
+        return _bytesPerMs.TryGetValue(host, out var v) ? v : 0;
     }
 
     /// <summary>

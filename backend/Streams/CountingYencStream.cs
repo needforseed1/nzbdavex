@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NzbWebDAV.Services.Metrics;
 using UsenetSharp.Models;
 using UsenetSharp.Streams;
@@ -15,6 +16,8 @@ public sealed class CountingYencStream : YencStream
     private readonly YencStream _inner;
     private readonly ProviderBytesTracker _tracker;
     private readonly string _host;
+    private long _bytes;
+    private long _activeReadTicks;
 
     public CountingYencStream(YencStream inner, ProviderBytesTracker tracker, string host) : base(Null)
     {
@@ -28,14 +31,30 @@ public sealed class CountingYencStream : YencStream
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        var start = Stopwatch.GetTimestamp();
         var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-        if (n > 0) _tracker.Add(_host, n);
+        _activeReadTicks += Stopwatch.GetTimestamp() - start;
+        if (n > 0)
+        {
+            _tracker.Add(_host, n);
+            _bytes += n;
+        }
         return n;
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _inner.Dispose();
+        if (disposing)
+        {
+            if (_bytes > 0 && _activeReadTicks > 0)
+            {
+                var activeMs = _activeReadTicks * 1000.0 / Stopwatch.Frequency;
+                _tracker.RecordSegmentThroughput(_host, _bytes, activeMs);
+            }
+
+            _inner.Dispose();
+        }
+
         base.Dispose(disposing);
     }
 }

@@ -46,6 +46,8 @@ public class MultiProviderNntpClient(
     public sealed class ResponderAttribution { public string? Host; }
     public static readonly AsyncLocal<ResponderAttribution?> AttributionContext = new();
 
+    private readonly object _selectLock = new();
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");
@@ -165,7 +167,8 @@ public class MultiProviderNntpClient(
         if (attribution != null) attribution.Host = null;
         ExceptionDispatchInfo? lastException = null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses = null;
-        var orderedProviders = GetOrderedProviders();
+        var orderedProviders = SelectOrderedProviders(out var reserved);
+        using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         for (var i = 0; i < orderedProviders.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -286,27 +289,35 @@ public class MultiProviderNntpClient(
         return SegmentFetch.FetchStatus.Other;
     }
 
-    private List<MultiConnectionNntpClient> GetOrderedProviders()
+    private List<MultiConnectionNntpClient> SelectOrderedProviders(out MultiConnectionNntpClient? reserved)
     {
-        var enabled = providers
-            .Where(x => x.ProviderType != ProviderType.Disabled)
-            .Where(x => !IsOverLimit(x))
-            .OrderBy(x => x.ProviderType)
-            // Within the same tier, prefer the provider with the most remaining
-            // bytes. Uncapped providers report long.MaxValue and so are always
-            // preferred over a capped one that's been chewed down. The net
-            // effect: when a primary misses and we fall through to two blocks,
-            // the fresher block is picked first — no user effort required.
-            .ThenByDescending(x => GetRemainingBytes(x))
-            .ThenByDescending(x => x.AvailableConnections)
-            .ToList();
+        lock (_selectLock)
+        {
+            var enabled = providers
+                .Where(x => x.ProviderType != ProviderType.Disabled)
+                .Where(x => !IsOverLimit(x))
+                .ToList();
 
-        var healthy = enabled.Where(x => !x.IsTripped).ToList();
+            var healthy = enabled.Where(x => !x.IsTripped).ToList();
+            var pool = healthy.Count > 0 ? healthy : enabled;
 
-        // Always return at least one provider so cooldown probes can fire.
-        // Note we intentionally do NOT relax the over-limit filter here:
-        // exhausting a paid block must be a hard stop, not a soft preference.
-        return healthy.Count > 0 ? healthy : enabled;
+            var ordered = pool
+                .OrderBy(x => x.ProviderType)
+                .ThenByDescending(x => GetRemainingBytes(x))
+                .ThenBy(EstimatedDeliveryScore)
+                .ToList();
+
+            reserved = ordered.Count > 0 ? ordered[0] : null;
+            reserved?.ReservePending();
+            return ordered;
+        }
+    }
+
+    private double EstimatedDeliveryScore(MultiConnectionNntpClient provider)
+    {
+        var inFlight = provider.ActiveConnections + provider.PendingSelections + 1;
+        var bytesPerMs = bytesTracker?.GetBytesPerMs(provider.Host) ?? 0d;
+        return bytesPerMs > 0 ? inFlight / bytesPerMs : inFlight;
     }
 
     private bool IsOverLimit(MultiConnectionNntpClient client)

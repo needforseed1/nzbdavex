@@ -44,6 +44,11 @@ public class MultiConnectionNntpClient(
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int AvailableConnections => connectionPool.AvailableConnections;
 
+    private int _pendingSelections;
+    public int PendingSelections => Volatile.Read(ref _pendingSelections);
+    public void ReservePending() => Interlocked.Increment(ref _pendingSelections);
+    public void ReleasePending() => Interlocked.Decrement(ref _pendingSelections);
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");
