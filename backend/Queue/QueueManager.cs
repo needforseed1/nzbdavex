@@ -174,12 +174,33 @@ public class QueueManager : IDisposable
         };
         var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
         var providersDebounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(500));
+        var progressLock = new object();
+        var latestProgress = 0;
+        var lastSentProgress = -1;
+
+        void SendLatestProgress()
+        {
+            int value;
+            lock (progressLock)
+            {
+                if (latestProgress <= lastSentProgress) return;
+                value = latestProgress;
+                lastSentProgress = value;
+            }
+
+            _websocketManager.SendMessage(WebsocketTopic.QueueItemProgress, $"{queueItem.Id}|{value}");
+        }
+
         progressHook.ProgressChanged += (_, progress) =>
         {
-            inProgressQueueItem.ProgressPercentage = progress;
-            var message = $"{queueItem.Id}|{progress}";
-            if (progress is 100 or 200) _websocketManager.SendMessage(WebsocketTopic.QueueItemProgress, message);
-            else debounce(() => _websocketManager.SendMessage(WebsocketTopic.QueueItemProgress, message));
+            lock (progressLock)
+            {
+                if (progress > latestProgress) latestProgress = progress;
+                inProgressQueueItem.ProgressPercentage = latestProgress;
+            }
+
+            if (progress is 100 or 200) SendLatestProgress();
+            else debounce(SendLatestProgress);
             providersDebounce(() => _websocketManager.SendMessage(
                 WebsocketTopic.QueueItemProviders, BuildProvidersMessage(queueItem.Id)));
         };
