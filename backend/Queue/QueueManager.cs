@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
@@ -12,6 +13,8 @@ namespace NzbWebDAV.Queue;
 public class QueueManager : IDisposable
 {
     private InProgressQueueItem? _inProgressQueueItem;
+
+    private readonly ConcurrentDictionary<Guid, int> _retryAttempts = new();
 
     private readonly UsenetStreamingClient _usenetClient;
     private readonly CancellationTokenSource? _cancellationTokenSource;
@@ -81,6 +84,7 @@ public class QueueManager : IDisposable
 
             await dbClient.RemoveQueueItemsAsync(queueItemIds, ct).ConfigureAwait(false);
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            foreach (var id in queueItemIds) _retryAttempts.TryRemove(id, out _);
         }).ConfigureAwait(false);
     }
 
@@ -163,7 +167,7 @@ public class QueueManager : IDisposable
         var task = new QueueItemProcessor(
             queueItem, queueNzbStream, dbClient, usenetClient,
             _configManager, _websocketManager, _providerUsageTracker,
-            _watchdogLog, _sourceTracker, progressHook, cts.Token
+            _watchdogLog, _sourceTracker, progressHook, _retryAttempts, cts.Token
         ).ProcessAsync();
         var inProgressQueueItem = new InProgressQueueItem()
         {

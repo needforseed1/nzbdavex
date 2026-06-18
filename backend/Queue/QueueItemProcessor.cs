@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.SabControllers.GetHistory;
@@ -32,9 +33,18 @@ public class QueueItemProcessor(
     WatchdogLog watchdogLog,
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
+    ConcurrentDictionary<Guid, int> retryAttempts,
     CancellationToken ct
 )
 {
+    private const int MaxProviderRetryAttempts = 20;
+
+    private static TimeSpan GetProviderRetryBackoff(int attempt)
+    {
+        var seconds = Math.Min(60d, 10d * Math.Pow(2, attempt - 1));
+        return TimeSpan.FromSeconds(seconds);
+    }
+
     public async Task ProcessAsync()
     {
         // initialize
@@ -57,17 +67,24 @@ public class QueueItemProcessor(
             dbClient.Ctx.ClearChangeTracker();
         }
 
-        // when a retryable error is encountered
-        // let's not remove the item from the queue
-        // to give it a chance to retry. Simply
-        // log the error and retry in a minute.
         catch (Exception e) when (e.IsRetryableDownloadException())
         {
             try
             {
-                Log.Error($"Failed to process job, `{queueItem.JobName}` -- {e.Message}");
+                var attempt = retryAttempts.AddOrUpdate(queueItem.Id, 1, (_, prev) => prev + 1);
+                if (attempt > MaxProviderRetryAttempts)
+                {
+                    Log.Error($"Giving up on `{queueItem.JobName}` after {attempt - 1} provider-connection " +
+                              $"failures -- {e.Message}");
+                    await MarkQueueItemCompleted(startTime, error: e.Message).ConfigureAwait(false);
+                    return;
+                }
+
+                var backoff = GetProviderRetryBackoff(attempt);
+                Log.Warning($"Provider connection issue for `{queueItem.JobName}` " +
+                            $"(attempt {attempt}/{MaxProviderRetryAttempts}); retrying in {backoff.TotalSeconds:0}s -- {e.Message}");
                 dbClient.Ctx.ClearChangeTracker();
-                queueItem.PauseUntil = DateTime.Now.AddMinutes(1);
+                queueItem.PauseUntil = DateTime.Now + backoff;
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
@@ -399,6 +416,7 @@ public class QueueItemProcessor(
         _ = DavDatabaseContext.RcloneVfsForget(["/nzbs"]);
         _ = RefreshMonitoredDownloads();
         RecordWatchdogAttemptIfExternal(startTime, error, providerUsage);
+        retryAttempts.TryRemove(queueItem.Id, out _);
     }
 
     // Emits a Watchdog attempt entry for queue items that didn't come through
