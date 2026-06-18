@@ -21,6 +21,8 @@ public class UsenetProviderConfig
         public required string Pass { get; set; }
         public required int MaxConnections { get; set; }
 
+        public int Priority { get; set; }
+
         // Optional user-friendly label shown in the UI in place of Host. Host is
         // still the real NNTP target and the stable key used for metrics/logs.
         public string? Nickname { get; set; }

@@ -30,10 +30,12 @@ public class MultiConnectionNntpClient(
     ProviderCircuitBreaker circuitBreaker,
     string host,
     long? byteLimit,
-    long bytesUsedOffset
+    long bytesUsedOffset,
+    int priority
 ) : NntpClient
 {
     public ProviderType ProviderType { get; } = type;
+    public int Priority { get; } = priority;
     public string Host { get; } = host;
     // null or non-positive = uncapped. Routing reads these to decide whether
     // this provider should be skipped when it has exhausted its block.
@@ -49,6 +51,8 @@ public class MultiConnectionNntpClient(
     public int PendingSelections => Volatile.Read(ref _pendingSelections);
     public void ReservePending() => Interlocked.Increment(ref _pendingSelections);
     public void ReleasePending() => Interlocked.Decrement(ref _pendingSelections);
+
+    public bool HasSpareConnection => AvailableConnections - PendingSelections > 0;
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {

@@ -180,6 +180,12 @@ public class ConfigManager
         return v != null && bool.Parse(v);
     }
 
+    public bool IsCascadeEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.cascade.enabled"));
+        return v != null && bool.Parse(v);
+    }
+
     public int GetPipeliningDepth()
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.depth"));

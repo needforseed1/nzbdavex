@@ -81,7 +81,8 @@ public class UsenetStreamingClient : WrappingNntpClient
                 connectionPoolStats.GetOnConnectionPoolChanged(index)
             ))
             .ToList();
-        return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker);
+        return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
+            cascadeEnabled: configManager.IsCascadeEnabled);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient
@@ -102,7 +103,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             circuitBreaker,
             connectionDetails.Host,
             connectionDetails.ByteLimit,
-            connectionDetails.BytesUsedOffset
+            connectionDetails.BytesUsedOffset,
+            connectionDetails.Priority
         );
     }
 

@@ -1,7 +1,24 @@
 import styles from "./usenet.module.css"
-import { type Dispatch, type SetStateAction, useState, useCallback, useEffect, useMemo } from "react";
+import { type Dispatch, type SetStateAction, type ReactNode, type CSSProperties, useState, useCallback, useEffect, useMemo } from "react";
 import { Button } from "react-bootstrap";
 import { receiveMessage } from "~/utils/websocket-util";
+import {
+    DndContext,
+    type DragEndEvent,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+} from "@dnd-kit/core";
+import {
+    SortableContext,
+    arrayMove,
+    rectSortingStrategy,
+    sortableKeyboardCoordinates,
+    useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 const usenetConnectionsTopic = {'cxs': 'state'};
 const USAGE_POLL_INTERVAL_MS = 10_000;
@@ -26,6 +43,7 @@ type ConnectionDetails = {
     User: string;
     Pass: string;
     MaxConnections: number;
+    Priority?: number;
     // Optional user-set label. Shown in the UI in place of Host when present;
     // Host stays the real NNTP target.
     Nickname?: string;
@@ -133,6 +151,26 @@ function serializeProviderConfig(config: UsenetProviderConfig): string {
     return JSON.stringify(config);
 }
 
+type DragBits = {
+    setNodeRef: (node: HTMLElement | null) => void;
+    setActivatorNodeRef: (node: HTMLElement | null) => void;
+    attributes: any;
+    listeners: any;
+    style: CSSProperties;
+    isDragging: boolean;
+};
+
+function SortableItem({ id, disabled, children }: { id: number; disabled: boolean; children: (drag: DragBits) => ReactNode }) {
+    const { setNodeRef, setActivatorNodeRef, attributes, listeners, transform, transition, isDragging } = useSortable({ id, disabled });
+    const style: CSSProperties = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.6 : 1,
+        zIndex: isDragging ? 2 : undefined,
+    };
+    return <>{children({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging })}</>;
+}
+
 export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     // state
     const [showModal, setShowModal] = useState(false);
@@ -140,6 +178,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     const [connections, setConnections] = useState<{[index: number]: ConnectionCounts}>({});
     const [usage, setUsage] = useState<{[index: number]: ProviderUsage}>({});
     const providerConfig = useMemo(() => parseProviderConfig(config["usenet.providers"]), [config]);
+    const cascadeEnabled = config["usenet.cascade.enabled"] === "true";
 
     // handlers
     const handleAddProvider = useCallback(() => {
@@ -191,15 +230,33 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     }, []);
 
     const handleSaveProvider = useCallback((provider: ConnectionDetails) => {
-        const newProviderConfig = { ...providerConfig };
+        const providers = [...providerConfig.Providers];
         if (editingIndex !== null) {
-            newProviderConfig.Providers[editingIndex] = provider;
+            providers[editingIndex] = provider;
         } else {
-            newProviderConfig.Providers.push(provider);
+            providers.push({ ...provider, Priority: providers.length });
         }
-        setNewConfig({ ...config, "usenet.providers": serializeProviderConfig(newProviderConfig) });
+        setNewConfig({ ...config, "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }) });
         handleCloseModal();
     }, [config, providerConfig, editingIndex, setNewConfig, handleCloseModal]);
+
+    const handleReorder = useCallback((from: number, to: number) => {
+        if (from === to) return;
+        const providers = arrayMove(providerConfig.Providers, from, to)
+            .map((p, i) => ({ ...p, Priority: i }));
+        setNewConfig({ ...config, "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }) });
+    }, [config, providerConfig, setNewConfig]);
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    );
+
+    const handleDragEnd = useCallback((event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over || active.id === over.id) return;
+        handleReorder(Number(active.id), Number(over.id));
+    }, [handleReorder]);
 
     const handleConnectionsMessage = useCallback((message: string) => {
         const parts = (message || "0|0|0|0|1|0").split("|");
@@ -273,15 +330,24 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         Click on the "Add" button to get started.
                     </p>
                 ) : (
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={providerConfig.Providers.map((_, i) => i)} strategy={rectSortingStrategy}>
                     <div className={styles["providers-grid"]}>
                         {providerConfig.Providers.map((provider, index) => {
                             const isDisabled = provider.Type === ProviderType.Disabled;
                             return (
-                            <div key={index} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
+                            <SortableItem key={index} id={index} disabled={!cascadeEnabled}>
+                            {({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging }) => (
+                            <div ref={setNodeRef} style={style} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
                                 <div className={styles["provider-card-inner"]}>
                                     <div className={styles["provider-header"]}>
                                         <div className={styles["provider-header-content"]}>
                                             <div className={styles["provider-host"]}>
+                                                {cascadeEnabled && !isDisabled && (
+                                                    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 18, padding: "0 6px", marginRight: 7, borderRadius: 9, fontSize: 11, fontWeight: 700, lineHeight: 1, color: "#fff", background: "var(--bs-primary, #0d6efd)", verticalAlign: "middle" }}>
+                                                        #{index + 1}
+                                                    </span>
+                                                )}
                                                 {provider.Nickname?.trim() || provider.Host}
                                                 {isDisabled && <span className={styles["provider-disabled-badge"]}>Disabled</span>}
                                             </div>
@@ -295,6 +361,24 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                             </div>
                                         </div>
                                         <div className={styles["provider-header-actions"]}>
+                                            {cascadeEnabled && (
+                                                <button
+                                                    type="button"
+                                                    ref={setActivatorNodeRef}
+                                                    className={styles["header-action-button"]}
+                                                    style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: "none" }}
+                                                    title="Drag to reorder"
+                                                    aria-label="Drag to reorder"
+                                                    {...attributes}
+                                                    {...listeners}
+                                                >
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                        <circle cx="9" cy="5" r="1.6" /><circle cx="15" cy="5" r="1.6" />
+                                                        <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+                                                        <circle cx="9" cy="19" r="1.6" /><circle cx="15" cy="19" r="1.6" />
+                                                    </svg>
+                                                </button>
+                                            )}
                                             <button
                                                 className={`${styles["header-action-button"]} ${styles["toggle"]} ${isDisabled ? styles["toggle-off"] : styles["toggle-on"]}`}
                                                 onClick={() => handleToggleProvider(index)}
@@ -397,7 +481,9 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 </div>
                                                 <div className={styles["provider-detail-content"]}>
                                                     <span className={styles["provider-detail-label"]}>Behavior</span>
-                                                    <span className={styles["provider-detail-value"]}>{PROVIDER_TYPE_LABELS[provider.Type]}</span>
+                                                    <span className={styles["provider-detail-value"]}>
+                                                        {PROVIDER_TYPE_LABELS[provider.Type]}
+                                                    </span>
                                                 </div>
                                             </div>
 
@@ -411,10 +497,49 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                     </div>
                                 </div>
                             </div>
+                            )}
+                            </SortableItem>
                             );
                         })}
                     </div>
+                    </SortableContext>
+                    </DndContext>
                 )}
+            </div>
+
+            <div className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <div>Cascade (Optional)</div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="cascade-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={cascadeEnabled}
+                            onChange={(e) => {
+                                const enabling = e.target.checked;
+                                const needsSeed = enabling && providerConfig.Providers.every(p => !p.Priority);
+                                const providers = needsSeed
+                                    ? providerConfig.Providers.map((p, i) => ({ ...p, Priority: i }))
+                                    : providerConfig.Providers;
+                                setNewConfig({
+                                    ...config,
+                                    "usenet.cascade.enabled": enabling ? "true" : "false",
+                                    "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }),
+                                });
+                            }}
+                        />
+                        <label htmlFor="cascade-enabled" className={styles["form-checkbox-label"]}>
+                            Enable cascade routing
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Sets the order your providers are used. Drag the cards to arrange them. While this is off, all
+                        providers are used together.
+                    </div>
+                </div>
             </div>
 
             <div className={styles.section}>
@@ -657,6 +782,7 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
             User: user,
             Pass: pass,
             MaxConnections: parseInt(maxConnections, 10),
+            Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
             ByteLimit: byteLimit,
@@ -810,6 +936,7 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
                             </select>
                         </div>
 
+
                         <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
                             <div className={styles["form-checkbox-wrapper"]}>
                                 <input
@@ -930,6 +1057,7 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
     return config["usenet.providers"] !== newConfig["usenet.providers"]
         || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
+        || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
 }
 
 export function isPositiveInteger(value: string) {

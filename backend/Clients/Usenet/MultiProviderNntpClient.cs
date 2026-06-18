@@ -17,7 +17,8 @@ public class MultiProviderNntpClient(
     List<MultiConnectionNntpClient> providers,
     ProviderUsageTracker usageTracker,
     MetricsWriter? metricsWriter = null,
-    ProviderBytesTracker? bytesTracker = null
+    ProviderBytesTracker? bytesTracker = null,
+    Func<bool>? cascadeEnabled = null
 ) : NntpClient
 {
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -302,8 +303,11 @@ public class MultiProviderNntpClient(
             var healthy = enabled.Where(x => !x.IsTripped).ToList();
             var pool = healthy.Count > 0 ? healthy : enabled;
 
-            var ordered = pool
-                .OrderBy(x => x.ProviderType)
+            var byTier = pool.OrderBy(x => x.ProviderType);
+            var prioritized = cascadeEnabled?.Invoke() == true
+                ? byTier.ThenBy(EffectivePriority)
+                : byTier;
+            var ordered = prioritized
                 .ThenByDescending(x => GetRemainingBytes(x))
                 .ThenBy(EstimatedDeliveryScore)
                 .ToList();
@@ -312,6 +316,12 @@ public class MultiProviderNntpClient(
             reserved?.ReservePending();
             return ordered;
         }
+    }
+
+    private static int EffectivePriority(MultiConnectionNntpClient provider)
+    {
+        const int saturationDemotion = 1 << 20;
+        return provider.Priority + (provider.HasSpareConnection ? 0 : saturationDemotion);
     }
 
     private double EstimatedDeliveryScore(MultiConnectionNntpClient provider)
