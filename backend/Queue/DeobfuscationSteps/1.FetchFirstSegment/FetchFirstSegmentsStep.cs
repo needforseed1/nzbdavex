@@ -6,6 +6,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
+using Serilog;
 using UsenetSharp.Models;
 using UsenetSharp.Streams;
 
@@ -26,7 +27,7 @@ public static class FetchFirstSegmentsStep
 
         if (configManager.IsPipeliningEnabled())
             return await FetchFirstSegmentsPipelined(
-                files, usenetClient, configManager.GetPipeliningDepth(), cancellationToken, progress).ConfigureAwait(false);
+                files, usenetClient, configManager, cancellationToken, progress).ConfigureAwait(false);
 
         return await files
             .Select(x => FetchFirstSegment(x, usenetClient, cancellationToken))
@@ -38,35 +39,81 @@ public static class FetchFirstSegmentsStep
     (
         List<NzbFile> files,
         INntpClient usenetClient,
-        int depth,
+        ConfigManager configManager,
         CancellationToken cancellationToken,
         IProgress<int>? progress
     )
     {
+        var depth = configManager.GetPipeliningDepth();
         var segmentIds = files.Select(x => x.Segments[0].MessageId).ToList();
-        var results = new List<NzbFileWithFirstSegment>(files.Count);
+        var results = new NzbFileWithFirstSegment?[files.Count];
+        var completed = 0;
         var index = 0;
-        await foreach (var article in usenetClient.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+
+        try
         {
-            var nzbFile = files[index++];
-            if (article.Found && article.Stream != null)
-                results.Add(await BuildFirstSegment(nzbFile, article.Stream, article.ArticleHeaders, cancellationToken)
-                    .ConfigureAwait(false));
-            else
-                results.Add(new NzbFileWithFirstSegment
+            await foreach (var article in usenetClient.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
+                               .WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                var i = index++;
+                if (article.Found && article.Stream != null)
                 {
-                    NzbFile = nzbFile,
-                    First16KB = null,
-                    Header = null,
-                    MissingFirstSegment = true,
-                    ReleaseDate = DateTimeOffset.UtcNow,
-                });
-            progress?.Report(results.Count);
+                    results[i] = await BuildFirstSegment(files[i], article.Stream, article.ArticleHeaders, cancellationToken)
+                        .ConfigureAwait(false);
+                    progress?.Report(++completed);
+                }
+            }
+        }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            Log.Debug($"Pipelined first-segment fetch aborted early ({e.Message}); " +
+                      "falling back to per-article failover for the remainder.");
         }
 
-        return results;
+        var pending = Enumerable.Range(0, files.Count).Where(i => results[i] is null).ToList();
+        if (pending.Count > 0)
+        {
+            var rescued = await pending
+                .Select(i => RescueFirstSegment(i, files[i], usenetClient, cancellationToken))
+                .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
+                .GetAllAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var (i, result) in rescued)
+            {
+                results[i] = result;
+                progress?.Report(++completed);
+            }
+        }
+
+        return results.Select(x => x!).ToList();
     }
+
+    private static async Task<(int index, NzbFileWithFirstSegment result)> RescueFirstSegment
+    (
+        int index,
+        NzbFile nzbFile,
+        INntpClient usenetClient,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            return (index, await FetchFirstSegment(nzbFile, usenetClient, cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            Log.Warning($"First segment for `{nzbFile.GetSubjectFileName()}` unavailable from all providers: {e.Message}");
+            return (index, BuildMissingFirstSegment(nzbFile));
+        }
+    }
+
+    private static NzbFileWithFirstSegment BuildMissingFirstSegment(NzbFile nzbFile) => new()
+    {
+        NzbFile = nzbFile,
+        First16KB = null,
+        Header = null,
+        MissingFirstSegment = true,
+        ReleaseDate = DateTimeOffset.UtcNow,
+    };
 
     private static async Task<NzbFileWithFirstSegment> BuildFirstSegment
     (
@@ -147,14 +194,7 @@ public static class FetchFirstSegmentsStep
         }
         catch (UsenetArticleNotFoundException)
         {
-            return new NzbFileWithFirstSegment
-            {
-                NzbFile = nzbFile,
-                First16KB = null,
-                Header = null,
-                MissingFirstSegment = true,
-                ReleaseDate = DateTimeOffset.UtcNow
-            };
+            return BuildMissingFirstSegment(nzbFile);
         }
     }
 
