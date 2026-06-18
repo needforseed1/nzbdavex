@@ -151,6 +151,10 @@ function serializeProviderConfig(config: UsenetProviderConfig): string {
     return JSON.stringify(config);
 }
 
+function providerKey(p: ConnectionDetails): string {
+    return `${p.Host}::${p.Port}::${p.User}`;
+}
+
 type DragBits = {
     setNodeRef: (node: HTMLElement | null) => void;
     setActivatorNodeRef: (node: HTMLElement | null) => void;
@@ -160,7 +164,7 @@ type DragBits = {
     isDragging: boolean;
 };
 
-function SortableItem({ id, disabled, children }: { id: number; disabled: boolean; children: (drag: DragBits) => ReactNode }) {
+function SortableItem({ id, disabled, children }: { id: string; disabled: boolean; children: (drag: DragBits) => ReactNode }) {
     const { setNodeRef, setActivatorNodeRef, attributes, listeners, transform, transition, isDragging } = useSortable({ id, disabled });
     const style: CSSProperties = {
         transform: CSS.Transform.toString(transform),
@@ -255,8 +259,11 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     const handleDragEnd = useCallback((event: DragEndEvent) => {
         const { active, over } = event;
         if (!over || active.id === over.id) return;
-        handleReorder(Number(active.id), Number(over.id));
-    }, [handleReorder]);
+        const ids = providerConfig.Providers.map(providerKey);
+        const from = ids.indexOf(String(active.id));
+        const to = ids.indexOf(String(over.id));
+        if (from !== -1 && to !== -1) handleReorder(from, to);
+    }, [providerConfig, handleReorder]);
 
     const handleConnectionsMessage = useCallback((message: string) => {
         const parts = (message || "0|0|0|0|1|0").split("|");
@@ -331,12 +338,12 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     </p>
                 ) : (
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                    <SortableContext items={providerConfig.Providers.map((_, i) => i)} strategy={rectSortingStrategy}>
+                    <SortableContext items={providerConfig.Providers.map(providerKey)} strategy={rectSortingStrategy}>
                     <div className={styles["providers-grid"]}>
                         {providerConfig.Providers.map((provider, index) => {
                             const isDisabled = provider.Type === ProviderType.Disabled;
                             return (
-                            <SortableItem key={index} id={index} disabled={!cascadeEnabled}>
+                            <SortableItem key={providerKey(provider)} id={providerKey(provider)} disabled={!cascadeEnabled}>
                             {({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging }) => (
                             <div ref={setNodeRef} style={style} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
                                 <div className={styles["provider-card-inner"]}>
@@ -344,7 +351,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                         <div className={styles["provider-header-content"]}>
                                             <div className={styles["provider-host"]}>
                                                 {cascadeEnabled && !isDisabled && (
-                                                    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 18, padding: "0 6px", marginRight: 7, borderRadius: 9, fontSize: 11, fontWeight: 700, lineHeight: 1, color: "#fff", background: "var(--bs-primary, #0d6efd)", verticalAlign: "middle" }}>
+                                                    <span style={{ display: "inline-block", marginRight: 8, padding: "2px 8px", fontSize: 9, fontWeight: 600, letterSpacing: "0.08em", color: "var(--text-muted)", background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", borderRadius: 6, verticalAlign: "middle" }}>
                                                         #{index + 1}
                                                     </span>
                                                 )}
