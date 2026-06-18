@@ -188,9 +188,15 @@ public class QueueItemProcessor(
             var healthCheckConcurrency = configManager
                 .GetUsenetProviderConfig()
                 .TotalPooledConnections;
-            await usenetClient
-                .CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency, part3Progress, ct)
-                .ConfigureAwait(false);
+            if (configManager.IsPipeliningEnabled())
+                await usenetClient
+                    .CheckAllSegmentsPipelinedAsync(articlesToCheck, configManager.GetPipeliningDepth(),
+                        healthCheckConcurrency, part3Progress, ct)
+                    .ConfigureAwait(false);
+            else
+                await usenetClient
+                    .CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency, part3Progress, ct)
+                    .ConfigureAwait(false);
             checkedFullHealth = true;
         }
 

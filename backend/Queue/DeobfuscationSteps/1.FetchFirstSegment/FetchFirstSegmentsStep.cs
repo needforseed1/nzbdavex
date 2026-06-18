@@ -1,11 +1,13 @@
 // ReSharper disable InconsistentNaming
 
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using UsenetSharp.Models;
+using UsenetSharp.Streams;
 
 namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
@@ -20,11 +22,82 @@ public static class FetchFirstSegmentsStep
         IProgress<int>? progress = null
     )
     {
-        return await nzbFiles
-            .Where(x => x.Segments.Count > 0)
+        var files = nzbFiles.Where(x => x.Segments.Count > 0).ToList();
+
+        if (configManager.IsPipeliningEnabled())
+            return await FetchFirstSegmentsPipelined(
+                files, usenetClient, configManager.GetPipeliningDepth(), cancellationToken, progress).ConfigureAwait(false);
+
+        return await files
             .Select(x => FetchFirstSegment(x, usenetClient, cancellationToken))
             .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
             .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+    }
+
+    private static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegmentsPipelined
+    (
+        List<NzbFile> files,
+        INntpClient usenetClient,
+        int depth,
+        CancellationToken cancellationToken,
+        IProgress<int>? progress
+    )
+    {
+        var segmentIds = files.Select(x => x.Segments[0].MessageId).ToList();
+        var results = new List<NzbFileWithFirstSegment>(files.Count);
+        var index = 0;
+        await foreach (var article in usenetClient.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            var nzbFile = files[index++];
+            if (article.Found && article.Stream != null)
+                results.Add(await BuildFirstSegment(nzbFile, article.Stream, article.ArticleHeaders, cancellationToken)
+                    .ConfigureAwait(false));
+            else
+                results.Add(new NzbFileWithFirstSegment
+                {
+                    NzbFile = nzbFile,
+                    First16KB = null,
+                    Header = null,
+                    MissingFirstSegment = true,
+                    ReleaseDate = DateTimeOffset.UtcNow,
+                });
+            progress?.Report(results.Count);
+        }
+
+        return results;
+    }
+
+    private static async Task<NzbFileWithFirstSegment> BuildFirstSegment
+    (
+        NzbFile nzbFile,
+        YencStream bodyStream,
+        UsenetArticleHeader? articleHeaders,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var stream = bodyStream;
+        var totalRead = 0;
+        var buffer = new byte[16 * 1024];
+        while (totalRead < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead), cancellationToken)
+                .ConfigureAwait(false);
+            if (read == 0) break;
+            totalRead += read;
+        }
+
+        var first16KB = totalRead < buffer.Length ? buffer.AsSpan(0, totalRead).ToArray() : buffer;
+        var yencHeaders = await stream.GetYencHeadersAsync(cancellationToken).ConfigureAwait(false);
+
+        return new NzbFileWithFirstSegment
+        {
+            NzbFile = nzbFile,
+            First16KB = first16KB,
+            Header = yencHeaders,
+            MissingFirstSegment = false,
+            ReleaseDate = articleHeaders?.Date ?? DateTimeOffset.UtcNow,
+        };
     }
 
     private static async Task<NzbFileWithFirstSegment> FetchFirstSegment

@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Contexts;
@@ -283,6 +284,60 @@ public class MultiConnectionNntpClient(
 
         Log.Error("Unreachable code reached");
         throw new InvalidOperationException("Unreachable code ");
+    }
+
+    public override IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
+        => RunPipelinedAsync(c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+
+    public override IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
+        => RunPipelinedAsync(c => c.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+
+    public override IAsyncEnumerable<PipelinedArticleResult> DecodedArticlesPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
+        => RunPipelinedAsync(c => c.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+
+    private async IAsyncEnumerable<T> RunPipelinedAsync<T>(
+        Func<INntpClient, IAsyncEnumerable<T>> batchFactory,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var priority = GetDownloadPriority(cancellationToken);
+        var connectionLock = await connectionPool.GetConnectionLockAsync(priority, cancellationToken).ConfigureAwait(false);
+        var completed = false;
+        try
+        {
+            await using var enumerator = batchFactory(connectionLock.Connection)
+                .GetAsyncEnumerator(cancellationToken);
+            while (true)
+            {
+                T current;
+                try
+                {
+                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                    {
+                        completed = true;
+                        break;
+                    }
+
+                    current = enumerator.Current;
+                }
+                catch (Exception e) when (!e.IsCancellationException())
+                {
+                    circuitBreaker.RecordFailure();
+                    connectionLock.Replace();
+                    throw;
+                }
+
+                circuitBreaker.RecordSuccess();
+                yield return current;
+            }
+        }
+        finally
+        {
+            if (!completed) connectionLock.Replace();
+            connectionLock.Dispose();
+        }
     }
 
     private static SemaphorePriority GetDownloadPriority(CancellationToken ct)

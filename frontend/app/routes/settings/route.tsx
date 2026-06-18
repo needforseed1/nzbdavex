@@ -41,6 +41,8 @@ const defaultConfig = {
     "usenet.segment-cache.enabled": "false",
     "usenet.segment-cache.path": "/config/segment-cache",
     "usenet.segment-cache.max-gb": "10",
+    "usenet.pipelining.enabled": "false",
+    "usenet.pipelining.depth": "8",
     "webdav.user": "admin",
     "webdav.pass": "",
     "webdav.show-hidden-files": "false",

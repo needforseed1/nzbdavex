@@ -174,6 +174,19 @@ public class ConfigManager
         return Math.Clamp(value, 1, pool);
     }
 
+    public bool IsPipeliningEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.enabled"));
+        return v != null && bool.Parse(v);
+    }
+
+    public int GetPipeliningDepth()
+    {
+        var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.depth"));
+        if (configured is null || !int.TryParse(configured, out var value)) return 8;
+        return Math.Clamp(value, 1, 64);
+    }
+
     public int GetArticleBufferSize()
     {
         return int.Parse(

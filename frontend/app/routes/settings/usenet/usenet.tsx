@@ -417,6 +417,49 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 )}
             </div>
 
+            <div className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <div>NNTP Pipelining (Experimental)</div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="pipelining-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.pipelining.enabled"] === "true"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.pipelining.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="pipelining-enabled" className={styles["form-checkbox-label"]}>
+                            Enable NNTP pipelining
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Sends multiple article requests per connection without waiting for each response.
+                        Speeds up queue imports and streaming, especially on high-latency providers.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <label htmlFor="pipelining-depth" className={styles["form-label"]}>
+                        Pipeline depth
+                    </label>
+                    <input
+                        type="text"
+                        id="pipelining-depth"
+                        className={`${styles["form-input"]} ${config["usenet.pipelining.depth"] !== undefined && config["usenet.pipelining.depth"] !== "" && !isPositiveInteger(config["usenet.pipelining.depth"]) ? styles.error : ""}`}
+                        placeholder="8"
+                        value={config["usenet.pipelining.depth"] ?? ""}
+                        onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
+                    />
+                    <div className={styles["form-hint"]}>
+                        Requests kept in flight per connection (1–64). 8 is a good default.
+                    </div>
+                </div>
+            </div>
+
             <ProviderModal
                 show={showModal}
                 provider={editingIndex !== null ? providerConfig.Providers[editingIndex] : null}
@@ -885,6 +928,8 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
 
 export function isUsenetSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["usenet.providers"] !== newConfig["usenet.providers"]
+        || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
+        || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
 }
 
 export function isPositiveInteger(value: string) {

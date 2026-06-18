@@ -1,4 +1,5 @@
-﻿using NzbWebDAV.Clients.Usenet.Models;
+﻿using System.Runtime.CompilerServices;
+using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using UsenetSharp.Clients;
@@ -140,6 +141,78 @@ public class BaseNntpClient : NntpClient
     public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
     {
         return _client.DateAsync(cancellationToken);
+    }
+
+    public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync
+    (
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        var ids = ToSegmentIds(segmentIds);
+        var index = 0;
+        await foreach (var response in _client.StatPipelinedAsync(ids, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            yield return new PipelinedStatResult
+            {
+                SegmentId = segmentIds[index++],
+                Exists = response.ArticleExists,
+            };
+        }
+    }
+
+    public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync
+    (
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        var ids = ToSegmentIds(segmentIds);
+        await foreach (var response in _client.BodyPipelinedAsync(ids, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            var found = response.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
+                        && response.Stream != null;
+            yield return new PipelinedBodyResult
+            {
+                SegmentId = response.SegmentId,
+                Found = found,
+                Stream = found ? new YencStream(response.Stream!) : null,
+            };
+        }
+    }
+
+    public override async IAsyncEnumerable<PipelinedArticleResult> DecodedArticlesPipelinedAsync
+    (
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        var ids = ToSegmentIds(segmentIds);
+        await foreach (var response in _client.ArticlePipelinedAsync(ids, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            var found = response.ResponseType == UsenetResponseType.ArticleRetrievedHeadAndBodyFollow
+                        && response.Stream != null;
+            yield return new PipelinedArticleResult
+            {
+                SegmentId = response.SegmentId,
+                Found = found,
+                Stream = found ? new YencStream(response.Stream!) : null,
+                ArticleHeaders = response.ArticleHeaders,
+            };
+        }
+    }
+
+    private static List<SegmentId> ToSegmentIds(IReadOnlyList<string> segmentIds)
+    {
+        var ids = new List<SegmentId>(segmentIds.Count);
+        foreach (var segmentId in segmentIds) ids.Add(segmentId);
+        return ids;
     }
 
     public override void Dispose()

@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Database.Models.Metrics;
@@ -338,6 +339,83 @@ public class MultiProviderNntpClient(
         if (bytesTracker == null || !limit.HasValue || limit.Value <= 0) return long.MaxValue;
         var used = bytesTracker.GetLifetime(client.Host) + client.BytesUsedOffset;
         return Math.Max(0, limit.Value - used);
+    }
+
+    public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (segmentIds.Count == 0) yield break;
+        var orderedProviders = SelectOrderedProviders(out var reserved);
+        using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+        var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
+        if (primary == null) yield break;
+
+        await foreach (var result in primary.StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+            yield return result;
+    }
+
+    public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (segmentIds.Count == 0) yield break;
+        var orderedProviders = SelectOrderedProviders(out var reserved);
+        using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+        var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
+        if (primary == null) yield break;
+
+        await foreach (var result in primary.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            if (result.Found)
+            {
+                usageTracker.RecordSuccess(primary.Host);
+                yield return WrapPipelinedBody(result, primary.Host);
+            }
+            else
+            {
+                yield return result;
+            }
+        }
+    }
+
+    public override async IAsyncEnumerable<PipelinedArticleResult> DecodedArticlesPipelinedAsync(
+        IReadOnlyList<string> segmentIds, int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (segmentIds.Count == 0) yield break;
+        var orderedProviders = SelectOrderedProviders(out var reserved);
+        using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+        var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
+        if (primary == null) yield break;
+
+        await foreach (var result in primary.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            if (result.Found)
+            {
+                usageTracker.RecordSuccess(primary.Host);
+                yield return WrapPipelinedArticle(result, primary.Host);
+            }
+            else
+            {
+                yield return result;
+            }
+        }
+    }
+
+    private PipelinedBodyResult WrapPipelinedBody(PipelinedBodyResult result, string host)
+    {
+        if (bytesTracker == null || result.Stream == null) return result;
+        return result with { Stream = new CountingYencStream(result.Stream, bytesTracker, host) };
+    }
+
+    private PipelinedArticleResult WrapPipelinedArticle(PipelinedArticleResult result, string host)
+    {
+        if (bytesTracker == null || result.Stream == null) return result;
+        return result with { Stream = new CountingYencStream(result.Stream, bytesTracker, host) };
     }
 
     public override void Dispose()

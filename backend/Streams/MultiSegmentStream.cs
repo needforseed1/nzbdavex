@@ -17,6 +17,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     private readonly INntpClient _usenetClient;
     private readonly long _expectedSegmentSize;
     private readonly bool _failFastOnFirstSegment;
+    private readonly int _pipeliningDepth;
     private readonly Channel<Task<Stream>> _streamTasks;
     private readonly ContextualCancellationTokenSource _cts;
     private Stream? _stream;
@@ -32,10 +33,11 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         CancellationToken cancellationToken
     )
     {
-        return articleBufferSize == 0
-            ? new UnbufferedMultiSegmentStream(segmentIds, usenetClient, expectedSegmentSize)
-            : new MultiSegmentStream(segmentIds, usenetClient, articleBufferSize, expectedSegmentSize,
-                failFastOnFirstSegment, cancellationToken);
+        if (articleBufferSize == 0)
+            return new UnbufferedMultiSegmentStream(segmentIds, usenetClient, expectedSegmentSize);
+
+        return new MultiSegmentStream(segmentIds, usenetClient, articleBufferSize, usenetClient.PipeliningDepth,
+            expectedSegmentSize, failFastOnFirstSegment, cancellationToken);
     }
 
     private MultiSegmentStream
@@ -43,6 +45,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         Memory<string> segmentIds,
         INntpClient usenetClient,
         int articleBufferSize,
+        int pipeliningDepth,
         long expectedSegmentSize,
         bool failFastOnFirstSegment,
         CancellationToken cancellationToken
@@ -50,11 +53,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     {
         _segmentIds = segmentIds;
         _usenetClient = usenetClient;
+        _pipeliningDepth = pipeliningDepth;
         _expectedSegmentSize = expectedSegmentSize;
         _failFastOnFirstSegment = failFastOnFirstSegment;
         _streamTasks = Channel.CreateBounded<Task<Stream>>(articleBufferSize);
         _cts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _ = DownloadSegments(_cts.Token);
+        _ = pipeliningDepth > 0
+            ? DownloadSegmentsPipelined(pipeliningDepth, _cts.Token)
+            : DownloadSegments(_cts.Token);
     }
 
     private async Task DownloadSegments(CancellationToken cancellationToken)
@@ -142,6 +148,57 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                     segmentId, e);
             }
         }
+    }
+
+    private async Task DownloadSegmentsPipelined(int depth, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var segmentIds = _segmentIds.ToArray();
+            var index = 0;
+            await foreach (var result in _usenetClient.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken)
+                               .WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                await _streamTasks.Writer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                var isFirstSegment = index == 0;
+                index++;
+                var streamTask = MaterializeSegment(result, isFirstSegment, cancellationToken);
+                if (_streamTasks.Writer.TryWrite(streamTask)) continue;
+
+                _ = Task.Run(async () => await (await streamTask).DisposeAsync(), CancellationToken.None);
+                break;
+            }
+        }
+        finally
+        {
+            _streamTasks.Writer.TryComplete();
+        }
+    }
+
+    private async Task<Stream> MaterializeSegment(PipelinedBodyResult result, bool isFirstSegment,
+        CancellationToken cancellationToken)
+    {
+        if (result is { Found: true, Stream: not null })
+        {
+            try
+            {
+                return await DrainSegmentAsync(result.Stream, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception e) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (_failFastOnFirstSegment && isFirstSegment) throw;
+                return ZeroFillSegment(
+                    "Segment {SegmentId} failed to materialize. Zero-filling {Bytes} bytes to keep playback alive.",
+                    result.SegmentId, e);
+            }
+        }
+
+        if (_failFastOnFirstSegment && isFirstSegment)
+            throw new UsenetArticleNotFoundException(result.SegmentId);
+
+        return ZeroFillSegment(
+            "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
+            result.SegmentId);
     }
 
     private Stream ZeroFillSegment(string messageTemplate, string segmentId, Exception? exception = null)
