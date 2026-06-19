@@ -4,7 +4,7 @@ namespace NzbWebDAV.Services;
 
 public class NzbFetchCoalescer
 {
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(300);
     private static readonly TimeSpan HardFetchCap = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 

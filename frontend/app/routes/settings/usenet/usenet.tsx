@@ -21,7 +21,39 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 const usenetConnectionsTopic = {'cxs': 'state'};
+const benchmarkTopic = {'bench': 'state'};
 const USAGE_POLL_INTERVAL_MS = 10_000;
+
+// Mirrors the camelCase JSON the backend benchmark endpoint + websocket emit.
+type BenchmarkLatency = { minMs: number; avgMs: number; samples: number };
+type BenchmarkSweepPoint = { connections: number; mbPerSec: number };
+type BenchmarkPipeliningPoint = { depth: number; mbPerSec: number };
+type BenchmarkPipelining = {
+    testedAtConnections: number;
+    baselineMbPerSec: number;
+    tested: BenchmarkPipeliningPoint[];
+    recommendEnabled: boolean;
+    recommendedDepth: number;
+};
+type BenchmarkResult = {
+    latency?: BenchmarkLatency | null;
+    throughputTested: boolean;
+    sweep: BenchmarkSweepPoint[];
+    recommendedConnections?: number | null;
+    providerConnectionCap?: number | null;
+    pipelining?: BenchmarkPipelining | null;
+    dataUsedBytes: number;
+    warnings: string[];
+};
+type BenchmarkProgress = {
+    phase: string;
+    status: string;
+    percent: number;
+    currentConnections?: number | null;
+    dataUsedBytes: number;
+    sweep: BenchmarkSweepPoint[];
+};
+type BenchmarkIntensity = "quick" | "thorough";
 
 type UsenetSettingsProps = {
     config: Record<string, string>
@@ -243,6 +275,16 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         setNewConfig({ ...config, "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }) });
         handleCloseModal();
     }, [config, providerConfig, editingIndex, setNewConfig, handleCloseModal]);
+
+    // Applied from the in-modal speed test. Pipelining is a global setting
+    // (not per-provider), so it writes straight to the shared config keys.
+    const handleApplyPipelining = useCallback((enabled: boolean, depth: number) => {
+        setNewConfig(prev => ({
+            ...prev,
+            "usenet.pipelining.enabled": enabled ? "true" : "false",
+            "usenet.pipelining.depth": String(depth),
+        }));
+    }, [setNewConfig]);
 
     const handleReorder = useCallback((from: number, to: number) => {
         if (from === to) return;
@@ -597,6 +639,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 provider={editingIndex !== null ? providerConfig.Providers[editingIndex] : null}
                 onClose={handleCloseModal}
                 onSave={handleSaveProvider}
+                onApplyPipelining={handleApplyPipelining}
             />
         </div>
     );
@@ -670,9 +713,10 @@ type ProviderModalProps = {
     provider: ConnectionDetails | null;
     onClose: () => void;
     onSave: (provider: ConnectionDetails) => void;
+    onApplyPipelining: (enabled: boolean, depth: number) => void;
 };
 
-function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) {
+function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: ProviderModalProps) {
     const isEditing = provider !== null;
     const initialLimit = bytesToValueAndUnit(provider?.ByteLimit);
     const initialUsed = bytesToValueAndUnit(provider?.BytesUsedOffset);
@@ -692,6 +736,11 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
     const [isTestingConnection, setIsTestingConnection] = useState(false);
     const [connectionTested, setConnectionTested] = useState(false);
     const [testError, setTestError] = useState<string | null>(null);
+    const [intensity, setIntensity] = useState<BenchmarkIntensity>("quick");
+    const [isBenchmarking, setIsBenchmarking] = useState(false);
+    const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress | null>(null);
+    const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
+    const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
 
     // Reset form when modal opens or provider changes
     useEffect(() => {
@@ -712,6 +761,11 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
             setInitialUsedUnit(used.unit);
             setConnectionTested(false);
             setTestError(null);
+            setIntensity("quick");
+            setIsBenchmarking(false);
+            setBenchmarkProgress(null);
+            setBenchmarkResult(null);
+            setBenchmarkError(null);
         }
     }, [show, provider]);
 
@@ -764,6 +818,70 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
         }
     }, [host, port, useSsl, user, pass]);
 
+    const handleAutoTune = useCallback(async () => {
+        setIsBenchmarking(true);
+        setBenchmarkError(null);
+        setBenchmarkResult(null);
+        setBenchmarkProgress({ phase: "latency", status: "Starting speed test…", percent: 0, dataUsedBytes: 0, sweep: [] });
+
+        // Live progress over the websocket — best-effort eye-candy; the POST
+        // below returns the authoritative result regardless.
+        let ws: WebSocket | null = null;
+        try {
+            ws = new WebSocket(window.location.origin.replace(/^http/, 'ws'));
+            ws.onopen = () => ws?.send(JSON.stringify(benchmarkTopic));
+            ws.onmessage = receiveMessage((topic, message) => {
+                if (topic !== 'bench') return;
+                try {
+                    const update = JSON.parse(message) as BenchmarkProgress;
+                    // Ignore the terminal "done" frame (incl. any replayed from a
+                    // previous run) so the bar doesn't flash to 100% then restart.
+                    if (update.phase !== 'done') setBenchmarkProgress(update);
+                } catch { /* ignore malformed progress */ }
+            });
+            ws.onerror = () => ws?.close();
+        } catch { /* progress is optional */ }
+
+        try {
+            const formData = new FormData();
+            formData.append('host', host);
+            formData.append('port', port);
+            formData.append('use-ssl', useSsl.toString());
+            formData.append('user', user);
+            formData.append('pass', pass);
+            formData.append('max-connections', maxConnections || "10");
+            formData.append('intensity', intensity);
+
+            const response = await fetch('/api/benchmark-usenet-connection', { method: 'POST', body: formData });
+            if (!response.ok) {
+                setBenchmarkError("The speed test couldn't run. Please try again.");
+                return;
+            }
+            const data = await response.json();
+            if (!data.status || !data.result) {
+                setBenchmarkError(data.error || "The speed test couldn't run.");
+                return;
+            }
+            setBenchmarkResult(data.result as BenchmarkResult);
+            setConnectionTested(true); // a successful benchmark also proves the connection
+        } catch (error) {
+            setBenchmarkError("Network error: " + (error instanceof Error ? error.message : "Unknown error"));
+        } finally {
+            setIsBenchmarking(false);
+            ws?.close();
+        }
+    }, [host, port, useSsl, user, pass, maxConnections, intensity]);
+
+    const handleApplyRecommendation = useCallback(() => {
+        if (!benchmarkResult) return;
+        if (benchmarkResult.recommendedConnections && benchmarkResult.recommendedConnections > 0) {
+            setMaxConnections(String(benchmarkResult.recommendedConnections));
+        }
+        if (benchmarkResult.pipelining) {
+            onApplyPipelining(benchmarkResult.pipelining.recommendEnabled, benchmarkResult.pipelining.recommendedDepth);
+        }
+    }, [benchmarkResult, onApplyPipelining]);
+
     const handleSave = useCallback(() => {
         const byteLimit = valueAndUnitToBytes(limitValue, limitUnit);
         const initialUsedBytes = valueAndUnitToBytes(initialUsedValue, initialUsedUnit);
@@ -809,6 +927,13 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
         && user.trim() !== ""
         && pass.trim() !== ""
         && isPositiveInteger(maxConnections);
+
+    // The speed test doesn't need Max Connections (it can recommend one), just
+    // a reachable provider.
+    const canBenchmark = host.trim() !== ""
+        && isPositiveInteger(port)
+        && user.trim() !== ""
+        && pass.trim() !== "";
 
     const canSave = isFormValid && (connectionTested || type == ProviderType.Disabled);
 
@@ -1032,6 +1157,18 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
                             Connection test successful!
                         </div>
                     )}
+
+                    <BenchmarkPanel
+                        canBenchmark={canBenchmark}
+                        isBenchmarking={isBenchmarking}
+                        intensity={intensity}
+                        setIntensity={setIntensity}
+                        progress={benchmarkProgress}
+                        result={benchmarkResult}
+                        error={benchmarkError}
+                        onRun={handleAutoTune}
+                        onApply={handleApplyRecommendation}
+                    />
                 </div>
 
                 <div className={styles["modal-footer"]}>
@@ -1055,6 +1192,186 @@ function ProviderModal({ show, provider, onClose, onSave }: ProviderModalProps) 
                         )}
                     </div>
                 </div>
+            </div>
+        </div>
+    );
+}
+
+type BenchmarkPanelProps = {
+    canBenchmark: boolean;
+    isBenchmarking: boolean;
+    intensity: BenchmarkIntensity;
+    setIntensity: (value: BenchmarkIntensity) => void;
+    progress: BenchmarkProgress | null;
+    result: BenchmarkResult | null;
+    error: string | null;
+    onRun: () => void;
+    onApply: () => void;
+};
+
+function BenchmarkPanel(props: BenchmarkPanelProps) {
+    const { canBenchmark, isBenchmarking, intensity, setIntensity, progress, result, error, onRun, onApply } = props;
+    const [applied, setApplied] = useState(false);
+    // A fresh result means the previous "Applied" state no longer holds.
+    useEffect(() => { setApplied(false); }, [result]);
+
+    const recommended = result?.recommendedConnections ?? null;
+    const livePoints = isBenchmarking ? (progress?.sweep ?? []) : (result?.sweep ?? []);
+    const bestSpeed = result?.throughputTested && result.sweep.length > 0
+        ? Math.max(...result.sweep.map(p => p.mbPerSec))
+        : null;
+    const pipe = result?.pipelining ?? null;
+
+    return (
+        <div className={styles["bench-panel"]}>
+            <div className={styles["bench-head"]}>
+                <div className={styles["bench-heading"]}>
+                    <div className={styles["bench-title"]}>Auto-tune connections</div>
+                    <div className={styles["form-hint"]} style={{ marginTop: 0 }}>
+                        Runs a real speed &amp; latency test, then recommends the best connection count and pipelining settings.
+                    </div>
+                </div>
+                <div className={styles["bench-controls"]}>
+                    <div className={styles["bench-intensity"]} role="group" aria-label="Test intensity">
+                        <Button
+                            variant={intensity === "quick" ? "primary" : "secondary"}
+                            onClick={() => setIntensity("quick")}
+                            disabled={isBenchmarking}
+                            aria-pressed={intensity === "quick"}
+                        >
+                            Quick
+                        </Button>
+                        <Button
+                            variant={intensity === "thorough" ? "primary" : "secondary"}
+                            onClick={() => setIntensity("thorough")}
+                            disabled={isBenchmarking}
+                            aria-pressed={intensity === "thorough"}
+                        >
+                            Thorough
+                        </Button>
+                    </div>
+                    <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
+                        {isBenchmarking ? "Testing…" : "Run speed test"}
+                    </Button>
+                </div>
+            </div>
+
+            <div className={styles["form-hint"]}>
+                {intensity === "quick"
+                    ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
+                    : "Thorough downloads roughly 400 MB for steadier numbers on fast connections."}
+            </div>
+
+            {error && (
+                <div className={`${styles.alert} ${styles["alert-danger"]}`} style={{ marginTop: 12 }}>{error}</div>
+            )}
+
+            {isBenchmarking && progress && (
+                <div className={styles["bench-progress"]}>
+                    <div className={styles["bench-progress-head"]}>
+                        <span>{progress.status}</span>
+                        <span>{formatBytes(progress.dataUsedBytes)} used</span>
+                    </div>
+                    <div className={styles["usage-bar-track"]}>
+                        <div
+                            className={`${styles["usage-bar-fill"]} ${styles["bench-progress-fill"]}`}
+                            style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }}
+                        />
+                    </div>
+                </div>
+            )}
+
+            {livePoints.length > 0 && <SweepChart points={livePoints} recommended={recommended} />}
+
+            {result && !isBenchmarking && (
+                <>
+                    {result.throughputTested && recommended ? (
+                        <div className={styles["bench-stats"]}>
+                            <div className={styles["bench-stat"]}>
+                                <span className={styles["bench-stat-label"]}>Recommended</span>
+                                <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>{recommended}</span>
+                                <span className={styles["bench-stat-sub"]}>
+                                    connection{recommended === 1 ? "" : "s"}{bestSpeed != null ? ` · ≈ ${bestSpeed.toFixed(1)} MB/s` : ""}
+                                </span>
+                            </div>
+                            {result.latency && (
+                                <div className={styles["bench-stat"]}>
+                                    <span className={styles["bench-stat-label"]}>Latency</span>
+                                    <span className={styles["bench-stat-value"]}>{result.latency.avgMs} ms</span>
+                                    <span className={styles["bench-stat-sub"]}>{result.latency.minMs} ms min</span>
+                                </div>
+                            )}
+                            {result.providerConnectionCap != null && (
+                                <div className={styles["bench-stat"]}>
+                                    <span className={styles["bench-stat-label"]}>Provider cap</span>
+                                    <span className={styles["bench-stat-value"]}>{result.providerConnectionCap}</span>
+                                    <span className={styles["bench-stat-sub"]}>max at once</span>
+                                </div>
+                            )}
+                            <div className={styles["bench-stat"]}>
+                                <span className={styles["bench-stat-label"]}>Data used</span>
+                                <span className={styles["bench-stat-value"]}>{formatBytes(result.dataUsedBytes)}</span>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className={styles["bench-note"]}>
+                            Latency measured{result.latency ? ` — ${result.latency.avgMs} ms avg` : ""}. Download something first to get a connection recommendation.
+                        </div>
+                    )}
+
+                    {pipe && (
+                        <div className={styles["bench-pipe"]}>
+                            {pipe.recommendEnabled
+                                ? <>Turn on <strong>NNTP pipelining</strong> at depth <strong>{pipe.recommendedDepth}</strong> — measurably faster on this connection.</>
+                                : <>NNTP pipelining didn’t help here — leave it off.</>}
+                        </div>
+                    )}
+
+                    {result.warnings.length > 0 && (
+                        <ul className={styles["bench-warnings"]}>
+                            {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                        </ul>
+                    )}
+
+                    {result.throughputTested && recommended != null && (
+                        <div className={styles["bench-actions"]}>
+                            <Button variant={applied ? "secondary" : "primary"} onClick={() => { onApply(); setApplied(true); }}>
+                                {applied ? "Applied ✓ — review & save" : "Apply recommendation"}
+                            </Button>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    );
+}
+
+function SweepChart({ points, recommended }: { points: BenchmarkSweepPoint[]; recommended: number | null }) {
+    const max = Math.max(...points.map(p => p.mbPerSec), 0.0001);
+    return (
+        <div className={styles["bench-chart"]}>
+            <div className={styles["bench-chart-bars"]}>
+                {points.map((p, i) => {
+                    const isRec = recommended != null && p.connections === recommended;
+                    const height = Math.max(4, Math.round((p.mbPerSec / max) * 104));
+                    return (
+                        <div key={i} className={`${styles["bench-chart-col"]} ${isRec ? styles["bench-chart-col-rec"] : ""}`}>
+                            <span className={styles["bench-chart-val"]}>
+                                {p.mbPerSec >= 10 ? p.mbPerSec.toFixed(0) : p.mbPerSec.toFixed(1)}
+                            </span>
+                            <div
+                                className={styles["bench-chart-bar"]}
+                                style={{ height: `${height}px` }}
+                                title={`${p.connections} connections → ${p.mbPerSec.toFixed(1)} MB/s`}
+                            />
+                            <span className={styles["bench-chart-label"]}>{p.connections}</span>
+                        </div>
+                    );
+                })}
+            </div>
+            <div className={styles["bench-chart-foot"]}>
+                <span className={styles["form-hint"]} style={{ margin: 0 }}>MB/s by connection count</span>
+                {recommended != null && <span className={styles["form-hint"]} style={{ margin: 0 }}>recommended: {recommended}</span>}
             </div>
         </div>
     );

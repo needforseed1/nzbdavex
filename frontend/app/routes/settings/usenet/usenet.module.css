@@ -647,3 +647,200 @@
         gap: 10px;
     }
 }
+
+/* ── Auto-tune / speed-test panel ──────────────────────────────────── */
+.bench-panel {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+}
+
+.bench-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.bench-heading {
+    flex: 1 1 220px;
+    min-width: 180px;
+}
+
+.bench-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    margin-bottom: 2px;
+}
+
+.bench-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+/* Intensity picker — the app's standard buttons (primary = selected,
+   secondary = not), spaced apart like the modal-footer button row. */
+.bench-intensity {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.bench-progress {
+    margin-top: 14px;
+}
+
+.bench-progress-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+/* Reuses .usage-bar-track / .usage-bar-fill; just supplies the neutral fill. */
+.bench-progress-fill {
+    background: var(--text-primary);
+}
+
+.bench-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.bench-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 9px 11px;
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+}
+
+.bench-stat-label {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.bench-stat-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+}
+
+.bench-stat-strong {
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.bench-stat-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.bench-note {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.bench-chart {
+    margin-top: 16px;
+}
+
+.bench-chart-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    height: 150px;
+}
+
+.bench-chart-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+}
+
+.bench-chart-val {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.bench-chart-bar {
+    width: 100%;
+    max-width: 32px;
+    border-radius: 4px 4px 0 0;
+    background: var(--text-faint);
+    transition: height 250ms ease, background-color 120ms ease;
+}
+
+.bench-chart-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.bench-chart-col-rec .bench-chart-bar {
+    background: var(--text-primary);
+}
+
+.bench-chart-col-rec .bench-chart-val,
+.bench-chart-col-rec .bench-chart-label {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.bench-chart-foot {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.bench-pipe {
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.bench-pipe strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.bench-warnings {
+    margin: 12px 0 0;
+    padding-left: 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+.bench-actions {
+    margin-top: 14px;
+}

@@ -165,6 +165,8 @@ class Program
             .AddHostedService<WatchtowerService>()
             .AddScoped<DavDatabaseContext>()
             .AddScoped<DavDatabaseClient>()
+            .AddScoped<NzbWebDAV.Services.Benchmark.BenchmarkCorpusProvider>()
+            .AddScoped<NzbWebDAV.Services.Benchmark.UsenetBenchmarkService>()
             .AddScoped<DatabaseStore>()
             .AddScoped<IStore, DatabaseStore>()
             .AddScoped<GetAndHeadHandlerPatch>()

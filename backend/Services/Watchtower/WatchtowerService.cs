@@ -20,7 +20,8 @@ public class WatchtowerService(
     PreflightCache preflightCache,
     ListSourceEnumerator enumerator,
     EpisodeEnumerator episodeEnumerator,
-    PreferredOrderStore preferredOrderStore
+    PreferredOrderStore preferredOrderStore,
+    NzbFetchCoalescer nzbFetchCoalescer
 ) : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
@@ -1097,61 +1098,64 @@ public class WatchtowerService(
         LogActivity("Watchtower: shortlist exhausted for {Key}; re-resolving", item.Key);
     }
 
-    private async Task<byte[]?> FetchNzbBytesAsync(NzbResolutionCache.Candidate c, CancellationToken ct)
+    private Task<byte[]?> FetchNzbBytesAsync(NzbResolutionCache.Candidate c, CancellationToken ct)
     {
-        try
+        return nzbFetchCoalescer.GetOrFetchAsync(c.NzbUrl, async innerCt =>
         {
-            var indexer = configManager.GetIndexerConfig().Indexers
-                .FirstOrDefault(x => x.Name == c.IndexerName);
-            if (indexer is not null)
-            {
-                var hitCheck = await hitTracker
-                    .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, ct)
-                    .ConfigureAwait(false);
-                if (hitCheck is { Allowed: false })
-                {
-                    Log.Information("Watchtower: NZB download skipped for {Indexer}: {Reason}",
-                        c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
-                    return null;
-                }
-            }
-
-            await _indexerGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                var indexer = configManager.GetIndexerConfig().Indexers
+                    .FirstOrDefault(x => x.Name == c.IndexerName);
                 if (indexer is not null)
-                    await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, ct).ConfigureAwait(false);
-
-                using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
-                req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
-                var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(NzbFetchTimeout);
-                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode)
                 {
-                    LogActivity("Watchtower: NZB fetch HTTP {Status} from {Indexer} for {Url}",
-                        (int)resp.StatusCode, c.IndexerName, c.NzbUrl);
-                    return null;
+                    var hitCheck = await hitTracker
+                        .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
+                        .ConfigureAwait(false);
+                    if (hitCheck is { Allowed: false })
+                    {
+                        Log.Information("Watchtower: NZB download skipped for {Indexer}: {Reason}",
+                            c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                        return null;
+                    }
                 }
-                var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-                _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
-                return bytes;
+
+                await _indexerGate.WaitAsync(innerCt).ConfigureAwait(false);
+                try
+                {
+                    if (indexer is not null)
+                        await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
+
+                    using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+                    req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+                    var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                    cts.CancelAfter(NzbFetchTimeout);
+                    using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        LogActivity("Watchtower: NZB fetch HTTP {Status} from {Indexer} for {Url}",
+                            (int)resp.StatusCode, c.IndexerName, c.NzbUrl);
+                        return null;
+                    }
+                    var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+                    _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
+                    return bytes;
+                }
+                finally
+                {
+                    _indexerGate.Release();
+                }
             }
-            finally
+            catch (OperationCanceledException) when (innerCt.IsCancellationRequested)
             {
-                _indexerGate.Release();
+                throw;
             }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception e)
-        {
-            LogActivity(e, "Watchtower: NZB fetch failed for {Url}", c.NzbUrl);
-            return null;
-        }
+            catch (Exception e)
+            {
+                LogActivity(e, "Watchtower: NZB fetch failed for {Url}", c.NzbUrl);
+                return null;
+            }
+        }, ct);
     }
 
     private static NzbResolutionCache.Candidate MakeCandidate(WtPointer p) => new()

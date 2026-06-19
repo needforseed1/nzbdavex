@@ -18,7 +18,8 @@ public class PreflightOrchestrator(
     LazyRarResolver lazyRarResolver,
     PreflightSessionRegistry sessionRegistry,
     CandidateNegativeCache negativeCache,
-    WardenStore wardenStore)
+    WardenStore wardenStore,
+    NzbFetchCoalescer nzbFetchCoalescer)
 {
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(8);
 
@@ -136,26 +137,29 @@ public class PreflightOrchestrator(
         return true;
     }
 
-    private static async Task<byte[]?> FetchNzbBytesAsync(
+    private Task<byte[]?> FetchNzbBytesAsync(
         NzbResolutionCache.Candidate c,
         CancellationToken ct)
     {
-        try
+        return nzbFetchCoalescer.GetOrFetchAsync(c.NzbUrl, async innerCt =>
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
-            req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
-            var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(FetchTimeout);
-            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-        }
-        catch (Exception e) when (!e.IsCancellationException())
-        {
-            Log.Debug("Preflight NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
-            return null;
-        }
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+                req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+                var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                cts.CancelAfter(FetchTimeout);
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode) return null;
+                return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                Log.Debug("Preflight NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
+                return null;
+            }
+        }, ct);
     }
 
     private async Task TryPreWarmExistingAsync(NzbResolutionCache.Candidate candidate, CancellationToken ct)
