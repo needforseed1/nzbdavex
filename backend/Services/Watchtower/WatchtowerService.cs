@@ -21,7 +21,8 @@ public class WatchtowerService(
     ListSourceEnumerator enumerator,
     EpisodeEnumerator episodeEnumerator,
     PreferredOrderStore preferredOrderStore,
-    NzbFetchCoalescer nzbFetchCoalescer
+    NzbFetchCoalescer nzbFetchCoalescer,
+    BenchmarkGate benchmarkGate
 ) : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
@@ -51,6 +52,13 @@ public class WatchtowerService(
             {
                 try
                 {
+                    // pause verification while a connection speed-test is running
+                    if (benchmarkGate.IsPaused)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     if (!configManager.IsWatchtowerEnabled())
                     {
                         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);

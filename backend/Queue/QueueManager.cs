@@ -24,6 +24,7 @@ public class QueueManager : IDisposable
     private readonly ProviderUsageTracker _providerUsageTracker;
     private readonly WatchdogLog _watchdogLog;
     private readonly QueueItemSourceTracker _sourceTracker;
+    private readonly BenchmarkGate _benchmarkGate;
 
     private CancellationTokenSource _sleepingQueueToken = new();
     private readonly Lock _sleepingQueueLock = new();
@@ -34,7 +35,8 @@ public class QueueManager : IDisposable
         WebsocketManager websocketManager,
         ProviderUsageTracker providerUsageTracker,
         WatchdogLog watchdogLog,
-        QueueItemSourceTracker sourceTracker
+        QueueItemSourceTracker sourceTracker,
+        BenchmarkGate benchmarkGate
     )
     {
         _usenetClient = usenetClient;
@@ -43,6 +45,7 @@ public class QueueManager : IDisposable
         _providerUsageTracker = providerUsageTracker;
         _watchdogLog = watchdogLog;
         _sourceTracker = sourceTracker;
+        _benchmarkGate = benchmarkGate;
         _cancellationTokenSource = CancellationTokenSource
             .CreateLinkedTokenSource(SigtermUtil.GetCancellationToken());
         _ = ProcessQueueAsync(_cancellationTokenSource.Token);
@@ -92,6 +95,17 @@ public class QueueManager : IDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            // While a speed-test is running, hold off starting new downloads so
+            // it gets the provider's full connection budget. Any item already in
+            // progress finishes naturally; this only gates new work. Resumes
+            // within ~1s of the test ending.
+            if (_benchmarkGate.IsPaused)
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                continue;
+            }
+
             try
             {
                 // get the next queue-item from the database

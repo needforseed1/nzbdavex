@@ -1,5 +1,5 @@
 import styles from "./usenet.module.css"
-import { type Dispatch, type SetStateAction, type ReactNode, type CSSProperties, useState, useCallback, useEffect, useMemo } from "react";
+import { type Dispatch, type SetStateAction, type ReactNode, type CSSProperties, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Button } from "react-bootstrap";
 import { receiveMessage } from "~/utils/websocket-util";
 import {
@@ -38,6 +38,7 @@ type BenchmarkPipelining = {
 type BenchmarkResult = {
     latency?: BenchmarkLatency | null;
     throughputTested: boolean;
+    pipeliningOnly: boolean;
     sweep: BenchmarkSweepPoint[];
     recommendedConnections?: number | null;
     providerConnectionCap?: number | null;
@@ -741,6 +742,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
     const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress | null>(null);
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
+    const [pipeliningOnly, setPipeliningOnly] = useState(false);
+    const benchmarkAbortRef = useRef<AbortController | null>(null);
 
     // Reset form when modal opens or provider changes
     useEffect(() => {
@@ -766,8 +769,16 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             setBenchmarkProgress(null);
             setBenchmarkResult(null);
             setBenchmarkError(null);
+            setPipeliningOnly(false);
         }
     }, [show, provider]);
+
+    // Stop any in-flight speed test when the modal closes or unmounts so it
+    // aborts on the backend and frees its connections immediately.
+    useEffect(() => {
+        if (!show) benchmarkAbortRef.current?.abort();
+    }, [show]);
+    useEffect(() => () => benchmarkAbortRef.current?.abort(), []);
 
     // Handle Escape key to close modal
     useEffect(() => {
@@ -819,6 +830,11 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
     }, [host, port, useSsl, user, pass]);
 
     const handleAutoTune = useCallback(async () => {
+        // Abort any previous run still in flight before starting a new one.
+        benchmarkAbortRef.current?.abort();
+        const controller = new AbortController();
+        benchmarkAbortRef.current = controller;
+
         setIsBenchmarking(true);
         setBenchmarkError(null);
         setBenchmarkResult(null);
@@ -851,8 +867,11 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             formData.append('pass', pass);
             formData.append('max-connections', maxConnections || "10");
             formData.append('intensity', intensity);
+            formData.append('pipelining-only', pipeliningOnly ? 'true' : 'false');
 
-            const response = await fetch('/api/benchmark-usenet-connection', { method: 'POST', body: formData });
+            const response = await fetch('/api/benchmark-usenet-connection', {
+                method: 'POST', body: formData, signal: controller.signal,
+            });
             if (!response.ok) {
                 setBenchmarkError("The speed test couldn't run. Please try again.");
                 return;
@@ -865,15 +884,23 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             setBenchmarkResult(data.result as BenchmarkResult);
             setConnectionTested(true); // a successful benchmark also proves the connection
         } catch (error) {
-            setBenchmarkError("Network error: " + (error instanceof Error ? error.message : "Unknown error"));
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                // Cancelled by the user (Cancel button or closing the modal) — not an error.
+                setBenchmarkProgress(null);
+            } else {
+                setBenchmarkError("Network error: " + (error instanceof Error ? error.message : "Unknown error"));
+            }
         } finally {
             setIsBenchmarking(false);
+            if (benchmarkAbortRef.current === controller) benchmarkAbortRef.current = null;
             ws?.close();
         }
-    }, [host, port, useSsl, user, pass, maxConnections, intensity]);
+    }, [host, port, useSsl, user, pass, maxConnections, intensity, pipeliningOnly]);
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
+        // In pipelining-only mode there's no connection recommendation, so this
+        // leaves Max Connections untouched and only applies pipelining.
         if (benchmarkResult.recommendedConnections && benchmarkResult.recommendedConnections > 0) {
             setMaxConnections(String(benchmarkResult.recommendedConnections));
         }
@@ -881,6 +908,10 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             onApplyPipelining(benchmarkResult.pipelining.recommendEnabled, benchmarkResult.pipelining.recommendedDepth);
         }
     }, [benchmarkResult, onApplyPipelining]);
+
+    const handleCancelBenchmark = useCallback(() => {
+        benchmarkAbortRef.current?.abort();
+    }, []);
 
     const handleSave = useCallback(() => {
         const byteLimit = valueAndUnitToBytes(limitValue, limitUnit);
@@ -1163,10 +1194,13 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
                         isBenchmarking={isBenchmarking}
                         intensity={intensity}
                         setIntensity={setIntensity}
+                        pipeliningOnly={pipeliningOnly}
+                        setPipeliningOnly={setPipeliningOnly}
                         progress={benchmarkProgress}
                         result={benchmarkResult}
                         error={benchmarkError}
                         onRun={handleAutoTune}
+                        onCancel={handleCancelBenchmark}
                         onApply={handleApplyRecommendation}
                     />
                 </div>
@@ -1202,15 +1236,21 @@ type BenchmarkPanelProps = {
     isBenchmarking: boolean;
     intensity: BenchmarkIntensity;
     setIntensity: (value: BenchmarkIntensity) => void;
+    pipeliningOnly: boolean;
+    setPipeliningOnly: (value: boolean) => void;
     progress: BenchmarkProgress | null;
     result: BenchmarkResult | null;
     error: string | null;
     onRun: () => void;
+    onCancel: () => void;
     onApply: () => void;
 };
 
 function BenchmarkPanel(props: BenchmarkPanelProps) {
-    const { canBenchmark, isBenchmarking, intensity, setIntensity, progress, result, error, onRun, onApply } = props;
+    const {
+        canBenchmark, isBenchmarking, intensity, setIntensity,
+        pipeliningOnly, setPipeliningOnly, progress, result, error, onRun, onCancel, onApply,
+    } = props;
     const [applied, setApplied] = useState(false);
     // A fresh result means the previous "Applied" state no longer holds.
     useEffect(() => { setApplied(false); }, [result]);
@@ -1221,6 +1261,9 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
         ? Math.max(...result.sweep.map(p => p.mbPerSec))
         : null;
     const pipe = result?.pipelining ?? null;
+    const pipeBest = pipe && pipe.tested.length > 0 ? Math.max(...pipe.tested.map(t => t.mbPerSec)) : (pipe?.baselineMbPerSec ?? 0);
+    const pipeGainPct = pipe && pipe.baselineMbPerSec > 0 ? Math.round((pipeBest / pipe.baselineMbPerSec - 1) * 100) : 0;
+    const canApply = !!result && result.throughputTested && (recommended != null || (result.pipeliningOnly && !!pipe));
 
     return (
         <div className={styles["bench-panel"]}>
@@ -1228,7 +1271,9 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 <div className={styles["bench-heading"]}>
                     <div className={styles["bench-title"]}>Auto-tune connections</div>
                     <div className={styles["form-hint"]} style={{ marginTop: 0 }}>
-                        Runs a real speed &amp; latency test, then recommends the best connection count and pipelining settings.
+                        {pipeliningOnly
+                            ? "Keeps your Max Connections and just measures the best NNTP pipelining depth at that count."
+                            : "Runs a real speed & latency test, then recommends the best connection count and pipelining settings."}
                     </div>
                 </div>
                 <div className={styles["bench-controls"]}>
@@ -1251,15 +1296,34 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </Button>
                     </div>
                     <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
-                        {isBenchmarking ? "Testing…" : "Run speed test"}
+                        {isBenchmarking ? "Testing…" : (pipeliningOnly ? "Test pipelining" : "Run speed test")}
                     </Button>
+                    {isBenchmarking && (
+                        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+                    )}
                 </div>
             </div>
 
+            <div className={styles["form-checkbox-wrapper"]} style={{ marginTop: 12 }}>
+                <input
+                    type="checkbox"
+                    id="bench-pipe-only"
+                    className={`${styles["form-checkbox"]} toggle-switch`}
+                    checked={pipeliningOnly}
+                    disabled={isBenchmarking}
+                    onChange={(e) => setPipeliningOnly(e.target.checked)}
+                />
+                <label htmlFor="bench-pipe-only" className={styles["form-checkbox-label"]}>
+                    Only tune pipelining (keep my Max Connections)
+                </label>
+            </div>
+
             <div className={styles["form-hint"]}>
-                {intensity === "quick"
-                    ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
-                    : "Thorough downloads roughly 400 MB for steadier numbers on fast connections."}
+                {pipeliningOnly
+                    ? "Won't change your connection count — it tests pipelining depth at the Max Connections you've set. Run it idle for the cleanest read."
+                    : (intensity === "quick"
+                        ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
+                        : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
             </div>
 
             {error && (
@@ -1281,11 +1345,55 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 </div>
             )}
 
-            {livePoints.length > 0 && <SweepChart points={livePoints} recommended={recommended} />}
+            {livePoints.length > 0 && !(isBenchmarking ? pipeliningOnly : result?.pipeliningOnly) && (
+                <SweepChart points={livePoints} recommended={recommended} />
+            )}
 
             {result && !isBenchmarking && (
                 <>
-                    {result.throughputTested && recommended ? (
+                    {result.pipeliningOnly ? (
+                        pipe ? (
+                            <>
+                                <DepthChart pipe={pipe} />
+                                <div className={styles["bench-stats"]}>
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Pipelining</span>
+                                        <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>
+                                            {pipe.recommendEnabled ? `Depth ${pipe.recommendedDepth}` : "Off"}
+                                        </span>
+                                        <span className={styles["bench-stat-sub"]}>
+                                            {pipe.recommendEnabled ? `≈ +${pipeGainPct}% vs off` : "no real gain"}
+                                        </span>
+                                    </div>
+                                    {result.latency && (
+                                        <div className={styles["bench-stat"]}>
+                                            <span className={styles["bench-stat-label"]}>Latency</span>
+                                            <span className={styles["bench-stat-value"]}>{result.latency.avgMs} ms</span>
+                                            <span className={styles["bench-stat-sub"]}>{result.latency.minMs} ms min</span>
+                                        </div>
+                                    )}
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Tested at</span>
+                                        <span className={styles["bench-stat-value"]}>{pipe.testedAtConnections}</span>
+                                        <span className={styles["bench-stat-sub"]}>connections</span>
+                                    </div>
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Data used</span>
+                                        <span className={styles["bench-stat-value"]}>{formatBytes(result.dataUsedBytes)}</span>
+                                    </div>
+                                </div>
+                                <div className={styles["bench-pipe"]}>
+                                    {pipe.recommendEnabled
+                                        ? <>Turn on <strong>NNTP pipelining</strong> at depth <strong>{pipe.recommendedDepth}</strong> — measurably faster at your {pipe.testedAtConnections} connections.</>
+                                        : <>NNTP pipelining didn’t help at your {pipe.testedAtConnections} connections — leave it off.</>}
+                                </div>
+                            </>
+                        ) : (
+                            <div className={styles["bench-note"]}>
+                                Couldn’t measure pipelining{result.latency ? ` (latency ${result.latency.avgMs} ms)` : ""}. Try again when idle.
+                            </div>
+                        )
+                    ) : result.throughputTested && recommended ? (
                         <div className={styles["bench-stats"]}>
                             <div className={styles["bench-stat"]}>
                                 <span className={styles["bench-stat-label"]}>Recommended</span>
@@ -1319,7 +1427,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </div>
                     )}
 
-                    {pipe && (
+                    {!result.pipeliningOnly && pipe && (
                         <div className={styles["bench-pipe"]}>
                             {pipe.recommendEnabled
                                 ? <>Turn on <strong>NNTP pipelining</strong> at depth <strong>{pipe.recommendedDepth}</strong> — measurably faster on this connection.</>
@@ -1333,10 +1441,10 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </ul>
                     )}
 
-                    {result.throughputTested && recommended != null && (
+                    {canApply && (
                         <div className={styles["bench-actions"]}>
                             <Button variant={applied ? "secondary" : "primary"} onClick={() => { onApply(); setApplied(true); }}>
-                                {applied ? "Applied ✓ — review & save" : "Apply recommendation"}
+                                {applied ? "Applied ✓ — review & save" : (result.pipeliningOnly ? "Apply pipelining" : "Apply recommendation")}
                             </Button>
                         </div>
                     )}
@@ -1372,6 +1480,46 @@ function SweepChart({ points, recommended }: { points: BenchmarkSweepPoint[]; re
             <div className={styles["bench-chart-foot"]}>
                 <span className={styles["form-hint"]} style={{ margin: 0 }}>MB/s by connection count</span>
                 {recommended != null && <span className={styles["form-hint"]} style={{ margin: 0 }}>recommended: {recommended}</span>}
+            </div>
+        </div>
+    );
+}
+
+function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
+    const points = [
+        { label: "Off", mbPerSec: pipe.baselineMbPerSec, rec: !pipe.recommendEnabled },
+        ...pipe.tested.map(t => ({
+            label: String(t.depth),
+            mbPerSec: t.mbPerSec,
+            rec: pipe.recommendEnabled && t.depth === pipe.recommendedDepth,
+        })),
+    ];
+    const max = Math.max(...points.map(p => p.mbPerSec), 0.0001);
+    return (
+        <div className={styles["bench-chart"]}>
+            <div className={styles["bench-chart-bars"]}>
+                {points.map((p, i) => {
+                    const height = Math.max(4, Math.round((p.mbPerSec / max) * 104));
+                    return (
+                        <div key={i} className={`${styles["bench-chart-col"]} ${p.rec ? styles["bench-chart-col-rec"] : ""}`}>
+                            <span className={styles["bench-chart-val"]}>
+                                {p.mbPerSec >= 10 ? p.mbPerSec.toFixed(0) : p.mbPerSec.toFixed(1)}
+                            </span>
+                            <div
+                                className={styles["bench-chart-bar"]}
+                                style={{ height: `${height}px` }}
+                                title={`${p.label} → ${p.mbPerSec.toFixed(1)} MB/s`}
+                            />
+                            <span className={styles["bench-chart-label"]}>{p.label}</span>
+                        </div>
+                    );
+                })}
+            </div>
+            <div className={styles["bench-chart-foot"]}>
+                <span className={styles["form-hint"]} style={{ margin: 0 }}>MB/s by pipeline depth</span>
+                <span className={styles["form-hint"]} style={{ margin: 0 }}>
+                    {pipe.recommendEnabled ? `best: depth ${pipe.recommendedDepth}` : "best: off"}
+                </span>
             </div>
         </div>
     );

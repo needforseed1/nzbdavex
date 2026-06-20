@@ -43,10 +43,11 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         UsenetProviderConfig.ConnectionDetails provider,
         int configuredMaxConnections,
         BenchmarkIntensity intensity,
+        bool pipeliningOnly,
         CancellationToken ct)
     {
         var profile = BenchmarkProfile.For(intensity);
-        var result = new BenchmarkResult();
+        var result = new BenchmarkResult { PipeliningOnly = pipeliningOnly };
         var cursor = new int[1]; // shared round-robin index into the segment pool
 
         // 1) Latency — also doubles as a connectivity/credentials check.
@@ -69,6 +70,25 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         result.ThroughputTested = true;
         if (pool.Count < 200)
             result.Warnings.Add("Only a small pool of test articles was available, so speed numbers may be a little noisy.");
+
+        // Pipelining-only mode: leave the connection count alone and just find
+        // the best pipelining depth at the count the user already runs.
+        if (pipeliningOnly)
+        {
+            var conns = Math.Clamp(configuredMaxConnections, 1, HardConnectionCeiling);
+            Report("pipelining", $"Testing pipelining at {conns} connection{(conns == 1 ? "" : "s")}…", 30, result, conns);
+            result.Pipelining = await MeasurePipeliningAsync(
+                provider, conns, pool, cursor, profile, FocusedPipelineDepths(intensity),
+                bytes => result.DataUsedBytes += bytes, ct).ConfigureAwait(false);
+
+            if (conns >= 24)
+                result.Warnings.Add(
+                    "At high connection counts, pipelining usually adds little — running many connections in " +
+                    "parallel already hides most of the per-request latency it would otherwise save.");
+
+            Report("done", "Done.", 100, result, null);
+            return result;
+        }
 
         // 3) Throughput sweep — climb connection counts until the knee or the cap.
         var levels = BuildLevels(configuredMaxConnections, profile);
@@ -131,7 +151,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
             Report("pipelining", "Testing NNTP pipelining…", 88, result, pipeConns);
             result.Pipelining = await MeasurePipeliningAsync(
-                provider, pipeConns, pool, cursor, profile,
+                provider, pipeConns, pool, cursor, profile, profile.PipelineDepths,
                 bytes => result.DataUsedBytes += bytes, ct).ConfigureAwait(false);
         }
 
@@ -173,7 +193,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
     private async Task<BenchmarkPipelining> MeasurePipeliningAsync(
         UsenetProviderConfig.ConnectionDetails provider, int connections, IReadOnlyList<string> pool,
-        int[] cursor, BenchmarkProfile profile, Action<long> addData, CancellationToken ct)
+        int[] cursor, BenchmarkProfile profile, int[] depths, Action<long> addData, CancellationToken ct)
     {
         var result = new BenchmarkPipelining { TestedAtConnections = connections };
         var target = TargetBytes(connections, profile);
@@ -188,7 +208,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
         var bestMbps = baseline.MbPerSec;
         var bestDepth = 0;
-        foreach (var depth in profile.PipelineDepths)
+        foreach (var depth in depths)
         {
             ct.ThrowIfCancellationRequested();
             var sample = await MeasureThroughputAsync(
@@ -399,6 +419,10 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
     // clamped between the profile's base and 3× that base.
     private static long TargetBytes(int connections, BenchmarkProfile profile) =>
         Math.Clamp((long)connections * ArticleBytesEstimate * 2, profile.PerLevelBytes, profile.PerLevelBytes * 3);
+
+    // A wider depth spread for pipelining-only runs, where the depth is the whole point.
+    private static int[] FocusedPipelineDepths(BenchmarkIntensity intensity) =>
+        intensity == BenchmarkIntensity.Thorough ? [4, 8, 16, 32] : [4, 8, 16];
 
     private static string NextId(IReadOnlyList<string> pool, int[] cursor)
     {

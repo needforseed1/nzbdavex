@@ -18,6 +18,9 @@ public class BenchmarkUsenetConnectionRequest
 
     public BenchmarkIntensity Intensity { get; init; }
 
+    /// <summary>When true, skip the connection sweep and only tune pipelining depth.</summary>
+    public bool PipeliningOnly { get; init; }
+
     public BenchmarkUsenetConnectionRequest(HttpContext context)
     {
         Host = context.Request.Form["host"].FirstOrDefault()
@@ -51,6 +54,9 @@ public class BenchmarkUsenetConnectionRequest
         Intensity = string.Equals(intensity, "thorough", StringComparison.OrdinalIgnoreCase)
             ? BenchmarkIntensity.Thorough
             : BenchmarkIntensity.Quick;
+
+        var pipeliningOnly = context.Request.Form["pipelining-only"].FirstOrDefault();
+        PipeliningOnly = bool.TryParse(pipeliningOnly, out var po) && po;
     }
 
     public UsenetProviderConfig.ConnectionDetails ToConnectionDetails()

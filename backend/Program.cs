@@ -111,6 +111,7 @@ class Program
             .AddSingleton(configManager)
             .AddSingleton(websocketManager)
             .AddSingleton(logBufferSink)
+            .AddSingleton<NzbWebDAV.Services.BenchmarkGate>()
             .AddHostedService<LogBroadcaster>()
             .AddSingleton<ProviderUsageTracker>()
             .AddSingleton<ActiveReadRegistry>()

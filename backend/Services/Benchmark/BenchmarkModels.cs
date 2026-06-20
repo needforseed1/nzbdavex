@@ -102,6 +102,9 @@ public sealed class BenchmarkResult
 {
     public BenchmarkLatency? Latency { get; set; }
     public bool ThroughputTested { get; set; }
+
+    /// <summary>True when the run only measured pipelining depth (connection count left untouched).</summary>
+    public bool PipeliningOnly { get; set; }
     public List<BenchmarkSweepPoint> Sweep { get; set; } = [];
     public int? RecommendedConnections { get; set; }
 
