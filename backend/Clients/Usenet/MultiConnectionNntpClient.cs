@@ -31,12 +31,15 @@ public class MultiConnectionNntpClient(
     string host,
     long? byteLimit,
     long bytesUsedOffset,
-    int priority
+    int priority,
+    int? pipeliningDepth = null
 ) : NntpClient
 {
     public ProviderType ProviderType { get; } = type;
     public int Priority { get; } = priority;
     public string Host { get; } = host;
+
+    public int? ConfiguredPipeliningDepth { get; } = pipeliningDepth;
     // null or non-positive = uncapped. Routing reads these to decide whether
     // this provider should be skipped when it has exhausted its block.
     public long? ByteLimit { get; } = byteLimit;

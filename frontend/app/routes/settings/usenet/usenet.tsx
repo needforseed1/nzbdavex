@@ -77,6 +77,7 @@ type ConnectionDetails = {
     Pass: string;
     MaxConnections: number;
     Priority?: number;
+    PipeliningDepth?: number | null;
     // Optional user-set label. Shown in the UI in place of Host when present;
     // Host stays the real NNTP target.
     Nickname?: string;
@@ -277,13 +278,10 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         handleCloseModal();
     }, [config, providerConfig, editingIndex, setNewConfig, handleCloseModal]);
 
-    // Applied from the in-modal speed test. Pipelining is a global setting
-    // (not per-provider), so it writes straight to the shared config keys.
-    const handleApplyPipelining = useCallback((enabled: boolean, depth: number) => {
+    const handleApplyPipelining = useCallback((enabled: boolean) => {
         setNewConfig(prev => ({
             ...prev,
             "usenet.pipelining.enabled": enabled ? "true" : "false",
-            "usenet.pipelining.depth": String(depth),
         }));
     }, [setNewConfig]);
 
@@ -619,7 +617,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                     <label htmlFor="pipelining-depth" className={styles["form-label"]}>
-                        Pipeline depth
+                        Default pipeline depth
                     </label>
                     <input
                         type="text"
@@ -630,7 +628,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Requests kept in flight per connection (1–64). 8 is a good default.
+                        Requests kept in flight per connection (1–64). 8 is a good default. Each
+                        provider can override this in its own settings.
                     </div>
                 </div>
             </div>
@@ -641,6 +640,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 onClose={handleCloseModal}
                 onSave={handleSaveProvider}
                 onApplyPipelining={handleApplyPipelining}
+                defaultPipeliningDepth={config["usenet.pipelining.depth"] || "8"}
             />
         </div>
     );
@@ -714,10 +714,11 @@ type ProviderModalProps = {
     provider: ConnectionDetails | null;
     onClose: () => void;
     onSave: (provider: ConnectionDetails) => void;
-    onApplyPipelining: (enabled: boolean, depth: number) => void;
+    onApplyPipelining: (enabled: boolean) => void;
+    defaultPipeliningDepth: string;
 };
 
-function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: ProviderModalProps) {
+function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, defaultPipeliningDepth }: ProviderModalProps) {
     const isEditing = provider !== null;
     const initialLimit = bytesToValueAndUnit(provider?.ByteLimit);
     const initialUsed = bytesToValueAndUnit(provider?.BytesUsedOffset);
@@ -729,6 +730,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
     const [user, setUser] = useState(provider?.User || "");
     const [pass, setPass] = useState(provider?.Pass || "");
     const [maxConnections, setMaxConnections] = useState(provider?.MaxConnections?.toString() || "");
+    const [pipeliningDepth, setPipeliningDepth] = useState(provider?.PipeliningDepth?.toString() || "");
     const [type, setType] = useState<ProviderType>(provider?.Type ?? ProviderType.Pooled);
     const [limitValue, setLimitValue] = useState(initialLimit.value);
     const [limitUnit, setLimitUnit] = useState<ByteUnitLabel>(initialLimit.unit);
@@ -757,6 +759,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             setUser(provider?.User || "");
             setPass(provider?.Pass || "");
             setMaxConnections(provider?.MaxConnections?.toString() || "");
+            setPipeliningDepth(provider?.PipeliningDepth?.toString() || "");
             setType(provider?.Type ?? ProviderType.Pooled);
             setLimitValue(lim.value);
             setLimitUnit(lim.unit);
@@ -905,7 +908,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             setMaxConnections(String(benchmarkResult.recommendedConnections));
         }
         if (benchmarkResult.pipelining) {
-            onApplyPipelining(benchmarkResult.pipelining.recommendEnabled, benchmarkResult.pipelining.recommendedDepth);
+            setPipeliningDepth(String(benchmarkResult.pipelining.recommendedDepth));
+            onApplyPipelining(benchmarkResult.pipelining.recommendEnabled);
         }
     }, [benchmarkResult, onApplyPipelining]);
 
@@ -938,6 +942,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             User: user,
             Pass: pass,
             MaxConnections: parseInt(maxConnections, 10),
+            PipeliningDepth: pipeliningDepth.trim() === "" ? null : parseInt(pipeliningDepth, 10),
             Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
@@ -945,7 +950,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
             BytesUsedOffset: offsetToPersist,
             BytesUsedResetAt: resetAtToPersist,
         });
-    }, [type, host, port, useSsl, user, pass, maxConnections, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
+    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
 
     const handleOverlayClick = useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -953,11 +958,15 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
         }
     }, [onClose]);
 
+    const isPipeliningDepthValid = pipeliningDepth.trim() === ""
+        || (isPositiveInteger(pipeliningDepth) && Number(pipeliningDepth) <= 64);
+
     const isFormValid = host.trim() !== ""
         && isPositiveInteger(port)
         && user.trim() !== ""
         && pass.trim() !== ""
-        && isPositiveInteger(maxConnections);
+        && isPositiveInteger(maxConnections)
+        && isPipeliningDepthValid;
 
     // The speed test doesn't need Max Connections (it can recommend one), just
     // a reachable provider.
@@ -1081,6 +1090,24 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining }: P
                                 value={maxConnections}
                                 onChange={(e) => setMaxConnections(e.target.value)}
                             />
+                        </div>
+
+                        <div className={styles["form-group"]}>
+                            <label htmlFor="provider-pipelining-depth" className={styles["form-label"]}>
+                                Pipeline depth
+                            </label>
+                            <input
+                                type="text"
+                                id="provider-pipelining-depth"
+                                className={`${styles["form-input"]} ${!isPipeliningDepthValid ? styles.error : ""}`}
+                                placeholder={defaultPipeliningDepth || "8"}
+                                value={pipeliningDepth}
+                                onChange={(e) => setPipeliningDepth(e.target.value)}
+                            />
+                            <div className={styles["form-hint"]}>
+                                Requests kept in flight per connection (1–64) when NNTP pipelining is
+                                enabled. Leave blank to use the global default.
+                            </div>
                         </div>
 
                         <div className={styles["form-group"]}>

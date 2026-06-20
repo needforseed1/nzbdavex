@@ -104,7 +104,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             connectionDetails.Host,
             connectionDetails.ByteLimit,
             connectionDetails.BytesUsedOffset,
-            connectionDetails.Priority
+            connectionDetails.Priority,
+            connectionDetails.PipeliningDepth
         );
     }
 

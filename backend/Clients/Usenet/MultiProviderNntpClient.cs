@@ -351,6 +351,13 @@ public class MultiProviderNntpClient(
         return Math.Max(0, limit.Value - used);
     }
 
+    private static int ResolveDepth(MultiConnectionNntpClient primary, int fallbackDepth)
+    {
+        return primary.ConfiguredPipeliningDepth is int d and > 0
+            ? Math.Clamp(d, 1, 64)
+            : fallbackDepth;
+    }
+
     public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -360,8 +367,9 @@ public class MultiProviderNntpClient(
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
+        var effectiveDepth = ResolveDepth(primary, depth);
 
-        await foreach (var result in primary.StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+        await foreach (var result in primary.StatsPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
             yield return result;
     }
@@ -375,8 +383,9 @@ public class MultiProviderNntpClient(
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
+        var effectiveDepth = ResolveDepth(primary, depth);
 
-        await foreach (var result in primary.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken)
+        await foreach (var result in primary.DecodedBodiesPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             if (result.Found)
@@ -400,8 +409,9 @@ public class MultiProviderNntpClient(
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
+        var effectiveDepth = ResolveDepth(primary, depth);
 
-        await foreach (var result in primary.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
+        await foreach (var result in primary.DecodedArticlesPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             if (result.Found)
