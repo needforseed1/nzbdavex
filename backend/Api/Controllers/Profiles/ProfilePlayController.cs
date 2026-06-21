@@ -453,6 +453,12 @@ public class ProfilePlayController(
                         contentGroupKey);
                     return (BatchOutcome.Winner, action, newNzoId);
                 }
+                if (reason == CommitReason.Aborted)
+                {
+                    if (newNzoId.HasValue)
+                        await RemoveAbortedQueueItemAsync(newNzoId.Value).ConfigureAwait(false);
+                    continue;
+                }
                 if (reason == CommitReason.QueueFailed || reason == CommitReason.EnqueueFailed)
                     negativeCache.MarkFailed(best.Candidate.NzbUrl);
                 if (reason == CommitReason.Cancelled)
@@ -614,6 +620,22 @@ public class ProfilePlayController(
         });
     }
 
+    private async Task RemoveAbortedQueueItemAsync(Guid nzoId)
+    {
+        _playLastSeen.TryRemove(nzoId, out _);
+        try
+        {
+            await using var ctx = new DavDatabaseContext();
+            var freshClient = new DavDatabaseClient(ctx);
+            await queueManager.RemoveQueueItemsAsync(new List<Guid> { nzoId }, freshClient, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Speed-mode abort cleanup failed for {NzoId}", nzoId);
+        }
+    }
+
     private void RecordAttempt(
         Guid clickId,
         NzbResolutionCache.Candidate c,
@@ -664,6 +686,7 @@ public class ProfilePlayController(
         CommitReason.EnqueueFailed => WatchdogEntry.Outcome.EnqueueFailed,
         CommitReason.BudgetTimeout => WatchdogEntry.Outcome.BudgetTimeout,
         CommitReason.Cancelled => WatchdogEntry.Outcome.Cancelled,
+        CommitReason.Aborted => WatchdogEntry.Outcome.Cancelled,
         _ => WatchdogEntry.Outcome.QueueFailed,
     };
 
@@ -674,6 +697,7 @@ public class ProfilePlayController(
         CommitReason.EnqueueFailed => "Could not enqueue the NZB (DB or fetch error)",
         CommitReason.BudgetTimeout => "Queue still processing when total budget elapsed",
         CommitReason.Cancelled => "Client disconnected or request cancelled",
+        CommitReason.Aborted => "Aborted: no progress within the speed-mode window — trying the next candidate",
         _ => null,
     };
 
@@ -684,6 +708,7 @@ public class ProfilePlayController(
         EnqueueFailed,
         BudgetTimeout,
         Cancelled,
+        Aborted,
     }
 
     private async Task<PreVerifyResult> PreVerifyAsync(
@@ -851,6 +876,15 @@ public class ProfilePlayController(
         if (newlyEnqueuedNzoId is null && _playLastSeen.ContainsKey(nzoId))
             _playLastSeen[nzoId] = DateTimeOffset.UtcNow;
 
+        var speedMode = configManager.IsGrabSpeedModeEnabled()
+                        && configManager.IsPlaybackWatchdogEnabled()
+                        && newlyEnqueuedNzoId.HasValue;
+        var stallWindow = TimeSpan.FromSeconds(configManager.GetGrabSpeedModeStallSeconds());
+        var maxPerCandidate = TimeSpan.FromSeconds(configManager.GetGrabSpeedModeMaxSeconds());
+        var candidateStart = DateTimeOffset.UtcNow;
+        var lastProgress = -1;
+        var lastProgressAt = candidateStart;
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (ct.IsCancellationRequested) return (null, CommitReason.Cancelled, newlyEnqueuedNzoId);
@@ -897,6 +931,22 @@ public class ProfilePlayController(
                 Log.Debug("play-timing commit {Indexer} newEnqueue={NewEnqueue} waited={Waited}ms",
                     c.IndexerName, newlyEnqueuedNzoId.HasValue, commitTimer.ElapsedMilliseconds);
                 return (redirect, CommitReason.Completed, newlyEnqueuedNzoId);
+            }
+
+            if (speedMode)
+            {
+                var (inProg, inProgPct) = queueManager.GetInProgressQueueItem();
+                var isMine = inProg?.Id == nzoId;
+                var now = DateTimeOffset.UtcNow;
+                if (!isMine)
+                    lastProgressAt = now;
+                else if (inProgPct is { } pct && pct != lastProgress)
+                {
+                    lastProgress = pct;
+                    lastProgressAt = now;
+                }
+                if ((isMine && now - lastProgressAt >= stallWindow) || now - candidateStart >= maxPerCandidate)
+                    return (null, CommitReason.Aborted, newlyEnqueuedNzoId);
             }
 
             // Refresh while actively polling so cleanup doesn't kill an item we're waiting on.

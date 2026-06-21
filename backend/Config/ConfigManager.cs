@@ -312,6 +312,26 @@ public class ConfigManager
         return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(30);
     }
 
+    public bool IsGrabSpeedModeEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-enabled"));
+        return v != null && bool.Parse(v);
+    }
+
+    public int GetGrabSpeedModeStallSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-stall-seconds"));
+        if (v == null) return 6;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 2, 60) : 6;
+    }
+
+    public int GetGrabSpeedModeMaxSeconds()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-max-seconds"));
+        if (v == null) return 15;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 5, 120) : 15;
+    }
+
     public IReadOnlyList<Regex> GetSearchExcludePatterns()
     {
         var raw = GetConfigValue("search.exclude-patterns");

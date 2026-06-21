@@ -12,6 +12,7 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const verifyMode = config["play.verify-mode"] ?? "stat";
     const enabled = (config["play.watchdog-enabled"] ?? "true") === "true";
+    const speedModeEnabled = (config["grab.speed-mode-enabled"] ?? "false") === "true";
 
     const variantsMode = config["variants.mode"] ?? "off";
     const variantsEnabled = variantsMode !== "off";
@@ -139,6 +140,53 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                 <p className={styles.hint}>
                     How long a recently-failed release is skipped on subsequent clicks, so we don't hammer
                     the same dead release (and its indexer) over and over. Default 30.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Check
+                    type="switch"
+                    id="grab-speed-mode-enabled"
+                    label="Speed mode: abort a stalled grab and move on"
+                    disabled={!enabled}
+                    checked={speedModeEnabled}
+                    onChange={e => set("grab.speed-mode-enabled", String(e.target.checked))} />
+                <p className={styles.hint}>
+                    When a candidate's grab makes no progress for the stall window (or exceeds the per-candidate
+                    ceiling), it's dropped and the next candidate is tried — without marking the dropped one dead,
+                    since it may be healthy, just slow. Off by default. Requires the watchdog to be on.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Stall window (seconds)</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={2}
+                    max={60}
+                    disabled={!enabled || !speedModeEnabled}
+                    value={config["grab.speed-mode-stall-seconds"] ?? "6"}
+                    onChange={e => set("grab.speed-mode-stall-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    Drop a candidate that has been processing but made no progress for this long. A healthy
+                    but slow release keeps reporting progress, so it's never falsely dropped. Default 6.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Per-candidate ceiling (seconds)</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={5}
+                    max={120}
+                    disabled={!enabled || !speedModeEnabled}
+                    value={config["grab.speed-mode-max-seconds"] ?? "15"}
+                    onChange={e => set("grab.speed-mode-max-seconds", e.target.value)} />
+                <p className={styles.hint}>
+                    Absolute cap on how long one candidate gets before moving on — a backstop for when the
+                    item is stuck waiting behind other queue work. Default 15.
                 </p>
             </Form.Group>
 
@@ -280,6 +328,9 @@ export function isWatchdogSettingsUpdated(config: Record<string, string>, newCon
         || config["play.max-attempts"] !== newConfig["play.max-attempts"]
         || config["play.verify-mode"] !== newConfig["play.verify-mode"]
         || config["play.candidate-negative-cache-minutes"] !== newConfig["play.candidate-negative-cache-minutes"]
+        || config["grab.speed-mode-enabled"] !== newConfig["grab.speed-mode-enabled"]
+        || config["grab.speed-mode-stall-seconds"] !== newConfig["grab.speed-mode-stall-seconds"]
+        || config["grab.speed-mode-max-seconds"] !== newConfig["grab.speed-mode-max-seconds"]
         || config["variants.mode"] !== newConfig["variants.mode"]
         || config["variants.tolerance-pct"] !== newConfig["variants.tolerance-pct"]
         || config["variants.max-per-group"] !== newConfig["variants.max-per-group"]
