@@ -322,15 +322,15 @@ public class ConfigManager
     public int GetGrabStallFailoverWindowSeconds()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("grab.stall-failover-window-seconds"));
-        if (v == null) return 6;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 2, 60) : 6;
+        if (v == null) return 2;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 2, 60) : 2;
     }
 
     public int GetGrabStallFailoverCeilingSeconds()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("grab.stall-failover-ceiling-seconds"));
-        if (v == null) return 15;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 5, 120) : 15;
+        if (v == null) return 5;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 5, 120) : 5;
     }
 
     public IReadOnlyList<Regex> GetSearchExcludePatterns()

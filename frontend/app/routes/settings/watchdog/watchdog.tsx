@@ -148,7 +148,7 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                 <div className={styles.sectionDescription}>
                     If a candidate reports no progress within the window below, it is set aside and the next
                     candidate is attempted, instead of waiting for it to complete. A set-aside candidate is
-                    not recorded as failed — it may simply be slow. Enabled by default; requires the failover
+                    not recorded as failed — it may simply be slow. On by default; requires the failover
                     watchdog above to be on.
                 </div>
             </div>
@@ -163,7 +163,7 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     onChange={e => set("grab.stall-failover-enabled", String(e.target.checked))} />
                 <p className={styles.hint}>
                     When a candidate stops progressing, it is set aside and the next one is attempted.
-                    Enabled by default.
+                    On by default.
                 </p>
             </Form.Group>
 
@@ -175,11 +175,11 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     min={2}
                     max={60}
                     disabled={!enabled || !stallFailoverEnabled}
-                    value={config["grab.stall-failover-window-seconds"] ?? "6"}
+                    value={config["grab.stall-failover-window-seconds"] ?? "2"}
                     onChange={e => set("grab.stall-failover-window-seconds", e.target.value)} />
                 <p className={styles.hint}>
                     A candidate that has started but reported no progress for this many seconds is set aside.
-                    A candidate that keeps reporting progress is never set aside. Default 6.
+                    A candidate that keeps reporting progress is never set aside. Default 2.
                 </p>
             </Form.Group>
 
@@ -191,11 +191,11 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     min={5}
                     max={120}
                     disabled={!enabled || !stallFailoverEnabled}
-                    value={config["grab.stall-failover-ceiling-seconds"] ?? "15"}
+                    value={config["grab.stall-failover-ceiling-seconds"] ?? "5"}
                     onChange={e => set("grab.stall-failover-ceiling-seconds", e.target.value)} />
                 <p className={styles.hint}>
                     Upper limit on how long a single candidate is given before moving on, regardless of
-                    progress — a backstop for a candidate that is queued but not yet started. Default 15.
+                    progress — a backstop for a candidate that is queued but not yet started. Default 5.
                 </p>
             </Form.Group>
 
