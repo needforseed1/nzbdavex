@@ -10,9 +10,9 @@ type WatchdogSettingsProps = {
 
 export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
-    const verifyMode = config["play.verify-mode"] ?? "stat";
+    const verifyMode = config["play.verify-mode"] ?? "none";
     const enabled = (config["play.watchdog-enabled"] ?? "true") === "true";
-    const speedModeEnabled = (config["grab.speed-mode-enabled"] ?? "false") === "true";
+    const stallFailoverEnabled = (config["grab.stall-failover-enabled"] ?? "true") === "true";
 
     const variantsMode = config["variants.mode"] ?? "off";
     const variantsEnabled = variantsMode !== "off";
@@ -21,11 +21,11 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
     return (
         <div className={styles.container}>
             <div className={styles.section}>
-                <div className={styles.sectionTitle}>Playback fast-fail</div>
+                <div className={styles.sectionTitle}>Failover</div>
                 <div className={styles.sectionDescription}>
-                    When a user clicks Play, nzbdav tries the top-ranked release first; if it can't deliver
-                    fast enough, alternatives are tried automatically. These knobs control how aggressive
-                    that fallback is, so the player never hangs on a dead release.
+                    When an item is requested, nzbdav tries the top-ranked release first; if it can't be
+                    served fast enough, alternatives are tried automatically. These knobs control how
+                    aggressive that fallback is, so a request never hangs on a dead release.
                 </div>
             </div>
 
@@ -33,11 +33,11 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                 <Form.Check
                     type="switch"
                     id="play-watchdog-enabled"
-                    label="Enable playback watchdog"
+                    label="Enable failover watchdog"
                     checked={enabled}
                     onChange={e => set("play.watchdog-enabled", String(e.target.checked))} />
                 <p className={styles.hint}>
-                    When off, a Play click just processes the single chosen release (legacy behavior).
+                    When off, a request just processes the single chosen release (legacy behavior).
                     When on, the watchdog tries alternative releases on failure and dedupes in-flight queue items.
                     {enabled && <> Live reports appear in the <Link to="/watchdog">Watchdog</Link> tab in the sidebar.</>}
                 </p>
@@ -53,9 +53,9 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     value={config["play.total-budget-seconds"] ?? "30"}
                     onChange={e => set("play.total-budget-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    Hard ceiling for a Play click. Big UHD releases need ~15–30s for the queue to extract
-                    file metadata. If exceeded, the player gets a retry-able error; the queue item keeps
-                    processing in the background and a re-click resolves it. Default 30.
+                    Hard ceiling for a request. Big UHD releases need ~15–30s for the queue to extract
+                    file metadata. If exceeded, the client gets a retry-able error; the queue item keeps
+                    processing in the background and a re-request resolves it. Default 30.
                 </p>
             </Form.Group>
 
@@ -67,11 +67,11 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     min={1}
                     max={30}
                     disabled={!enabled}
-                    value={config["play.hedge-delay-seconds"] ?? "2"}
+                    value={config["play.hedge-delay-seconds"] ?? "3"}
                     onChange={e => set("play.hedge-delay-seconds", e.target.value)} />
                 <p className={styles.hint}>
                     If the primary candidate hasn't passed verification by this many seconds, backup
-                    candidates start in parallel. Lower = more eager fallback, slightly higher provider load. Default 2.
+                    candidates start in parallel. Lower = more eager fallback, slightly higher provider load. Default 3.
                 </p>
             </Form.Group>
 
@@ -83,29 +83,29 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     min={1}
                     max={10}
                     disabled={!enabled}
-                    value={config["play.max-candidates"] ?? "1"}
+                    value={config["play.max-candidates"] ?? "3"}
                     onChange={e => set("play.max-candidates", e.target.value)} />
                 <p className={styles.hint}>
                     How many candidates run at the same time in one round. Higher means faster
                     failover when a candidate fails, but more simultaneous indexer requests — too
-                    many in parallel can look like spamming and risk a ban. Default 1.
+                    many in parallel can look like spamming and risk a ban. Default 3.
                 </p>
             </Form.Group>
 
             <Form.Group className={styles.section}>
-                <Form.Label>Total candidates per click</Form.Label>
+                <Form.Label>Total candidates per request</Form.Label>
                 <Form.Control
                     className={styles.input}
                     type="number"
                     min={1}
                     max={200}
                     disabled={!enabled}
-                    value={config["play.max-attempts"] ?? "15"}
+                    value={config["play.max-attempts"] ?? "10"}
                     onChange={e => set("play.max-attempts", e.target.value)} />
                 <p className={styles.hint}>
-                    The most candidates one attempt will try in total before giving up. With the
-                    defaults (1 per batch, 15 total) it tries up to 15 candidates one at a time,
-                    then stops. Also stops sooner if the total budget runs out. Default 15.
+                    The most candidates one request will try in total before giving up. With the
+                    defaults (3 per batch, 10 total) it tries up to 10 candidates, a few at a time,
+                    then stops. Also stops sooner if the total budget runs out. Default 10.
                 </p>
             </Form.Group>
 
@@ -121,9 +121,9 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     <option value="none">none — no pre-check, enqueue right away</option>
                 </Form.Select>
                 <p className={styles.hint}>
-                    `stat` is the default: a cheap NNTP check against your provider weeds out dead releases
-                    before the queue commits, which avoids re-fetching their NZB from the indexer on every
-                    click. `none` skips the check (faster, but every candidate gets enqueued).
+                    `none` (the default) skips the pre-check for the fastest start; every candidate is enqueued
+                    right away. `stat` is a cheap NNTP check that weeds out dead releases before the queue
+                    commits, avoiding a re-fetch of their NZB from the indexer on every request.
                 </p>
             </Form.Group>
 
@@ -135,26 +135,35 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     min={1}
                     max={1440}
                     disabled={!enabled}
-                    value={config["play.candidate-negative-cache-minutes"] ?? "30"}
+                    value={config["play.candidate-negative-cache-minutes"] ?? "5"}
                     onChange={e => set("play.candidate-negative-cache-minutes", e.target.value)} />
                 <p className={styles.hint}>
-                    How long a recently-failed release is skipped on subsequent clicks, so we don't hammer
-                    the same dead release (and its indexer) over and over. Default 30.
+                    How long a recently-failed release is skipped on subsequent requests, so we don't hammer
+                    the same dead release (and its indexer) over and over. Default 5.
                 </p>
             </Form.Group>
+
+            <div className={styles.section}>
+                <div className={styles.sectionTitle}>Stall failover</div>
+                <div className={styles.sectionDescription}>
+                    If a candidate reports no progress within the window below, it is set aside and the next
+                    candidate is attempted, instead of waiting for it to complete. A set-aside candidate is
+                    not recorded as failed — it may simply be slow. Enabled by default; requires the failover
+                    watchdog above to be on.
+                </div>
+            </div>
 
             <Form.Group className={styles.section}>
                 <Form.Check
                     type="switch"
-                    id="grab-speed-mode-enabled"
-                    label="Speed mode: abort a stalled grab and move on"
+                    id="grab-stall-failover-enabled"
+                    label="Enable stall failover"
                     disabled={!enabled}
-                    checked={speedModeEnabled}
-                    onChange={e => set("grab.speed-mode-enabled", String(e.target.checked))} />
+                    checked={stallFailoverEnabled}
+                    onChange={e => set("grab.stall-failover-enabled", String(e.target.checked))} />
                 <p className={styles.hint}>
-                    When a candidate's grab makes no progress for the stall window (or exceeds the per-candidate
-                    ceiling), it's dropped and the next candidate is tried — without marking the dropped one dead,
-                    since it may be healthy, just slow. Off by default. Requires the watchdog to be on.
+                    When a candidate stops progressing, it is set aside and the next one is attempted.
+                    Enabled by default.
                 </p>
             </Form.Group>
 
@@ -165,12 +174,12 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     type="number"
                     min={2}
                     max={60}
-                    disabled={!enabled || !speedModeEnabled}
-                    value={config["grab.speed-mode-stall-seconds"] ?? "6"}
-                    onChange={e => set("grab.speed-mode-stall-seconds", e.target.value)} />
+                    disabled={!enabled || !stallFailoverEnabled}
+                    value={config["grab.stall-failover-window-seconds"] ?? "6"}
+                    onChange={e => set("grab.stall-failover-window-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    Drop a candidate that has been processing but made no progress for this long. A healthy
-                    but slow release keeps reporting progress, so it's never falsely dropped. Default 6.
+                    A candidate that has started but reported no progress for this many seconds is set aside.
+                    A candidate that keeps reporting progress is never set aside. Default 6.
                 </p>
             </Form.Group>
 
@@ -181,12 +190,12 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     type="number"
                     min={5}
                     max={120}
-                    disabled={!enabled || !speedModeEnabled}
-                    value={config["grab.speed-mode-max-seconds"] ?? "15"}
-                    onChange={e => set("grab.speed-mode-max-seconds", e.target.value)} />
+                    disabled={!enabled || !stallFailoverEnabled}
+                    value={config["grab.stall-failover-ceiling-seconds"] ?? "15"}
+                    onChange={e => set("grab.stall-failover-ceiling-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    Absolute cap on how long one candidate gets before moving on — a backstop for when the
-                    item is stuck waiting behind other queue work. Default 15.
+                    Upper limit on how long a single candidate is given before moving on, regardless of
+                    progress — a backstop for a candidate that is queued but not yet started. Default 15.
                 </p>
             </Form.Group>
 
@@ -328,9 +337,9 @@ export function isWatchdogSettingsUpdated(config: Record<string, string>, newCon
         || config["play.max-attempts"] !== newConfig["play.max-attempts"]
         || config["play.verify-mode"] !== newConfig["play.verify-mode"]
         || config["play.candidate-negative-cache-minutes"] !== newConfig["play.candidate-negative-cache-minutes"]
-        || config["grab.speed-mode-enabled"] !== newConfig["grab.speed-mode-enabled"]
-        || config["grab.speed-mode-stall-seconds"] !== newConfig["grab.speed-mode-stall-seconds"]
-        || config["grab.speed-mode-max-seconds"] !== newConfig["grab.speed-mode-max-seconds"]
+        || config["grab.stall-failover-enabled"] !== newConfig["grab.stall-failover-enabled"]
+        || config["grab.stall-failover-window-seconds"] !== newConfig["grab.stall-failover-window-seconds"]
+        || config["grab.stall-failover-ceiling-seconds"] !== newConfig["grab.stall-failover-ceiling-seconds"]
         || config["variants.mode"] !== newConfig["variants.mode"]
         || config["variants.tolerance-pct"] !== newConfig["variants.tolerance-pct"]
         || config["variants.max-per-group"] !== newConfig["variants.max-per-group"]

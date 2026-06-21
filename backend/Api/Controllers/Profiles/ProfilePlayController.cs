@@ -632,7 +632,7 @@ public class ProfilePlayController(
         }
         catch (Exception e)
         {
-            Log.Debug(e, "Speed-mode abort cleanup failed for {NzoId}", nzoId);
+            Log.Debug(e, "Stall-failover abort cleanup failed for {NzoId}", nzoId);
         }
     }
 
@@ -697,7 +697,7 @@ public class ProfilePlayController(
         CommitReason.EnqueueFailed => "Could not enqueue the NZB (DB or fetch error)",
         CommitReason.BudgetTimeout => "Queue still processing when total budget elapsed",
         CommitReason.Cancelled => "Client disconnected or request cancelled",
-        CommitReason.Aborted => "Aborted: no progress within the speed-mode window — trying the next candidate",
+        CommitReason.Aborted => "Aborted: no progress within the stall window — trying the next candidate",
         _ => null,
     };
 
@@ -876,11 +876,11 @@ public class ProfilePlayController(
         if (newlyEnqueuedNzoId is null && _playLastSeen.ContainsKey(nzoId))
             _playLastSeen[nzoId] = DateTimeOffset.UtcNow;
 
-        var speedMode = configManager.IsGrabSpeedModeEnabled()
+        var stallFailover = configManager.IsGrabStallFailoverEnabled()
                         && configManager.IsPlaybackWatchdogEnabled()
                         && newlyEnqueuedNzoId.HasValue;
-        var stallWindow = TimeSpan.FromSeconds(configManager.GetGrabSpeedModeStallSeconds());
-        var maxPerCandidate = TimeSpan.FromSeconds(configManager.GetGrabSpeedModeMaxSeconds());
+        var stallWindow = TimeSpan.FromSeconds(configManager.GetGrabStallFailoverWindowSeconds());
+        var maxPerCandidate = TimeSpan.FromSeconds(configManager.GetGrabStallFailoverCeilingSeconds());
         var candidateStart = DateTimeOffset.UtcNow;
         var lastProgress = -1;
         var lastProgressAt = candidateStart;
@@ -933,7 +933,7 @@ public class ProfilePlayController(
                 return (redirect, CommitReason.Completed, newlyEnqueuedNzoId);
             }
 
-            if (speedMode)
+            if (stallFailover)
             {
                 var (inProg, inProgPct) = queueManager.GetInProgressQueueItem();
                 var isMine = inProg?.Id == nzoId;

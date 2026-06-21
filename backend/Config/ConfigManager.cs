@@ -269,22 +269,22 @@ public class ConfigManager
     public int GetPlayHedgeDelaySeconds()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("play.hedge-delay-seconds"));
-        if (v == null) return 2;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 30) : 2;
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 30) : 3;
     }
 
     public int GetPlayMaxCandidates()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("play.max-candidates"));
-        if (v == null) return 1;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 1;
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 3;
     }
 
     public int GetPlayMaxAttempts()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("play.max-attempts"));
-        if (v == null) return 15;
-        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 200) : 15;
+        if (v == null) return 10;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 200) : 10;
     }
 
     public string GetPlayVerifyMode()
@@ -293,8 +293,9 @@ public class ConfigManager
         return v switch
         {
             "body" => "body",
+            "stat" => "stat",
             "none" => "none",
-            _ => "stat",
+            _ => "none",
         };
     }
 
@@ -308,26 +309,26 @@ public class ConfigManager
     public TimeSpan GetPlayCandidateNegativeCacheTtl()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("play.candidate-negative-cache-minutes"));
-        if (v == null) return TimeSpan.FromMinutes(30);
-        return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(30);
+        if (v == null) return TimeSpan.FromMinutes(5);
+        return int.TryParse(v, out var n) ? TimeSpan.FromMinutes(Math.Clamp(n, 1, 60 * 24)) : TimeSpan.FromMinutes(5);
     }
 
-    public bool IsGrabSpeedModeEnabled()
+    public bool IsGrabStallFailoverEnabled()
     {
-        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-enabled"));
-        return v != null && bool.Parse(v);
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.stall-failover-enabled"));
+        return v == null || bool.Parse(v);
     }
 
-    public int GetGrabSpeedModeStallSeconds()
+    public int GetGrabStallFailoverWindowSeconds()
     {
-        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-stall-seconds"));
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.stall-failover-window-seconds"));
         if (v == null) return 6;
         return int.TryParse(v, out var n) ? Math.Clamp(n, 2, 60) : 6;
     }
 
-    public int GetGrabSpeedModeMaxSeconds()
+    public int GetGrabStallFailoverCeilingSeconds()
     {
-        var v = StringUtil.EmptyToNull(GetConfigValue("grab.speed-mode-max-seconds"));
+        var v = StringUtil.EmptyToNull(GetConfigValue("grab.stall-failover-ceiling-seconds"));
         if (v == null) return 15;
         return int.TryParse(v, out var n) ? Math.Clamp(n, 5, 120) : 15;
     }
