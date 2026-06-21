@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -699,12 +700,17 @@ public class ProfilePlayController(
                 return new PreVerifyResult(candidate, cachedBytes, preflighted.Verdict, preflighted.ResponderHost);
             }
 
+            var pvTimer = Stopwatch.StartNew();
             var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
+            var msFetch = pvTimer.ElapsedMilliseconds;
             if (nzbBytes is null)
                 return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
 
+            pvTimer.Restart();
             using var verifyStream = new MemoryStream(nzbBytes, writable: false);
             var outcome = await fastVerifier.VerifyAsync(verifyStream, verifyMode, verifySampleCount, ct).ConfigureAwait(false);
+            Log.Debug("play-timing preverify {Indexer} fetch={Fetch}ms verify={Verify}ms verdict={Verdict}",
+                candidate.IndexerName, msFetch, pvTimer.ElapsedMilliseconds, outcome.Verdict);
             return new PreVerifyResult(candidate, nzbBytes, outcome.Verdict, outcome.ResponderHost);
         }
         catch (OperationCanceledException)
@@ -772,6 +778,7 @@ public class ProfilePlayController(
         CancellationToken ct)
     {
         var c = preVerify.Candidate;
+        var commitTimer = Stopwatch.StartNew();
         var nzbBytes = preVerify.NzbBytes!;
         var safeTitle = SanitizeFileName(c.Title);
         var fileName = $"{safeTitle}.nzb";
@@ -887,6 +894,8 @@ public class ProfilePlayController(
                     });
                 }
 
+                Log.Debug("play-timing commit {Indexer} newEnqueue={NewEnqueue} waited={Waited}ms",
+                    c.IndexerName, newlyEnqueuedNzoId.HasValue, commitTimer.ElapsedMilliseconds);
                 return (redirect, CommitReason.Completed, newlyEnqueuedNzoId);
             }
 
@@ -1158,46 +1167,7 @@ public class ProfilePlayController(
         var baseUrl = HttpContext.GetPublicBaseUrl(configManager.GetBaseUrl());
         var path = DatabaseStoreSymlinkFile.GetTargetPath(davItemId, "", '/').TrimStart('/');
         var dlKey = GetWebdavItemRequest.GenerateDownloadKey(configManager.GetStrmKey(), path);
-
-        // Block on full lazy resolution before handing the player a URL. The
-        // resolved Meta is persisted by LazyRarResolver, so this one-time cost
-        // covers every future open and every seek — players never race the
-        // resolver after this returns.
-        await PreWarmLazyResolutionAsync(davItemId, ct).ConfigureAwait(false);
-
         return Redirect($"{baseUrl}/view/{path}?downloadKey={dlKey}&extension={extension}");
-    }
-
-    private async Task PreWarmLazyResolutionAsync(Guid davItemId, CancellationToken ct)
-    {
-        try
-        {
-            await using var ctx = new DavDatabaseContext();
-            var davItem = await ctx.Items.AsNoTracking()
-                .FirstOrDefaultAsync(x => x.Id == davItemId, ct)
-                .ConfigureAwait(false);
-            if (davItem is null || davItem.SubType != DavItem.ItemSubType.MultipartFile) return;
-
-            var freshClient = new DavDatabaseClient(ctx);
-            var mpf = await freshClient.GetDavMultipartFileAsync(davItem).ConfigureAwait(false);
-            if (mpf is null) return;
-            if (!mpf.Metadata.IsLazy) return;
-            if ((mpf.Metadata.PendingParts?.Length ?? 0) == 0) return;
-
-            await lazyRarResolver
-                .EnsureResolvedThroughAsync(mpf, long.MaxValue, ct)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception e)
-        {
-            Log.Debug(e,
-                "Pre-redirect lazy RAR pre-warm failed for {DavItemId}; on-demand resolver will pick it up",
-                davItemId);
-        }
     }
 
     private readonly record struct PreVerifyResult(

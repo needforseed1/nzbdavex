@@ -30,6 +30,8 @@ public class LazyRarProcessor(
     // resolver overwrites with exact ranges on first read.
     private const int ContinuationHeaderGuess = 80;
 
+    private const double YencDecodeRatio = 0.95;
+
     // We dropped the explicit "must be a single-file archive" check because
     // detecting it required walking past the first file header — which is
     // the slow seek that dominates first-volume parse cost. This sanity
@@ -133,23 +135,10 @@ public class LazyRarProcessor(
             FilePartByteRange = firstPartByteRange,
         };
 
-        // Fetch sizes for all trailing parts in parallel. Sequential lookup
-        // serialized N STATs (~1.5s for 30 parts at 50ms RTT); concurrent
-        // lookup respects MaxDownloadConnections so we never exceed the
-        // provider's plan limit.
         var trailingInfos = sorted.Skip(1).ToList();
-        long[] partSizes;
-        try
-        {
-            partSizes = await FetchPartSizesAsync(trailingInfos).ConfigureAwait(false);
-        }
-        catch (Exception e) when (!e.IsCancellationException())
-        {
-            Log.Information(
-                "LazyRarProcessor: size lookup failed for {File}, falling back to eager: {Msg}",
-                firstInfo.FileName, e.Message);
-            return null;
-        }
+        var partSizes = trailingInfos
+            .Select(pi => pi.FileSize ?? (long)(pi.NzbFile.GetTotalYencodedSize() * YencDecodeRatio))
+            .ToArray();
 
         var pending = new List<DavMultipartFile.PendingPart>(trailingInfos.Count);
         var pendingSum = 0L;
@@ -197,28 +186,6 @@ public class LazyRarProcessor(
             ReleaseDate = firstInfo.ReleaseDate,
             ArchiveName = GetArchiveName(firstInfo.FileName),
         };
-    }
-
-    private async Task<long[]> FetchPartSizesAsync(IReadOnlyList<GetFileInfosStep.FileInfo> infos)
-    {
-        if (infos.Count == 0) return [];
-
-        using var semaphore = new SemaphoreSlim(configManager.GetMaxQueueConnections());
-        var tasks = infos.Select(async pi =>
-        {
-            if (pi.FileSize.HasValue) return pi.FileSize.Value;
-            await semaphore.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                return await usenetClient.GetFileSizeAsync(pi.NzbFile, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }).ToArray();
-
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     private static string GetArchiveName(string firstFileName)

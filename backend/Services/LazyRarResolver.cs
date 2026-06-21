@@ -157,14 +157,13 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             ?? throw new InvalidDataException(
                 $"Lazy RAR resolution: continuation header for '{pathInArchive}' not found in trailing volume.");
 
+        var dataStart = match.GetDataStartPosition();
+        var dataSize = match.GetAdditionalDataSize();
         return new DavMultipartFile.FilePart
         {
             SegmentIds = pending.SegmentIds,
-            SegmentIdByteRange = pending.SegmentIdByteRange,
-            FilePartByteRange = LongRange.FromStartAndSize(
-                match.GetDataStartPosition(),
-                match.GetAdditionalDataSize()
-            ),
+            SegmentIdByteRange = LongRange.FromStartAndSize(0, dataStart + dataSize),
+            FilePartByteRange = LongRange.FromStartAndSize(dataStart, dataSize),
         };
     }
 

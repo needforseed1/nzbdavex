@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.SabControllers.GetHistory;
@@ -149,13 +150,18 @@ public class QueueItemProcessor(
         HealthCheckService.CheckCachedMissingSegmentIds(articlesToPrecheck);
 
         // step 1 -- get name and size of each nzb file
+        var stepTimer = Stopwatch.StartNew();
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
         var segments = await FetchFirstSegmentsStep.FetchFirstSegments(
             nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
+        var msFirstSeg = stepTimer.ElapsedMilliseconds;
+        stepTimer.Restart();
         var par2FileDescriptors = await GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
             segments, usenetClient, ct).ConfigureAwait(false);
+        var msPar2 = stepTimer.ElapsedMilliseconds;
+        stepTimer.Restart();
         var fileInfos = GetFileInfosStep.GetFileInfos(
             segments, par2FileDescriptors);
 
@@ -171,6 +177,8 @@ public class QueueItemProcessor(
             var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
             lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
         }
+        var msRar = stepTimer.ElapsedMilliseconds;
+        stepTimer.Restart();
 
         // step 2b -- per-file processing for everything else (and for the
         // rar group when lazy mounting was skipped or unsupported).
@@ -189,6 +197,8 @@ public class QueueItemProcessor(
             .Select(x => x!)
             .ToList();
         if (lazyRarResult is not null) fileProcessingResults.Add(lazyRarResult);
+        var msProcessors = stepTimer.ElapsedMilliseconds;
+        stepTimer.Restart();
 
         // step 3 -- Optionally check full article existence
         var checkedFullHealth = false;
@@ -216,6 +226,13 @@ public class QueueItemProcessor(
                     .ConfigureAwait(false);
             checkedFullHealth = true;
         }
+        var msHealth = stepTimer.ElapsedMilliseconds;
+        stepTimer.Stop();
+
+        Log.Information(
+            "play-timing nzo={NzoId} files={Files} firstSeg={FirstSeg}ms par2={Par2}ms rar={Rar}ms " +
+            "processors={Processors}ms health={Health}ms",
+            queueItem.Id, nzbFiles.Count, msFirstSeg, msPar2, msRar, msProcessors, msHealth);
 
         // update the database
         await MarkQueueItemCompleted(startTime, error: null, async () =>
