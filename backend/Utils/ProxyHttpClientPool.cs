@@ -52,19 +52,56 @@ public static class ProxyHttpClientPool
     private static async ValueTask<Stream> KeepAliveConnectAsync(
         SocketsHttpConnectionContext context, CancellationToken ct)
     {
-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-        TrySetKeepAliveTuning(socket);
-        try
+        var endPoint = context.DnsEndPoint;
+
+        IPAddress[] addresses = IPAddress.TryParse(endPoint.Host, out var literal) && literal is not null
+            ? new[] { literal }
+            : await Dns.GetHostAddressesAsync(endPoint.Host, ct).ConfigureAwait(false);
+
+        if (addresses.Length == 0)
+            throw new SocketException((int)SocketError.HostNotFound);
+
+        Exception? lastError = null;
+        for (var i = 0; i < addresses.Length; i++)
         {
-            await socket.ConnectAsync(context.DnsEndPoint, ct).ConfigureAwait(false);
-            return new NetworkStream(socket, ownsSocket: true);
+            var isLast = i == addresses.Length - 1;
+            var socket = new Socket(addresses[i].AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            TrySetKeepAliveTuning(socket);
+            try
+            {
+                if (isLast)
+                {
+                    await socket.ConnectAsync(addresses[i], endPoint.Port, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    attemptCts.CancelAfter(TimeSpan.FromSeconds(3));
+                    try
+                    {
+                        await socket.ConnectAsync(addresses[i], endPoint.Port, attemptCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (attemptCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                    {
+                        throw new SocketException((int)SocketError.TimedOut);
+                    }
+                }
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch (Exception e)
+            {
+                socket.Dispose();
+                lastError = e;
+            }
         }
-        catch
-        {
-            socket.Dispose();
-            throw;
-        }
+
+        throw lastError ?? new SocketException((int)SocketError.HostUnreachable);
     }
 
     private static void TrySetKeepAliveTuning(Socket socket)
