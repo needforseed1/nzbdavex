@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace NzbWebDAV.Utils;
@@ -12,10 +14,32 @@ public static class FilenameMatcher
         @"[^a-z0-9]+",
         RegexOptions.Compiled);
 
+    private static readonly Dictionary<char, string> LatinFolding = new()
+    {
+        ['ø'] = "o", ['œ'] = "oe", ['æ'] = "ae", ['ł'] = "l", ['đ'] = "d",
+        ['ð'] = "d", ['þ'] = "th", ['ß'] = "ss", ['ı'] = "i", ['ŋ'] = "n",
+    };
+
+    private static string Fold(string s)
+    {
+        var decomposed = s.ToLowerInvariant().Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark)
+                continue;
+            if (LatinFolding.TryGetValue(c, out var rep))
+                sb.Append(rep);
+            else
+                sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
     public static string[] HeadTokens(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return [];
-        var lower = s.ToLowerInvariant();
+        var lower = Fold(s);
         var m = BoundaryRegex.Match(lower);
         while (m.Success && m.Index == 0) m = m.NextMatch();
         var head = m.Success ? lower[..m.Index] : lower;
@@ -109,7 +133,7 @@ public static class FilenameMatcher
     public static string NormalizeTitle(string? title)
     {
         if (string.IsNullOrWhiteSpace(title)) return "";
-        var tokens = NonAlnumRegex.Replace(title.ToLowerInvariant(), " ")
+        var tokens = NonAlnumRegex.Replace(Fold(title), " ")
                                   .Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return string.Join(' ', StripLeadingArticle(tokens));
     }
