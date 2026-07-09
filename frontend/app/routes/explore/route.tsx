@@ -90,9 +90,14 @@ function Body(props: ExplorePageData) {
     }, [items, query, sortKey, sortDir]);
 
     const visibleNames = useMemo(() => visibleItems.map(i => i.name), [visibleItems]);
+    const currentNames = useMemo(() => new Set(items.map(i => i.name)), [items]);
     const selectableNames = useMemo(
         () => visibleNames.filter(n => canDelete),
         [visibleNames, canDelete]
+    );
+    const selectedVisibleNames = useMemo(
+        () => selectableNames.filter(n => selected.has(n)),
+        [selectableNames, selected]
     );
     const selectedVisibleCount = useMemo(
         () => selectableNames.reduce((acc, n) => acc + (selected.has(n) ? 1 : 0), 0),
@@ -109,6 +114,20 @@ function Body(props: ExplorePageData) {
         const totalSize = visibleItems.reduce((acc, x) => acc + (x.size ?? 0), 0);
         return { dirs, files, totalSize };
     }, [visibleItems]);
+
+    // Keep bulk actions tied to rows that still exist in this folder. This
+    // prevents stale selected names from surviving a refresh after deletion.
+    useEffect(() => {
+        setSelected(prev => {
+            let changed = false;
+            const next = new Set<string>();
+            for (const name of prev) {
+                if (currentNames.has(name)) next.add(name);
+                else changed = true;
+            }
+            return changed ? next : prev;
+        });
+    }, [currentNames]);
 
     const getDirectoryPath = useCallback((directoryName: string) => {
         return `${location.pathname}/${encodeURIComponent(directoryName)}`;
@@ -234,12 +253,12 @@ function Body(props: ExplorePageData) {
             if ((e.key === "Delete" || e.key === "Backspace") && !isTypingTarget(e.target)) {
                 if (selected.size === 0 || !canDelete) return;
                 e.preventDefault();
-                requestDelete(Array.from(selected));
+                requestDelete(selectedVisibleNames);
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [selected, canDelete, selectableNames, toggleSelectAll, clearSelection, requestDelete]);
+    }, [selected, selectedVisibleNames, canDelete, selectableNames, toggleSelectAll, clearSelection, requestDelete]);
 
     const isRefreshing = revalidator.state === "loading";
     const showSkeleton = isNavigating;
@@ -267,8 +286,9 @@ function Body(props: ExplorePageData) {
             {selected.size > 0 && canDelete && (
                 <SelectionBar
                     count={selected.size}
+                    visibleCount={selectedVisibleNames.length}
                     onClear={clearSelection}
-                    onDelete={() => requestDelete(Array.from(selected))}
+                    onDelete={() => requestDelete(selectedVisibleNames)}
                 />
             )}
             {!showSkeleton && visibleItems.length === 0 && (
@@ -282,7 +302,7 @@ function Body(props: ExplorePageData) {
                     {visibleItems.filter(x => x.isDirectory).map((x, index) => {
                         const checked = selected.has(x.name);
                         return (
-                            <div key={`${index}_dir_item`} className={getClassName(x, checked)}>
+                            <div key={`dir:${x.name}`} className={getClassName(x, checked)}>
                                 {canDelete && (
                                     <CheckCell
                                         name={x.name}
@@ -308,7 +328,7 @@ function Body(props: ExplorePageData) {
                     {visibleItems.filter(x => !x.isDirectory).map((x, index) => {
                         const checked = selected.has(x.name);
                         return (
-                            <div key={`${index}_file_item`} className={getClassName(x, checked)}>
+                            <div key={`file:${x.name}`} className={getClassName(x, checked)}>
                                 {canDelete && (
                                     <CheckCell
                                         name={x.name}
@@ -443,11 +463,13 @@ function Toolbar(props: ToolbarProps) {
     );
 }
 
-function SelectionBar(props: { count: number, onClear: () => void, onDelete: () => void }) {
+function SelectionBar(props: { count: number, visibleCount: number, onClear: () => void, onDelete: () => void }) {
+    const deleteCount = props.visibleCount;
     return (
         <div className={styles["selection-bar"]} role="region" aria-label="Bulk actions">
             <div className={styles["selection-count"]}>
                 {props.count} selected
+                {props.visibleCount !== props.count ? ` · ${props.visibleCount} visible` : ""}
             </div>
             <div className={styles["selection-actions"]}>
                 <button
@@ -461,8 +483,9 @@ function SelectionBar(props: { count: number, onClear: () => void, onDelete: () 
                     type="button"
                     className={styles["selection-delete"]}
                     onClick={props.onDelete}
+                    disabled={deleteCount === 0}
                 >
-                    Delete {props.count}
+                    Delete {deleteCount}
                 </button>
             </div>
         </div>

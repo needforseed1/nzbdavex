@@ -44,50 +44,66 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         var meta = mpf.Metadata;
         if (!meta.IsLazy) return meta;
 
-        // Old MemoryPack blobs may deserialize PendingParts as null despite
-        // the property initializer; treat that as "nothing to resolve".
-        var pending = meta.PendingParts ?? [];
-        if (pending.Length == 0) return meta;
-
-        var resolvedBytes = SumResolvedBytes(meta);
-        if (resolvedBytes > targetByteOffset) return meta;
-
-        // Decide how many trailing parts to resolve based on estimates. The
-        // estimates are adjusted at import time so cumulative sums match the
-        // true file length, which makes this count an exact upper bound.
-        var count = 0;
-        var runningTotal = resolvedBytes;
-        foreach (var p in pending)
+        while (true)
         {
-            count++;
-            runningTotal += p.EstimatedDataSize;
-            if (runningTotal > targetByteOffset) break;
+            // Old MemoryPack blobs may deserialize PendingParts as null despite
+            // the property initializer; treat that as "nothing to resolve".
+            var pending = meta.PendingParts ?? [];
+            if (pending.Length == 0) return meta;
+
+            var resolvedBytes = SumResolvedBytes(meta);
+            if (resolvedBytes > targetByteOffset) return meta;
+
+            // Decide how many trailing parts to resolve based on estimates. The
+            // estimates are adjusted at import time so cumulative sums match the
+            // true file length. Real RAR continuation headers can still differ
+            // from the import-time estimate, so after committing exact ranges we
+            // loop until the exact resolved map really covers targetByteOffset.
+            var count = 0;
+            var runningTotal = resolvedBytes;
+            foreach (var p in pending)
+            {
+                count++;
+                runningTotal += p.EstimatedDataSize;
+                if (runningTotal > targetByteOffset) break;
+            }
+
+            var partsToResolve = new DavMultipartFile.PendingPart[count];
+            Array.Copy(pending, partsToResolve, count);
+
+            // Run resolutions in parallel, bounded by the provider plan limit.
+            // Use the same cap that governs the rest of the queue processor so
+            // we never burst past what the user's provider plan allows.
+            var maxConcurrency = Math.Max(1, configManager.GetMaxDownloadConnections());
+            using var semaphore = new SemaphoreSlim(maxConcurrency);
+
+            var resolveTasks = partsToResolve.Select(async part =>
+            {
+                await semaphore.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    return await GetOrStartResolutionAsync(mpf, part, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }).ToArray();
+
+            var beforeResolvedBytes = resolvedBytes;
+            var beforePendingCount = pending.Length;
+            var resolveds = await Task.WhenAll(resolveTasks).ConfigureAwait(false);
+            meta = CommitResolvedBatch(mpf, resolveds);
+
+            var afterPendingCount = (meta.PendingParts ?? []).Length;
+            if (SumResolvedBytes(meta) == beforeResolvedBytes && afterPendingCount == beforePendingCount)
+            {
+                Log.Warning(
+                    "Lazy RAR resolver made no progress for {Id} while seeking to {Offset}; archive mapping may be invalid.",
+                    mpf.Id, targetByteOffset);
+                return meta;
+            }
         }
-
-        var partsToResolve = new DavMultipartFile.PendingPart[count];
-        Array.Copy(pending, partsToResolve, count);
-
-        // Run resolutions in parallel, bounded by the provider plan limit.
-        // Use the same cap that governs the rest of the queue processor so
-        // we never burst past what the user's provider plan allows.
-        var maxConcurrency = Math.Max(1, configManager.GetMaxDownloadConnections());
-        using var semaphore = new SemaphoreSlim(maxConcurrency);
-
-        var resolveTasks = partsToResolve.Select(async part =>
-        {
-            await semaphore.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                return await GetOrStartResolutionAsync(mpf, part, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }).ToArray();
-
-        var resolveds = await Task.WhenAll(resolveTasks).ConfigureAwait(false);
-        return CommitResolvedBatch(mpf, resolveds);
     }
 
     // Convenience for the sequential read path (DavMultipartFileStream

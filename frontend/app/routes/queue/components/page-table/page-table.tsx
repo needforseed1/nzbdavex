@@ -124,6 +124,7 @@ export function ProvidersBadge({ providers }: { providers: ProviderUsage[] }) {
     const total = providers.reduce((acc, p) => acc + p.segments, 0);
     const visible = providers.slice(0, MAX_INLINE_PROVIDERS);
     const hidden = providers.length - visible.length;
+    const activeCount = providers.filter(p => p.segments > 0).length;
     const labelOf = (p: ProviderUsage) => p.nickname?.trim() || stripHost(p.host);
     const tooltip = providers
         .map(p => total > 0
@@ -131,20 +132,43 @@ export function ProvidersBadge({ providers }: { providers: ProviderUsage[] }) {
             : `${labelOf(p)} (${p.host}): idle`)
         .join("\n");
     return (
-        <div className={styles.providersBadge} title={tooltip}>
-            {visible.map((p, i) => (
-                <span key={p.host} className={styles.providersEntry}>
-                    {i > 0 && <span className={styles.providersSep}>·</span>}
-                    <span className={styles.providersHost}>{labelOf(p)}</span>
-                    {total > 0 && (
-                        <span className={styles.providersPct}>
-                            {Math.round((p.segments / total) * 100)}%
-                        </span>
-                    )}
-                </span>
-            ))}
-            {hidden > 0 && <span className={styles.providersMore}>+{hidden}</span>}
-        </div>
+        <details className={styles.providersBadge} title={tooltip} onClick={e => e.stopPropagation()}>
+            <summary className={styles.providersSummary}>
+                {visible.map((p, i) => (
+                    <span key={p.host} className={styles.providersEntry}>
+                        {i > 0 && <span className={styles.providersSep}>·</span>}
+                        <span className={styles.providersHost}>{labelOf(p)}</span>
+                        {total > 0 && (
+                            <span className={styles.providersPct}>
+                                {Math.round((p.segments / total) * 100)}%
+                            </span>
+                        )}
+                    </span>
+                ))}
+                {hidden > 0 && <span className={styles.providersMore}>+{hidden}</span>}
+            </summary>
+            <div className={styles.providersPanel}>
+                <div className={styles.providersPanelHeader}>
+                    <span>Provider usage</span>
+                    <span>{total} articles · {activeCount}/{providers.length} active</span>
+                </div>
+                {providers.map(p => {
+                    const pct = total > 0 ? Math.round((p.segments / total) * 100) : 0;
+                    return (
+                        <div key={p.host} className={styles.providersPanelRow}>
+                            <div className={styles.providersPanelName}>
+                                <span>{labelOf(p)}</span>
+                                <span>{p.host}</span>
+                            </div>
+                            <div className={styles.providersPanelStats}>
+                                <span>{p.segments}</span>
+                                <span>{total > 0 ? `${pct}%` : "idle"}</span>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </details>
     );
 }
 
@@ -153,12 +177,12 @@ const GENERIC_HOST_PREFIXES = new Set(["news", "reader", "premium", "secure", "s
 
 function stripHost(host: string): string {
     if (!host) return "—";
-    const labels = host.split(".").filter(Boolean);
+    const cleanHost = host.replace(/\s*\(\d+%\)\s*$/, "").replace(/:\d+$/, "");
+    const labels = cleanHost.split(".").filter(Boolean);
     if (labels.length === 0) return host;
     if (labels.length === 1) return labels[0];
-    if (labels.length === 2) return labels[0];
-    // 3+ labels: skip a generic prefix to get to the brand label
-    if (GENERIC_HOST_PREFIXES.has(labels[0].toLowerCase())) return labels[1];
+    const identifying = labels.find(label => !GENERIC_HOST_PREFIXES.has(label.toLowerCase()));
+    if (identifying) return identifying;
     // pick whichever of the first two is longer (heuristic for "more identifying")
     return labels[0].length >= labels[1].length ? labels[0] : labels[1];
 }

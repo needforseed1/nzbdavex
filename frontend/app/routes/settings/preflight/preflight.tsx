@@ -32,14 +32,14 @@ export function PreflightSettings({ config, setNewConfig }: PreflightSettingsPro
                     onChange={e => set("preflight.mode", e.target.value)}>
                     <option value="off">off — no background work</option>
                     <option value="light">light — quick existence check on the top results</option>
-                    <option value="standard">standard — light + cache the article descriptor</option>
+                    <option value="standard">standard — light + cache NZB bytes</option>
                     <option value="full">full — standard + resolve archive layout for previously completed items</option>
                 </Form.Select>
                 <p className={styles.hint}>
                     <b>light</b> performs a cheap existence check against your provider, so missing
                     articles are skipped without re-asking the indexer.
-                    <b> standard</b> additionally caches the article descriptor locally so the next
-                    request skips the indexer round-trip entirely.
+                    <b> standard</b> additionally keeps the fetched NZB bytes locally so the next
+                    request can skip the indexer download.
                     <b> full</b> additionally resolves trailing-archive metadata for any top result
                     that maps to a previously completed item — useful when re-opening something.
                 </p>
@@ -64,6 +64,23 @@ export function PreflightSettings({ config, setNewConfig }: PreflightSettingsPro
             </Form.Group>
 
             <Form.Group className={styles.section}>
+                <Form.Label>Verify sample count</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={1}
+                    max={10}
+                    disabled={!enabled}
+                    value={config["preflight.verify-sample-count"] ?? "3"}
+                    onChange={e => set("preflight.verify-sample-count", e.target.value)} />
+                <p className={styles.hint}>
+                    Number of segments sampled with cheap STAT checks before a candidate is
+                    considered warm. More samples catch more bad releases but cost more startup
+                    prep. Default 3.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
                 <Form.Label>Keep preflight state for (seconds)</Form.Label>
                 <Form.Control
                     className={styles.input}
@@ -74,9 +91,9 @@ export function PreflightSettings({ config, setNewConfig }: PreflightSettingsPro
                     value={config["preflight.ttl-seconds"] ?? "120"}
                     onChange={e => set("preflight.ttl-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    How long a preflighted result stays warm before it's discarded. Long enough
-                    to scroll through and pick something, short enough not to hold stale state.
-                    Default 120.
+                    How long a preflighted result and shared NZB fetch cache stay warm before
+                    they're discarded. Long enough to scroll through and pick something, short
+                    enough not to hold stale state. Default 120.
                 </p>
             </Form.Group>
 
@@ -104,6 +121,7 @@ export function PreflightSettings({ config, setNewConfig }: PreflightSettingsPro
 export function isPreflightSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["preflight.mode"] !== newConfig["preflight.mode"]
         || config["preflight.max-attempts"] !== newConfig["preflight.max-attempts"]
+        || config["preflight.verify-sample-count"] !== newConfig["preflight.verify-sample-count"]
         || config["preflight.ttl-seconds"] !== newConfig["preflight.ttl-seconds"]
         || config["preflight.indexer-max-wait-seconds"] !== newConfig["preflight.indexer-max-wait-seconds"];
 }

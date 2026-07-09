@@ -1,5 +1,8 @@
 declare const styles: {
   readonly "container": string;
+  readonly "brand": string;
+  readonly "brand-logo": string;
+  readonly "brand-title": string;
   readonly "overview-icon": string;
   readonly "explore-icon": string;
   readonly "footer": string;
@@ -21,4 +24,3 @@ declare const styles: {
   readonly "selected": string;
 };
 export = styles;
-

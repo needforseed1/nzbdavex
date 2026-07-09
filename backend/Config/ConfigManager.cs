@@ -180,9 +180,28 @@ public class ConfigManager
         return v != null && bool.Parse(v);
     }
 
+    public bool IsQueuePipeliningEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.queue.enabled"));
+        if (v != null) return bool.Parse(v);
+        return IsPipeliningEnabled();
+    }
+
+    public bool IsPlaybackPipeliningEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.playback.enabled"));
+        return v != null && bool.Parse(v);
+    }
+
     public bool IsCascadeEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("usenet.cascade.enabled"));
+        return v != null && bool.Parse(v);
+    }
+
+    public bool IsPrepSpreadEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.prep-spread.enabled"));
         return v != null && bool.Parse(v);
     }
 
@@ -437,6 +456,13 @@ public class ConfigManager
         var v = StringUtil.EmptyToNull(GetConfigValue("preflight.max-attempts"));
         if (v == null) return 20;
         return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 50) : 20;
+    }
+
+    public int GetPreflightVerifySampleCount()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("preflight.verify-sample-count"));
+        if (v == null) return 3;
+        return int.TryParse(v, out var n) ? Math.Clamp(n, 1, 10) : 3;
     }
 
     public int GetPreflightTtlSeconds()

@@ -179,25 +179,36 @@
 }
 
 .providersBadge {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 4px;
+    position: relative;
+    display: inline-block;
     line-height: 1;
-    border-radius: 6px;
     font-weight: 500;
     font-size: 10px;
-    padding: 4px 8px;
     color: var(--text-secondary);
     text-align: left;
     vertical-align: baseline;
-    background-color: transparent;
-    border: 1px dashed var(--border-subtle);
     letter-spacing: 0.02em;
+    max-width: 240px;
+    white-space: nowrap;
+}
+
+.providersSummary {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
     max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: help;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px dashed var(--border-subtle);
+    background-color: transparent;
+    cursor: pointer;
+    list-style: none;
+}
+
+.providersSummary::-webkit-details-marker {
+    display: none;
 }
 
 .providersHost {
@@ -218,6 +229,79 @@
 .providersMore {
     color: var(--text-muted);
     margin-left: 4px;
+}
+
+.providersPanel {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 0;
+    width: min(360px, calc(100vw - 40px));
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    white-space: normal;
+}
+
+.providersPanelHeader {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.providersPanelRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    padding: 7px 0;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.providersPanelName,
+.providersPanelStats {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.providersPanelName {
+    min-width: 0;
+}
+
+.providersPanelName span:first-child {
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.providersPanelName span:last-child {
+    color: var(--text-muted);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.providersPanelStats {
+    min-width: 58px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.providersPanelStats span:first-child {
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.providersPanelStats span:last-child {
+    color: var(--text-muted);
+    font-size: 10px;
 }
 
 .emptyCell {

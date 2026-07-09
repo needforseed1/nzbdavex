@@ -4,6 +4,7 @@ using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
 using Serilog;
 using UsenetSharp.Streams;
 
@@ -65,6 +66,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
     private async Task DownloadSegments(CancellationToken cancellationToken)
     {
+        Exception? failure = null;
         try
         {
             for (var i = 0; i < _segmentIds.Length; i++)
@@ -82,9 +84,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 break;
             }
         }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            failure = e;
+        }
         finally
         {
-            _streamTasks.Writer.TryComplete();
+            _streamTasks.Writer.TryComplete(failure);
         }
 
         return;
@@ -152,6 +158,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
     private async Task DownloadSegmentsPipelined(int depth, CancellationToken cancellationToken)
     {
+        Exception? failure = null;
         try
         {
             var segmentIds = _segmentIds.ToArray();
@@ -169,9 +176,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 break;
             }
         }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            failure = e;
+        }
         finally
         {
-            _streamTasks.Writer.TryComplete();
+            _streamTasks.Writer.TryComplete(failure);
         }
     }
 

@@ -34,6 +34,7 @@ public class BenchmarkUsenetConnectionController(
                 request.MaxConnections,
                 request.Intensity,
                 request.PipeliningOnly,
+                request.StartupOnly,
                 HttpContext.RequestAborted
             ).ConfigureAwait(false);
 

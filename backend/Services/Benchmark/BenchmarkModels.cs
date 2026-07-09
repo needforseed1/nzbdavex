@@ -39,6 +39,9 @@ public sealed class BenchmarkProfile
     /// <summary>Pipeline depths to compare against the non-pipelined baseline.</summary>
     public required int[] PipelineDepths { get; init; }
 
+    /// <summary>Number of leading articles used to approximate playback startup.</summary>
+    public required int StartupSegments { get; init; }
+
     public static BenchmarkProfile For(BenchmarkIntensity intensity) => intensity switch
     {
         BenchmarkIntensity.Thorough => new BenchmarkProfile
@@ -51,6 +54,7 @@ public sealed class BenchmarkProfile
             SweepLevels = [1, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 50],
             PipelineTestConnections = 6,
             PipelineDepths = [4, 8, 16],
+            StartupSegments = 12,
         },
         _ => new BenchmarkProfile
         {
@@ -62,6 +66,7 @@ public sealed class BenchmarkProfile
             SweepLevels = [1, 2, 4, 8, 16, 24],
             PipelineTestConnections = 4,
             PipelineDepths = [8, 16],
+            StartupSegments = 8,
         },
     };
 }
@@ -94,6 +99,24 @@ public sealed class BenchmarkPipelining
     public int RecommendedDepth { get; set; }
 }
 
+public sealed class BenchmarkStartup
+{
+    public int Segments { get; set; }
+    public int NonPipelinedConnections { get; set; }
+    public double NonPipelinedFirstMs { get; set; }
+    public double NonPipelinedReadyMs { get; set; }
+    public List<BenchmarkStartupPipeliningPoint> Pipelined { get; set; } = [];
+    public bool RecommendPlaybackPipelining { get; set; }
+    public int RecommendedDepth { get; set; }
+}
+
+public sealed class BenchmarkStartupPipeliningPoint
+{
+    public int Depth { get; set; }
+    public double FirstMs { get; set; }
+    public double ReadyMs { get; set; }
+}
+
 /// <summary>
 /// The full structured outcome of a benchmark run. Returned from the POST and
 /// mirrored (in part) over the websocket progress topic while running.
@@ -105,6 +128,10 @@ public sealed class BenchmarkResult
 
     /// <summary>True when the run only measured pipelining depth (connection count left untouched).</summary>
     public bool PipeliningOnly { get; set; }
+
+    /// <summary>True when the run only measured playback startup behavior.</summary>
+    public bool StartupOnly { get; set; }
+
     public List<BenchmarkSweepPoint> Sweep { get; set; } = [];
     public int? RecommendedConnections { get; set; }
 
@@ -112,6 +139,7 @@ public sealed class BenchmarkResult
     public int? ProviderConnectionCap { get; set; }
 
     public BenchmarkPipelining? Pipelining { get; set; }
+    public BenchmarkStartup? Startup { get; set; }
     public long DataUsedBytes { get; set; }
     public List<string> Warnings { get; set; } = [];
 }

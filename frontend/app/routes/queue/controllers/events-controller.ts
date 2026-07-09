@@ -69,7 +69,19 @@ export function useQueueEvents(
                 return { host, segments: Number.isFinite(segments) ? segments : 0 };
             }).sort((a, b) => b.segments - a.segments)
             : [];
-        setQueueSlots(slots => slots.map(x => x.nzo_id === nzo_id ? { ...x, providers } : x));
+        setQueueSlots(slots => slots.map(x => {
+            if (x.nzo_id !== nzo_id) return x;
+            const nicknamesByHost = new Map((x.providers ?? [])
+                .filter(p => p.nickname?.trim())
+                .map(p => [p.host, p.nickname]));
+            return {
+                ...x,
+                providers: providers.map(p => ({
+                    ...p,
+                    nickname: nicknamesByHost.get(p.host) ?? null,
+                })),
+            };
+        }));
     }, [setQueueSlots]);
 
     return memoize({

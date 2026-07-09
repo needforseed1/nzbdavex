@@ -59,6 +59,7 @@ declare const styles: {
   readonly "toggle-on": string;
   readonly "toggle-off": string;
   readonly "provider-disabled-badge": string;
+  readonly "provider-prep-badge": string;
   readonly "provider-card-disabled": string;
   readonly "form-paired-input": string;
   readonly "form-hint": string;
@@ -103,8 +104,11 @@ declare const styles: {
   readonly "bench-chart-label": string;
   readonly "bench-chart-foot": string;
   readonly "bench-pipe": string;
+  readonly "bench-startup-table": string;
+  readonly "bench-startup-row": string;
+  readonly "bench-startup-head": string;
+  readonly "bench-startup-row-rec": string;
   readonly "bench-warnings": string;
   readonly "bench-actions": string;
 };
 export = styles;
-

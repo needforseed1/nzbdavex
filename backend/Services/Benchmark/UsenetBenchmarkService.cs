@@ -32,7 +32,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
     private const long ArticleBytesEstimate = 750_000;
 
     // Never open more than this many sockets at once, regardless of provider/config.
-    private const int HardConnectionCeiling = 50;
+    private const int HardConnectionCeiling = 200;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -44,10 +44,11 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         int configuredMaxConnections,
         BenchmarkIntensity intensity,
         bool pipeliningOnly,
+        bool startupOnly,
         CancellationToken ct)
     {
         var profile = BenchmarkProfile.For(intensity);
-        var result = new BenchmarkResult { PipeliningOnly = pipeliningOnly };
+        var result = new BenchmarkResult { PipeliningOnly = pipeliningOnly, StartupOnly = startupOnly };
         var cursor = new int[1]; // shared round-robin index into the segment pool
 
         // 1) Latency — also doubles as a connectivity/credentials check.
@@ -70,6 +71,16 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         result.ThroughputTested = true;
         if (pool.Count < 200)
             result.Warnings.Add("Only a small pool of test articles was available, so speed numbers may be a little noisy.");
+
+        if (startupOnly)
+        {
+            Report("startup", "Measuring playback startup…", 30, result, null);
+            result.Startup = await MeasureStartupAsync(
+                provider, configuredMaxConnections, pool, cursor, profile,
+                bytes => result.DataUsedBytes += bytes, ct).ConfigureAwait(false);
+            Report("done", "Done.", 100, result, null);
+            return result;
+        }
 
         // Pipelining-only mode: leave the connection count alone and just find
         // the best pipelining depth at the count the user already runs.
@@ -234,6 +245,157 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         return result;
     }
 
+    private async Task<BenchmarkStartup> MeasureStartupAsync(
+        UsenetProviderConfig.ConnectionDetails provider, int configuredMaxConnections, IReadOnlyList<string> pool,
+        int[] cursor, BenchmarkProfile profile, Action<long> addData, CancellationToken ct)
+    {
+        var segmentCount = Math.Min(pool.Count, profile.StartupSegments);
+        var ids = NextBatch(pool, cursor, segmentCount);
+        var connectionCount = Math.Clamp(configuredMaxConnections, 1, Math.Min(segmentCount, HardConnectionCeiling));
+
+        var baseline = await MeasureNonPipelinedStartupAsync(provider, ids, connectionCount, ct).ConfigureAwait(false);
+        addData(baseline.Bytes);
+
+        var result = new BenchmarkStartup
+        {
+            Segments = ids.Count,
+            NonPipelinedConnections = baseline.OpenedConnections,
+            NonPipelinedFirstMs = Math.Round(baseline.FirstMs, 1),
+            NonPipelinedReadyMs = Math.Round(baseline.ReadyMs, 1),
+        };
+
+        var bestObservedDepth = 0;
+        var bestObservedReadyMs = baseline.ReadyMs;
+        var recommendedDepth = 0;
+        var recommendedReadyMs = double.MaxValue;
+        foreach (var depth in profile.PipelineDepths)
+        {
+            ct.ThrowIfCancellationRequested();
+            var sample = await MeasurePipelinedStartupAsync(provider, ids, depth, ct).ConfigureAwait(false);
+            addData(sample.Bytes);
+            result.Pipelined.Add(new BenchmarkStartupPipeliningPoint
+            {
+                Depth = depth,
+                FirstMs = Math.Round(sample.FirstMs, 1),
+                ReadyMs = Math.Round(sample.ReadyMs, 1),
+            });
+
+            if (sample.ReadyMs > 0 && sample.ReadyMs < bestObservedReadyMs)
+            {
+                bestObservedReadyMs = sample.ReadyMs;
+                bestObservedDepth = depth;
+            }
+
+            var improvesBuffer = sample.ReadyMs > 0 && sample.ReadyMs <= baseline.ReadyMs * 0.90;
+            var preservesFirstSegment = sample.FirstMs > 0 && sample.FirstMs <= baseline.FirstMs * 1.05;
+            if (improvesBuffer && preservesFirstSegment && sample.ReadyMs < recommendedReadyMs)
+            {
+                recommendedReadyMs = sample.ReadyMs;
+                recommendedDepth = depth;
+            }
+        }
+
+        // Playback startup cares about the first segment most. Only recommend
+        // playback pipelining when a tested depth improves buffer readiness and
+        // does not materially delay first-segment readiness. Do not reject a
+        // good depth just because a more aggressive depth had a faster buffer
+        // but a worse first segment.
+        result.RecommendPlaybackPipelining = recommendedDepth > 0;
+        result.RecommendedDepth = recommendedDepth > 0 ? recommendedDepth : bestObservedDepth > 0 ? bestObservedDepth : 8;
+        return result;
+    }
+
+    private readonly record struct StartupSample(double FirstMs, double ReadyMs, long Bytes, int OpenedConnections);
+
+    private async Task<StartupSample> MeasureNonPipelinedStartupAsync(
+        UsenetProviderConfig.ConnectionDetails provider, IReadOnlyList<string> ids, int requestedConnections,
+        CancellationToken ct)
+    {
+        var connections = new List<INntpClient>(requestedConnections);
+        try
+        {
+            for (var i = 0; i < requestedConnections; i++)
+            {
+                var conn = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
+                if (conn == null) break;
+                connections.Add(conn);
+            }
+
+            if (connections.Count == 0) return new StartupSample(0, 0, 0, 0);
+
+            var sw = Stopwatch.StartNew();
+            var tasks = ids.Select((id, i) => FetchStartupBodyAsync(connections[i % connections.Count], id, ct)).ToList();
+            var first = await Task.WhenAny(tasks).ConfigureAwait(false);
+            var firstMs = sw.Elapsed.TotalMilliseconds;
+            var bytes = await first.ConfigureAwait(false);
+            var rest = tasks.Where(t => !ReferenceEquals(t, first)).ToList();
+            if (rest.Count > 0)
+                bytes += (await Task.WhenAll(rest).ConfigureAwait(false)).Sum();
+            sw.Stop();
+
+            return new StartupSample(firstMs, sw.Elapsed.TotalMilliseconds, bytes, connections.Count);
+        }
+        finally
+        {
+            foreach (var conn in connections) SafeDispose(conn);
+        }
+    }
+
+    private async Task<StartupSample> MeasurePipelinedStartupAsync(
+        UsenetProviderConfig.ConnectionDetails provider, IReadOnlyList<string> ids, int depth, CancellationToken ct)
+    {
+        var conn = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
+        if (conn == null) return new StartupSample(0, 0, 0, 0);
+
+        try
+        {
+            var bytes = 0L;
+            double? firstMs = null;
+            var sw = Stopwatch.StartNew();
+            await foreach (var result in conn.DecodedBodiesPipelinedAsync(ids, depth, ct)
+                               .WithCancellation(ct).ConfigureAwait(false))
+            {
+                if (result is not { Found: true, Stream: not null }) continue;
+                bytes += await DrainCountAsync(result.Stream, ct).ConfigureAwait(false);
+                firstMs ??= sw.Elapsed.TotalMilliseconds;
+            }
+            sw.Stop();
+
+            return new StartupSample(firstMs ?? sw.Elapsed.TotalMilliseconds, sw.Elapsed.TotalMilliseconds, bytes, 1);
+        }
+        finally
+        {
+            SafeDispose(conn);
+        }
+    }
+
+    private static async Task<long> FetchStartupBodyAsync(INntpClient conn, string id, CancellationToken ct)
+    {
+        try
+        {
+            var response = await conn.DecodedBodyAsync(id, ct).ConfigureAwait(false);
+            return await DrainCountAsync(response.Stream, ct).ConfigureAwait(false);
+        }
+        catch (UsenetArticleNotFoundException)
+        {
+            return 0;
+        }
+    }
+
+    private static async Task<long> DrainCountAsync(Stream stream, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        var total = 0L;
+        await using (stream)
+        {
+            int n;
+            while ((n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+                total += n;
+        }
+
+        return total;
+    }
+
     // ---- Throughput core -------------------------------------------------
 
     private readonly record struct ThroughputSample(double MbPerSec, long Bytes, int OpenedConnections);
@@ -383,11 +545,22 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
             Math.Max(configuredMaxConnections + 10, configuredMaxConnections * 2),
             8, HardConnectionCeiling);
 
-        return profile.SweepLevels
-            .Where(l => l > 0 && l <= ceiling)
-            .Distinct()
-            .OrderBy(l => l)
-            .ToList();
+        var levels = new SortedSet<int>(
+            profile.SweepLevels.Where(l => l > 0 && l <= ceiling));
+
+        AddLevel(configuredMaxConnections / 4);
+        AddLevel(configuredMaxConnections / 2);
+        AddLevel((int)Math.Round(configuredMaxConnections * 0.75));
+        AddLevel(configuredMaxConnections);
+        AddLevel(configuredMaxConnections + 10);
+        AddLevel(configuredMaxConnections * 2);
+
+        return levels.ToList();
+
+        void AddLevel(int value)
+        {
+            if (value > 0) levels.Add(Math.Clamp(value, 1, ceiling));
+        }
     }
 
     private static int? DetectKnee(List<BenchmarkSweepPoint> sweep, int? providerCap, List<string> warnings)

@@ -81,6 +81,7 @@ public class DavMultipartFileStream : Stream
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
+        if (_position >= _length) return 0;
         _innerStream ??= await GetFileStreamAsync(_position, cancellationToken).ConfigureAwait(false);
         var read = await _innerStream.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
         _position += read;

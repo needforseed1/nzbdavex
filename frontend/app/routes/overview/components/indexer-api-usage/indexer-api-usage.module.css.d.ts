@@ -13,6 +13,7 @@ declare const styles: {
   readonly usageRow: string;
   readonly usageBar: string;
   readonly usageFill: string;
+  readonly usageFillInfinite: string;
   readonly usageFillNear: string;
   readonly usageFillOver: string;
   readonly usageText: string;

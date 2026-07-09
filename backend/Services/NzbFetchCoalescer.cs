@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
+using NzbWebDAV.Config;
 
 namespace NzbWebDAV.Services;
 
-public class NzbFetchCoalescer
+public class NzbFetchCoalescer(ConfigManager configManager)
 {
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(300);
     private static readonly TimeSpan HardFetchCap = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
@@ -31,7 +31,8 @@ public class NzbFetchCoalescer
             var bytes = await fetch(cts.Token).ConfigureAwait(false);
             if (bytes is not null)
             {
-                _cache[url] = new Entry(bytes, DateTimeOffset.UtcNow + CacheTtl);
+                var ttl = TimeSpan.FromSeconds(configManager.GetPreflightTtlSeconds());
+                _cache[url] = new Entry(bytes, DateTimeOffset.UtcNow + ttl);
                 SweepIfDue();
             }
             return bytes;

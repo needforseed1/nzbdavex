@@ -222,13 +222,25 @@ public abstract class NntpClient : INntpClient
         await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
-            progress?.Report(++processed);
-            if (result.Exists) continue;
+            if (result.Exists)
+            {
+                progress?.Report(++processed);
+                continue;
+            }
+
             anyMissing = true;
             break;
         }
 
         if (anyMissing)
-            await CheckAllSegmentsAsync(segmentIds, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
+        {
+            var verifiedPrefix = processed;
+            var remaining = segmentIds.Skip(verifiedPrefix);
+            var fallbackProgress = progress == null
+                ? null
+                : new Progress<int>(x => progress.Report(verifiedPrefix + x));
+            await CheckAllSegmentsAsync(remaining, fallbackConcurrency, fallbackProgress, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 }

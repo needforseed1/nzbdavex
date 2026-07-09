@@ -25,7 +25,7 @@ public static class FetchFirstSegmentsStep
     {
         var files = nzbFiles.Where(x => x.Segments.Count > 0).ToList();
 
-        if (configManager.IsPipeliningEnabled())
+        if (configManager.IsQueuePipeliningEnabled())
             return await FetchFirstSegmentsPipelined(
                 files, usenetClient, configManager, cancellationToken, progress).ConfigureAwait(false);
 

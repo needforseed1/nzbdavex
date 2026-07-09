@@ -73,6 +73,8 @@ public class GetQueueResponse : SabBaseResponse
             IReadOnlyDictionary<string, string?>? nicknamesByHost = null
         )
         {
+            var visibleProgress = Math.Clamp(progressPercentage, 0, 100);
+            var remainingBytes = Math.Max(0, (100 - visibleProgress) * queueItem.TotalSegmentBytes / 100);
             return new QueueSlot
             {
                 Index = index,
@@ -80,12 +82,12 @@ public class GetQueueResponse : SabBaseResponse
                 Priority = queueItem.Priority.ToString(),
                 Filename = queueItem.FileName,
                 Category = queueItem.Category,
-                Percentage = (progressPercentage % 100).ToString(),
-                TruePercentage = progressPercentage.ToString(),
+                Percentage = visibleProgress.ToString(),
+                TruePercentage = visibleProgress.ToString(),
                 Status = status,
                 TimeLeft = TimeSpan.Zero,
                 SizeInMB = FormatSizeMB(queueItem.TotalSegmentBytes),
-                SizeLeftInMB = FormatSizeMB((100 - progressPercentage) * queueItem.TotalSegmentBytes / 100),
+                SizeLeftInMB = FormatSizeMB(remainingBytes),
                 Indexer = queueItem.IndexerName,
                 Providers = providerUsage is { Count: > 0 }
                     ? providerUsage

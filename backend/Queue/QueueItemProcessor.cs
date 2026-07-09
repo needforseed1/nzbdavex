@@ -154,13 +154,21 @@ public class QueueItemProcessor(
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files}",
+            queueItem.Id, queueItem.JobName, nzbFiles.Count);
         var segments = await FetchFirstSegmentsStep.FetchFirstSegments(
             nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments done ms={ElapsedMs}",
+            queueItem.Id, queueItem.JobName, msFirstSeg);
         stepTimer.Restart();
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=par2 start",
+            queueItem.Id, queueItem.JobName);
         var par2FileDescriptors = await GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
             segments, usenetClient, ct).ConfigureAwait(false);
         var msPar2 = stepTimer.ElapsedMilliseconds;
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=par2 done ms={ElapsedMs}",
+            queueItem.Id, queueItem.JobName, msPar2);
         stepTimer.Restart();
         var fileInfos = GetFileInfosStep.GetFileInfos(
             segments, par2FileDescriptors);
@@ -174,10 +182,15 @@ public class QueueItemProcessor(
         var rarFiles = fileInfos.Where(x => GetGroupName(x) == "rar").ToList();
         if (configManager.IsLazyRarParsingEnabled() && rarFiles.Count > 0)
         {
+            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar start files={Files}",
+                queueItem.Id, queueItem.JobName, rarFiles.Count);
             var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
             lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
         }
         var msRar = stepTimer.ElapsedMilliseconds;
+        if (rarFiles.Count > 0)
+            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar done ms={ElapsedMs} mounted={Mounted}",
+                queueItem.Id, queueItem.JobName, msRar, lazyRarResult is not null);
         stepTimer.Restart();
 
         // step 2b -- per-file processing for everything else (and for the
@@ -188,6 +201,8 @@ public class QueueItemProcessor(
             .Offset(50)
             .Scale(50, 100)
             .ToMultiProgress(fileProcessors.Count);
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors start processors={Processors}",
+            queueItem.Id, queueItem.JobName, fileProcessors.Count);
         var fileProcessingResultsAll = await fileProcessors
             .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
             .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
@@ -198,6 +213,8 @@ public class QueueItemProcessor(
             .ToList();
         if (lazyRarResult is not null) fileProcessingResults.Add(lazyRarResult);
         var msProcessors = stepTimer.ElapsedMilliseconds;
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors done ms={ElapsedMs} results={Results}",
+            queueItem.Id, queueItem.JobName, msProcessors, fileProcessingResults.Count);
         stepTimer.Restart();
 
         // step 3 -- Optionally check full article existence
@@ -209,13 +226,15 @@ public class QueueItemProcessor(
                 .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
                 .SelectMany(x => x.NzbFile.GetSegmentIds())
                 .ToList();
+            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles}",
+                queueItem.Id, queueItem.JobName, articlesToCheck.Count);
             var part3Progress = progress
                 .Offset(100)
                 .ToPercentage(articlesToCheck.Count);
             var healthCheckConcurrency = configManager
                 .GetUsenetProviderConfig()
                 .TotalPooledConnections;
-            if (configManager.IsPipeliningEnabled())
+            if (configManager.IsQueuePipeliningEnabled())
                 await usenetClient
                     .CheckAllSegmentsPipelinedAsync(articlesToCheck, configManager.GetPipeliningDepth(),
                         healthCheckConcurrency, part3Progress, ct)
@@ -227,6 +246,9 @@ public class QueueItemProcessor(
             checkedFullHealth = true;
         }
         var msHealth = stepTimer.ElapsedMilliseconds;
+        if (checkedFullHealth)
+            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=health done ms={ElapsedMs}",
+                queueItem.Id, queueItem.JobName, msHealth);
         stepTimer.Stop();
 
         Log.Information(
@@ -235,6 +257,8 @@ public class QueueItemProcessor(
             queueItem.Id, nzbFiles.Count, msFirstSeg, msPar2, msRar, msProcessors, msHealth);
 
         // update the database
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database start",
+            queueItem.Id, queueItem.JobName);
         await MarkQueueItemCompleted(startTime, error: null, async () =>
         {
             var categoryFolder = await GetOrCreateCategoryFolder().ConfigureAwait(false);
@@ -260,6 +284,8 @@ public class QueueItemProcessor(
 
             return mountFolder;
         }).ConfigureAwait(false);
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database done",
+            queueItem.Id, queueItem.JobName);
     }
 
     private IEnumerable<BaseProcessor> GetFileProcessors
@@ -424,7 +450,12 @@ public class QueueItemProcessor(
         var mountFolder = databaseOperations != null ? await databaseOperations.Invoke().ConfigureAwait(false) : null;
         var historyItem = CreateHistoryItem(mountFolder, startTime, error);
         var providerUsage = providerUsageTracker.Snapshot(queueItem.Id);
-        var historySlot = GetHistoryResponse.HistorySlot.FromHistoryItem(historyItem, mountFolder, configManager, providerUsage);
+        var nicknamesByHost = configManager.GetUsenetProviderConfig().Providers
+            .Where(p => !string.IsNullOrWhiteSpace(p.Nickname))
+            .GroupBy(p => p.Host, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Nickname, StringComparer.OrdinalIgnoreCase);
+        var historySlot = GetHistoryResponse.HistorySlot.FromHistoryItem(
+            historyItem, mountFolder, configManager, providerUsage, nicknamesByHost);
         dbClient.Ctx.QueueItems.Remove(queueItem);
         dbClient.Ctx.HistoryItems.Add(historyItem);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);

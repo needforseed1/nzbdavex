@@ -35,14 +35,26 @@ type BenchmarkPipelining = {
     recommendEnabled: boolean;
     recommendedDepth: number;
 };
+type BenchmarkStartupPipeliningPoint = { depth: number; firstMs: number; readyMs: number };
+type BenchmarkStartup = {
+    segments: number;
+    nonPipelinedConnections: number;
+    nonPipelinedFirstMs: number;
+    nonPipelinedReadyMs: number;
+    pipelined: BenchmarkStartupPipeliningPoint[];
+    recommendPlaybackPipelining: boolean;
+    recommendedDepth: number;
+};
 type BenchmarkResult = {
     latency?: BenchmarkLatency | null;
     throughputTested: boolean;
     pipeliningOnly: boolean;
+    startupOnly: boolean;
     sweep: BenchmarkSweepPoint[];
     recommendedConnections?: number | null;
     providerConnectionCap?: number | null;
     pipelining?: BenchmarkPipelining | null;
+    startup?: BenchmarkStartup | null;
     dataUsedBytes: number;
     warnings: string[];
 };
@@ -78,6 +90,8 @@ type ConnectionDetails = {
     MaxConnections: number;
     Priority?: number;
     PipeliningDepth?: number | null;
+    PrepOnly?: boolean;
+    PrepSpreadEnabled?: boolean;
     // Optional user-set label. Shown in the UI in place of Host when present;
     // Host stays the real NNTP target.
     Nickname?: string;
@@ -281,7 +295,14 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     const handleApplyPipelining = useCallback((enabled: boolean) => {
         setNewConfig(prev => ({
             ...prev,
-            "usenet.pipelining.enabled": enabled ? "true" : "false",
+            "usenet.pipelining.queue.enabled": enabled ? "true" : "false",
+        }));
+    }, [setNewConfig]);
+
+    const handleApplyPlaybackPipelining = useCallback((enabled: boolean) => {
+        setNewConfig(prev => ({
+            ...prev,
+            "usenet.pipelining.playback.enabled": enabled ? "true" : "false",
         }));
     }, [setNewConfig]);
 
@@ -398,6 +419,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 )}
                                                 {provider.Nickname?.trim() || provider.Host}
                                                 {isDisabled && <span className={styles["provider-disabled-badge"]}>Disabled</span>}
+                                                {provider.PrepOnly && !isDisabled && <span className={styles["provider-prep-badge"]}>Prep only</span>}
+                                                {provider.Type === ProviderType.Pooled && provider.PrepSpreadEnabled === false && !isDisabled && <span className={styles["provider-prep-badge"]}>No prep spread</span>}
                                             </div>
                                             {provider.Nickname?.trim() && (
                                                 <div className={styles["provider-host-secondary"]}>
@@ -592,27 +615,75 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
 
             <div className={styles.section}>
                 <div className={styles.sectionHeader}>
+                    <div>Queue / Prep Routing</div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="prep-spread-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.prep-spread.enabled"] === "true"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.prep-spread.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="prep-spread-enabled" className={styles["form-checkbox-label"]}>
+                            Spread queue/prep across pooled providers
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Queue imports, preflight and health checks will fan out across eligible Pool Connections providers by open capacity.
+                        Backup providers remain rescue-only, and playback streams keep the normal fastest-provider routing.
+                    </div>
+                </div>
+            </div>
+
+            <div className={styles.section}>
+                <div className={styles.sectionHeader}>
                     <div>NNTP Pipelining (Experimental)</div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                     <div className={styles["form-checkbox-wrapper"]}>
                         <input
                             type="checkbox"
-                            id="pipelining-enabled"
+                            id="queue-pipelining-enabled"
                             className={`${styles["form-checkbox"]} toggle-switch`}
-                            checked={config["usenet.pipelining.enabled"] === "true"}
+                            checked={(config["usenet.pipelining.queue.enabled"] || config["usenet.pipelining.enabled"]) === "true"}
                             onChange={(e) => setNewConfig({
                                 ...config,
-                                "usenet.pipelining.enabled": e.target.checked ? "true" : "false",
+                                "usenet.pipelining.queue.enabled": e.target.checked ? "true" : "false",
                             })}
                         />
-                        <label htmlFor="pipelining-enabled" className={styles["form-checkbox-label"]}>
-                            Enable NNTP pipelining
+                        <label htmlFor="queue-pipelining-enabled" className={styles["form-checkbox-label"]}>
+                            Enable queue/import pipelining
                         </label>
                     </div>
                     <div className={styles["form-hint"]}>
                         Sends multiple article requests per connection without waiting for each response.
-                        Speeds up queue imports and streaming, especially on high-latency providers.
+                        Speeds up queue imports and health checks, especially on high-latency providers.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="playback-pipelining-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.pipelining.playback.enabled"] === "true"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.pipelining.playback.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="playback-pipelining-enabled" className={styles["form-checkbox-label"]}>
+                            Enable playback pipelining
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Uses pipelining while filling the playback buffer. Keep this off unless the startup
+                        benchmark or real playback tests show a clear win.
                     </div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -640,6 +711,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 onClose={handleCloseModal}
                 onSave={handleSaveProvider}
                 onApplyPipelining={handleApplyPipelining}
+                onApplyPlaybackPipelining={handleApplyPlaybackPipelining}
                 defaultPipeliningDepth={config["usenet.pipelining.depth"] || "8"}
             />
         </div>
@@ -715,10 +787,11 @@ type ProviderModalProps = {
     onClose: () => void;
     onSave: (provider: ConnectionDetails) => void;
     onApplyPipelining: (enabled: boolean) => void;
+    onApplyPlaybackPipelining: (enabled: boolean) => void;
     defaultPipeliningDepth: string;
 };
 
-function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, defaultPipeliningDepth }: ProviderModalProps) {
+function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onApplyPlaybackPipelining, defaultPipeliningDepth }: ProviderModalProps) {
     const isEditing = provider !== null;
     const initialLimit = bytesToValueAndUnit(provider?.ByteLimit);
     const initialUsed = bytesToValueAndUnit(provider?.BytesUsedOffset);
@@ -731,6 +804,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
     const [pass, setPass] = useState(provider?.Pass || "");
     const [maxConnections, setMaxConnections] = useState(provider?.MaxConnections?.toString() || "");
     const [pipeliningDepth, setPipeliningDepth] = useState(provider?.PipeliningDepth?.toString() || "");
+    const [prepOnly, setPrepOnly] = useState(provider?.PrepOnly ?? false);
+    const [prepSpreadEnabled, setPrepSpreadEnabled] = useState(provider?.PrepSpreadEnabled ?? true);
     const [type, setType] = useState<ProviderType>(provider?.Type ?? ProviderType.Pooled);
     const [limitValue, setLimitValue] = useState(initialLimit.value);
     const [limitUnit, setLimitUnit] = useState<ByteUnitLabel>(initialLimit.unit);
@@ -745,6 +820,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
     const [pipeliningOnly, setPipeliningOnly] = useState(false);
+    const [startupOnly, setStartupOnly] = useState(false);
     const benchmarkAbortRef = useRef<AbortController | null>(null);
 
     // Reset form when modal opens or provider changes
@@ -760,6 +836,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             setPass(provider?.Pass || "");
             setMaxConnections(provider?.MaxConnections?.toString() || "");
             setPipeliningDepth(provider?.PipeliningDepth?.toString() || "");
+            setPrepOnly(provider?.PrepOnly ?? false);
+            setPrepSpreadEnabled(provider?.PrepSpreadEnabled ?? true);
             setType(provider?.Type ?? ProviderType.Pooled);
             setLimitValue(lim.value);
             setLimitUnit(lim.unit);
@@ -773,6 +851,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             setBenchmarkResult(null);
             setBenchmarkError(null);
             setPipeliningOnly(false);
+            setStartupOnly(false);
         }
     }, [show, provider]);
 
@@ -871,6 +950,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             formData.append('max-connections', maxConnections || "10");
             formData.append('intensity', intensity);
             formData.append('pipelining-only', pipeliningOnly ? 'true' : 'false');
+            formData.append('startup-only', startupOnly ? 'true' : 'false');
 
             const response = await fetch('/api/benchmark-usenet-connection', {
                 method: 'POST', body: formData, signal: controller.signal,
@@ -898,7 +978,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             if (benchmarkAbortRef.current === controller) benchmarkAbortRef.current = null;
             ws?.close();
         }
-    }, [host, port, useSsl, user, pass, maxConnections, intensity, pipeliningOnly]);
+    }, [host, port, useSsl, user, pass, maxConnections, intensity, pipeliningOnly, startupOnly]);
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
@@ -911,7 +991,11 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             setPipeliningDepth(String(benchmarkResult.pipelining.recommendedDepth));
             onApplyPipelining(benchmarkResult.pipelining.recommendEnabled);
         }
-    }, [benchmarkResult, onApplyPipelining]);
+        if (benchmarkResult.startup) {
+            setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
+            onApplyPlaybackPipelining(benchmarkResult.startup.recommendPlaybackPipelining);
+        }
+    }, [benchmarkResult, onApplyPipelining, onApplyPlaybackPipelining]);
 
     const handleCancelBenchmark = useCallback(() => {
         benchmarkAbortRef.current?.abort();
@@ -943,6 +1027,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             Pass: pass,
             MaxConnections: parseInt(maxConnections, 10),
             PipeliningDepth: pipeliningDepth.trim() === "" ? null : parseInt(pipeliningDepth, 10),
+            PrepOnly: prepOnly,
+            PrepSpreadEnabled: prepSpreadEnabled,
             Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
@@ -950,7 +1036,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
             BytesUsedOffset: offsetToPersist,
             BytesUsedResetAt: resetAtToPersist,
         });
-    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
+    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, prepOnly, prepSpreadEnabled, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
 
     const handleOverlayClick = useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -1146,6 +1232,43 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
                         </div>
 
                         <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                            <div className={styles["form-checkbox-wrapper"]}>
+                                <input
+                                    type="checkbox"
+                                    id="provider-prep-only"
+                                    className={`${styles["form-checkbox"]} toggle-switch`}
+                                    checked={prepOnly}
+                                    onChange={(e) => setPrepOnly(e.target.checked)}
+                                />
+                                <label htmlFor="provider-prep-only" className={styles["form-checkbox-label"]}>
+                                    Use for prep only
+                                </label>
+                            </div>
+                            <div className={styles["form-hint"]}>
+                                Allows imports, fast checks, preflight and startup prep to use this provider, but excludes it from playback streams.
+                            </div>
+                        </div>
+
+                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                            <div className={styles["form-checkbox-wrapper"]}>
+                                <input
+                                    type="checkbox"
+                                    id="provider-prep-spread"
+                                    className={`${styles["form-checkbox"]} toggle-switch`}
+                                    checked={prepSpreadEnabled}
+                                    disabled={type !== ProviderType.Pooled}
+                                    onChange={(e) => setPrepSpreadEnabled(e.target.checked)}
+                                />
+                                <label htmlFor="provider-prep-spread" className={styles["form-checkbox-label"]}>
+                                    Include in queue/prep spread
+                                </label>
+                            </div>
+                            <div className={styles["form-hint"]}>
+                                When global prep spreading is enabled, this pooled provider can receive first-choice queue/import, preflight and health-check work.
+                            </div>
+                        </div>
+
+                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
                             <label className={styles["form-label"]}>
                                 Data Cap (optional)
                             </label>
@@ -1222,7 +1345,9 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, def
                         intensity={intensity}
                         setIntensity={setIntensity}
                         pipeliningOnly={pipeliningOnly}
-                        setPipeliningOnly={setPipeliningOnly}
+                        setPipeliningOnly={(value) => { setPipeliningOnly(value); if (value) setStartupOnly(false); }}
+                        startupOnly={startupOnly}
+                        setStartupOnly={(value) => { setStartupOnly(value); if (value) setPipeliningOnly(false); }}
                         progress={benchmarkProgress}
                         result={benchmarkResult}
                         error={benchmarkError}
@@ -1265,6 +1390,8 @@ type BenchmarkPanelProps = {
     setIntensity: (value: BenchmarkIntensity) => void;
     pipeliningOnly: boolean;
     setPipeliningOnly: (value: boolean) => void;
+    startupOnly: boolean;
+    setStartupOnly: (value: boolean) => void;
     progress: BenchmarkProgress | null;
     result: BenchmarkResult | null;
     error: string | null;
@@ -1276,7 +1403,7 @@ type BenchmarkPanelProps = {
 function BenchmarkPanel(props: BenchmarkPanelProps) {
     const {
         canBenchmark, isBenchmarking, intensity, setIntensity,
-        pipeliningOnly, setPipeliningOnly, progress, result, error, onRun, onCancel, onApply,
+        pipeliningOnly, setPipeliningOnly, startupOnly, setStartupOnly, progress, result, error, onRun, onCancel, onApply,
     } = props;
     const [applied, setApplied] = useState(false);
     // A fresh result means the previous "Applied" state no longer holds.
@@ -1288,9 +1415,13 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
         ? Math.max(...result.sweep.map(p => p.mbPerSec))
         : null;
     const pipe = result?.pipelining ?? null;
+    const startup = result?.startup ?? null;
+    const startupRecommended = startup ? getStartupPoint(startup, startup.recommendedDepth) : null;
+    const startupFirstGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedFirstMs, startupRecommended.firstMs) : null;
+    const startupReadyGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedReadyMs, startupRecommended.readyMs) : null;
     const pipeBest = pipe && pipe.tested.length > 0 ? Math.max(...pipe.tested.map(t => t.mbPerSec)) : (pipe?.baselineMbPerSec ?? 0);
     const pipeGainPct = pipe && pipe.baselineMbPerSec > 0 ? Math.round((pipeBest / pipe.baselineMbPerSec - 1) * 100) : 0;
-    const canApply = !!result && result.throughputTested && (recommended != null || (result.pipeliningOnly && !!pipe));
+    const canApply = !!result && result.throughputTested && (recommended != null || (result.pipeliningOnly && !!pipe) || (result.startupOnly && !!startup));
 
     return (
         <div className={styles["bench-panel"]}>
@@ -1300,6 +1431,8 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                     <div className={styles["form-hint"]} style={{ marginTop: 0 }}>
                         {pipeliningOnly
                             ? "Keeps your Max Connections and just measures the best NNTP pipelining depth at that count."
+                            : startupOnly
+                                ? "Measures first-buffer playback startup with normal parallel fetching vs NNTP pipelining."
                             : "Runs a real speed & latency test, then recommends the best connection count and pipelining settings."}
                     </div>
                 </div>
@@ -1323,7 +1456,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </Button>
                     </div>
                     <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
-                        {isBenchmarking ? "Testing…" : (pipeliningOnly ? "Test pipelining" : "Run speed test")}
+                        {isBenchmarking ? "Testing…" : (startupOnly ? "Test startup" : pipeliningOnly ? "Test pipelining" : "Run speed test")}
                     </Button>
                     {isBenchmarking && (
                         <Button variant="secondary" onClick={onCancel}>Cancel</Button>
@@ -1344,10 +1477,25 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                     Only tune pipelining (keep my Max Connections)
                 </label>
             </div>
+            <div className={styles["form-checkbox-wrapper"]} style={{ marginTop: 8 }}>
+                <input
+                    type="checkbox"
+                    id="bench-startup-only"
+                    className={`${styles["form-checkbox"]} toggle-switch`}
+                    checked={startupOnly}
+                    disabled={isBenchmarking}
+                    onChange={(e) => setStartupOnly(e.target.checked)}
+                />
+                <label htmlFor="bench-startup-only" className={styles["form-checkbox-label"]}>
+                    Test playback startup
+                </label>
+            </div>
 
             <div className={styles["form-hint"]}>
                 {pipeliningOnly
                     ? "Won't change your connection count — it tests pipelining depth at the Max Connections you've set. Run it idle for the cleanest read."
+                    : startupOnly
+                        ? "Compares time to the first decoded article and a small startup buffer. This is the best benchmark for first-frame speed."
                     : (intensity === "quick"
                         ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
                         : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
@@ -1372,13 +1520,74 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 </div>
             )}
 
-            {livePoints.length > 0 && !(isBenchmarking ? pipeliningOnly : result?.pipeliningOnly) && (
+            {livePoints.length > 0 && !(isBenchmarking ? (pipeliningOnly || startupOnly) : (result?.pipeliningOnly || result?.startupOnly)) && (
                 <SweepChart points={livePoints} recommended={recommended} />
             )}
 
             {result && !isBenchmarking && (
                 <>
-                    {result.pipeliningOnly ? (
+                    {result.startupOnly ? (
+                        startup ? (
+                            <>
+                                <div className={styles["bench-stats"]}>
+	                                    <div className={styles["bench-stat"]}>
+	                                        <span className={styles["bench-stat-label"]}>Normal buffer</span>
+	                                        <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>
+	                                            {startup.nonPipelinedReadyMs} ms
+	                                        </span>
+	                                        <span className={styles["bench-stat-sub"]}>
+	                                            {startup.nonPipelinedFirstMs} ms first segment
+	                                        </span>
+	                                    </div>
+	                                    <div className={styles["bench-stat"]}>
+	                                        <span className={styles["bench-stat-label"]}>Playback pipelining</span>
+	                                        <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>
+	                                            {startup.recommendPlaybackPipelining ? `Depth ${startup.recommendedDepth}` : "Off"}
+	                                        </span>
+	                                        <span className={styles["bench-stat-sub"]}>
+	                                            {startup.recommendPlaybackPipelining && startupReadyGain != null
+	                                                ? `${startupReadyGain}% faster buffer`
+	                                                : "no safe startup gain"}
+	                                        </span>
+	                                    </div>
+	                                    {startupRecommended && (
+	                                        <div className={styles["bench-stat"]}>
+	                                            <span className={styles["bench-stat-label"]}>Best tested depth</span>
+	                                            <span className={styles["bench-stat-value"]}>
+	                                                D{startupRecommended.depth} · {startupRecommended.readyMs} ms
+	                                            </span>
+	                                            <span className={styles["bench-stat-sub"]}>
+	                                                {startupFirstGain != null
+	                                                    ? `${startupRecommended.firstMs} ms first · ${startupFirstGain}%`
+	                                                    : `${startupRecommended.firstMs} ms first`}
+	                                            </span>
+	                                        </div>
+	                                    )}
+	                                    <div className={styles["bench-stat"]}>
+	                                        <span className={styles["bench-stat-label"]}>Test shape</span>
+	                                        <span className={styles["bench-stat-value"]}>{startup.segments}</span>
+                                        <span className={styles["bench-stat-sub"]}>
+                                            articles · {startup.nonPipelinedConnections} normal conns
+                                        </span>
+                                    </div>
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Data used</span>
+                                        <span className={styles["bench-stat-value"]}>{formatBytes(result.dataUsedBytes)}</span>
+                                    </div>
+                                </div>
+	                                <StartupChart startup={startup} />
+	                                <div className={styles["bench-pipe"]}>
+	                                    {startup.recommendPlaybackPipelining
+	                                        ? <>Enable <strong>playback pipelining</strong> at depth <strong>{startup.recommendedDepth}</strong>. This benchmark measures full first-segment readiness and the initial startup buffer, not long-run download speed.</>
+	                                        : <>Playback pipelining did not improve startup enough without delaying the first segment. Leave it off for playback.</>}
+	                                </div>
+	                            </>
+                        ) : (
+                            <div className={styles["bench-note"]}>
+                                Couldn’t measure playback startup{result.latency ? ` (latency ${result.latency.avgMs} ms)` : ""}. Try again when idle.
+                            </div>
+                        )
+                    ) : result.pipeliningOnly ? (
                         pipe ? (
                             <>
                                 <DepthChart pipe={pipe} />
@@ -1471,7 +1680,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                     {canApply && (
                         <div className={styles["bench-actions"]}>
                             <Button variant={applied ? "secondary" : "primary"} onClick={() => { onApply(); setApplied(true); }}>
-                                {applied ? "Applied ✓ — review & save" : (result.pipeliningOnly ? "Apply pipelining" : "Apply recommendation")}
+                                {applied ? "Applied ✓ — review & save" : (result.startupOnly ? "Apply playback recommendation" : result.pipeliningOnly ? "Apply pipelining" : "Apply recommendation")}
                             </Button>
                         </div>
                     )}
@@ -1479,6 +1688,63 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
             )}
         </div>
     );
+}
+
+function StartupChart({ startup }: { startup: BenchmarkStartup }) {
+    const rows = [
+        {
+            label: "Normal",
+            firstMs: startup.nonPipelinedFirstMs,
+            readyMs: startup.nonPipelinedReadyMs,
+            note: `${startup.nonPipelinedConnections} connection${startup.nonPipelinedConnections === 1 ? "" : "s"}`,
+            recommended: !startup.recommendPlaybackPipelining,
+        },
+        ...startup.pipelined.map(p => ({
+            label: `D${p.depth}`,
+            firstMs: p.firstMs,
+            readyMs: p.readyMs,
+            note: p.depth === startup.recommendedDepth && startup.recommendPlaybackPipelining ? "recommended" : "",
+            recommended: p.depth === startup.recommendedDepth && startup.recommendPlaybackPipelining,
+        })),
+    ];
+    return (
+        <div className={styles["bench-startup-table"]}>
+            <div className={`${styles["bench-startup-row"]} ${styles["bench-startup-head"]}`}>
+                <span>Mode</span>
+                <span>First segment</span>
+                <span>Startup buffer</span>
+                <span>Result</span>
+            </div>
+            {rows.map(row => (
+                <div
+                    className={`${styles["bench-startup-row"]} ${row.recommended ? styles["bench-startup-row-rec"] : ""}`}
+                    key={row.label}
+                >
+                    <span>{row.label}</span>
+                    <span>{row.firstMs.toFixed(0)} ms</span>
+                    <span>{row.readyMs.toFixed(0)} ms</span>
+                    <span>{row.note || formatStartupGain(startup.nonPipelinedReadyMs, row.readyMs)}</span>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function getStartupPoint(startup: BenchmarkStartup, depth: number) {
+    return startup.pipelined.find(p => p.depth === depth) ?? null;
+}
+
+function percentImprovement(baseline: number, measured: number) {
+    if (baseline <= 0 || measured <= 0) return null;
+    return Math.round((1 - measured / baseline) * 100);
+}
+
+function formatStartupGain(baseline: number, measured: number) {
+    const gain = percentImprovement(baseline, measured);
+    if (gain == null) return "";
+    if (gain > 0) return `${gain}% faster`;
+    if (gain < 0) return `${Math.abs(gain)}% slower`;
+    return "same";
 }
 
 function SweepChart({ points, recommended }: { points: BenchmarkSweepPoint[]; recommended: number | null }) {
@@ -1555,8 +1821,11 @@ function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
 export function isUsenetSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["usenet.providers"] !== newConfig["usenet.providers"]
         || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
+        || config["usenet.pipelining.queue.enabled"] !== newConfig["usenet.pipelining.queue.enabled"]
+        || config["usenet.pipelining.playback.enabled"] !== newConfig["usenet.pipelining.playback.enabled"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
+        || config["usenet.prep-spread.enabled"] !== newConfig["usenet.prep-spread.enabled"]
 }
 
 export function isPositiveInteger(value: string) {

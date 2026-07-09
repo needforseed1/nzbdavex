@@ -103,6 +103,8 @@ public partial class UsenetClient
         if (depth < 1) depth = 1;
 
         await _commandLock.WaitAsync(cancellationToken);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        var operationToken = linkedCts.Token;
         try
         {
             ThrowIfUnhealthy();
@@ -113,21 +115,24 @@ public partial class UsenetClient
 
             while (sent < segmentIds.Count && sent - received < depth)
             {
-                await WriteLineAsync($"{command} <{segmentIds[sent]}>".AsMemory(), _cts.Token);
+                operationToken.ThrowIfCancellationRequested();
+                await WriteLineAsync($"{command} <{segmentIds[sent]}>".AsMemory(), operationToken);
                 sent++;
             }
 
             while (received < segmentIds.Count)
             {
+                operationToken.ThrowIfCancellationRequested();
                 var segmentId = segmentIds[received];
-                var status = await ReadLineAsync(_cts.Token);
+                var status = await ReadLineAsync(operationToken);
                 var code = ParseResponseCode(status);
-                var result = await readResponse(code, status!, segmentId, _cts.Token);
+                var result = await readResponse(code, status!, segmentId, operationToken);
                 received++;
 
                 if (sent < segmentIds.Count)
                 {
-                    await WriteLineAsync($"{command} <{segmentIds[sent]}>".AsMemory(), _cts.Token);
+                    operationToken.ThrowIfCancellationRequested();
+                    await WriteLineAsync($"{command} <{segmentIds[sent]}>".AsMemory(), operationToken);
                     sent++;
                 }
 

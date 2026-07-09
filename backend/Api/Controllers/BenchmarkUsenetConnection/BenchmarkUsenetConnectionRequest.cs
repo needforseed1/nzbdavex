@@ -21,6 +21,9 @@ public class BenchmarkUsenetConnectionRequest
     /// <summary>When true, skip the connection sweep and only tune pipelining depth.</summary>
     public bool PipeliningOnly { get; init; }
 
+    /// <summary>When true, skip throughput and measure first-buffer playback startup behavior.</summary>
+    public bool StartupOnly { get; init; }
+
     public BenchmarkUsenetConnectionRequest(HttpContext context)
     {
         Host = context.Request.Form["host"].FirstOrDefault()
@@ -57,6 +60,9 @@ public class BenchmarkUsenetConnectionRequest
 
         var pipeliningOnly = context.Request.Form["pipelining-only"].FirstOrDefault();
         PipeliningOnly = bool.TryParse(pipeliningOnly, out var po) && po;
+
+        var startupOnly = context.Request.Form["startup-only"].FirstOrDefault();
+        StartupOnly = bool.TryParse(startupOnly, out var so) && so;
     }
 
     public UsenetProviderConfig.ConnectionDetails ToConnectionDetails()

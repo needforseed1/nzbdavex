@@ -25,6 +25,17 @@ public class UsenetProviderConfig
 
         public int? PipeliningDepth { get; set; }
 
+        // When true, this provider can be used for preparation work such as
+        // imports, first-segment checks, fast verification and health/preflight
+        // checks, but is excluded from high-priority playback streams.
+        public bool PrepOnly { get; set; }
+
+        // When global prep spreading is enabled, pooled providers with this
+        // flag participate in the first-choice queue/import/preflight spread.
+        // Set false to keep a pooled provider mostly idle unless others miss
+        // or fail. Backup providers are never first-choice spread targets.
+        public bool PrepSpreadEnabled { get; set; } = true;
+
         // Optional user-friendly label shown in the UI in place of Host. Host is
         // still the real NNTP target and the stable key used for metrics/logs.
         public string? Nickname { get; set; }

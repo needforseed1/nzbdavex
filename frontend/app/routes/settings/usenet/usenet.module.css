@@ -137,6 +137,21 @@
     vertical-align: middle;
 }
 
+.provider-prep-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent, #38bdf8);
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid rgba(56, 189, 248, 0.28);
+    border-radius: 6px;
+    vertical-align: middle;
+}
+
 .provider-icon svg {
     width: 18px;
     height: 18px;
@@ -829,6 +844,43 @@
 }
 
 .bench-pipe strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.bench-startup-table {
+    margin-top: 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.bench-startup-row {
+    display: grid;
+    grid-template-columns: minmax(70px, 0.8fr) repeat(3, minmax(86px, 1fr));
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.bench-startup-row:first-child {
+    border-top: 0;
+}
+
+.bench-startup-head {
+    background: var(--bg-surface-2);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bench-startup-row-rec {
     color: var(--text-primary);
     font-weight: 600;
 }

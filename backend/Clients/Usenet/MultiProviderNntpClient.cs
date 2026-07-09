@@ -1,8 +1,11 @@
 ﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using NzbWebDAV.Clients.Usenet.Concurrency;
+using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Database.Models.Metrics;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
@@ -18,7 +21,8 @@ public class MultiProviderNntpClient(
     ProviderUsageTracker usageTracker,
     MetricsWriter? metricsWriter = null,
     ProviderBytesTracker? bytesTracker = null,
-    Func<bool>? cascadeEnabled = null
+    Func<bool>? cascadeEnabled = null,
+    Func<bool>? prepSpreadEnabled = null
 ) : NntpClient
 {
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -49,6 +53,7 @@ public class MultiProviderNntpClient(
     public static readonly AsyncLocal<ResponderAttribution?> AttributionContext = new();
 
     private readonly object _selectLock = new();
+    private int _prepSpreadCursor;
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
@@ -169,7 +174,7 @@ public class MultiProviderNntpClient(
         if (attribution != null) attribution.Host = null;
         ExceptionDispatchInfo? lastException = null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses = null;
-        var orderedProviders = SelectOrderedProviders(out var reserved);
+        var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         for (var i = 0; i < orderedProviders.Count; i++)
         {
@@ -291,17 +296,55 @@ public class MultiProviderNntpClient(
         return SegmentFetch.FetchStatus.Other;
     }
 
-    private List<MultiConnectionNntpClient> SelectOrderedProviders(out MultiConnectionNntpClient? reserved)
+    private List<MultiConnectionNntpClient> SelectOrderedProviders(
+        CancellationToken cancellationToken,
+        out MultiConnectionNntpClient? reserved)
     {
         lock (_selectLock)
         {
+            var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
             var enabled = providers
                 .Where(x => x.ProviderType != ProviderType.Disabled)
+                .Where(x => priority != SemaphorePriority.High || !x.PrepOnly)
                 .Where(x => !IsOverLimit(x))
                 .ToList();
 
             var healthy = enabled.Where(x => !x.IsTripped).ToList();
             var pool = healthy.Count > 0 ? healthy : enabled;
+
+            if (priority != SemaphorePriority.High && prepSpreadEnabled?.Invoke() == true)
+            {
+                var spreadPool = pool
+                    .Where(x => x.ProviderType == ProviderType.Pooled && x.PrepSpreadEnabled)
+                    .ToList();
+                if (spreadPool.Count > 0)
+                {
+                    var rotation = _prepSpreadCursor++ % spreadPool.Count;
+                    var spread = spreadPool
+                        .Select((provider, index) => new
+                        {
+                            Provider = provider,
+                            RotationRank = (index - rotation + spreadPool.Count) % spreadPool.Count,
+                        })
+                        .OrderBy(x => PrepSpreadScore(x.Provider))
+                        .ThenBy(x => x.RotationRank)
+                        .ThenByDescending(x => GetRemainingBytes(x.Provider))
+                        .ThenBy(x => EffectivePriority(x.Provider))
+                        .Select(x => x.Provider)
+                        .ToList();
+                    var spreadSet = spread.ToHashSet();
+                    var fallback = pool
+                        .Where(x => !spreadSet.Contains(x))
+                        .OrderBy(x => x.ProviderType)
+                        .ThenBy(EffectivePriority)
+                        .ThenByDescending(GetRemainingBytes)
+                        .ThenBy(EstimatedDeliveryScore);
+                    var spreadOrdered = spread.Concat(fallback).ToList();
+                    reserved = spreadOrdered[0];
+                    reserved.ReservePending();
+                    return spreadOrdered;
+                }
+            }
 
             var byTier = pool.OrderBy(x => x.ProviderType);
             var prioritized = cascadeEnabled?.Invoke() == true
@@ -329,6 +372,13 @@ public class MultiProviderNntpClient(
         var inFlight = provider.ActiveConnections + provider.PendingSelections + 1;
         var bytesPerMs = bytesTracker?.GetBytesPerMs(provider.Host) ?? 0d;
         return bytesPerMs > 0 ? inFlight / bytesPerMs : inFlight;
+    }
+
+    private static double PrepSpreadScore(MultiConnectionNntpClient provider)
+    {
+        var capacity = Math.Max(1, provider.ActiveConnections + provider.AvailableConnections);
+        var committed = provider.ActiveConnections + provider.PendingSelections;
+        return committed / (double)capacity;
     }
 
     private bool IsOverLimit(MultiConnectionNntpClient client)
@@ -363,15 +413,65 @@ public class MultiProviderNntpClient(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0) yield break;
-        var orderedProviders = SelectOrderedProviders(out var reserved);
+        var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
         var effectiveDepth = ResolveDepth(primary, depth);
+        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
 
-        await foreach (var result in primary.StatsPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
-            yield return result;
+        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = Slice(segmentIds, offset, chunkSize);
+            var nextIndex = 0;
+
+            await using (var enumerator = primary
+                             .StatsPipelinedAsync(chunk, effectiveDepth, cancellationToken)
+                             .GetAsyncEnumerator(cancellationToken))
+            {
+                while (nextIndex < chunk.Count)
+                {
+                    PipelinedStatResult result;
+                    try
+                    {
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                        result = enumerator.Current;
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        Log.Debug(e, "Pipelined STAT chunk failed on primary provider {Provider}; rescuing remaining segments.",
+                            primary.Host);
+                        break;
+                    }
+
+                    nextIndex++;
+                    if (result.Exists)
+                    {
+                        yield return result;
+                        continue;
+                    }
+
+                    var rescued = await StatAsync(result.SegmentId, cancellationToken).ConfigureAwait(false);
+                    yield return new PipelinedStatResult
+                    {
+                        SegmentId = result.SegmentId,
+                        Exists = rescued.ResponseType == UsenetResponseType.ArticleExists,
+                    };
+                }
+            }
+
+            for (; nextIndex < chunk.Count; nextIndex++)
+            {
+                var segmentId = chunk[nextIndex];
+                var rescued = await StatAsync(segmentId, cancellationToken).ConfigureAwait(false);
+                yield return new PipelinedStatResult
+                {
+                    SegmentId = segmentId,
+                    Exists = rescued.ResponseType == UsenetResponseType.ArticleExists,
+                };
+            }
+        }
     }
 
     public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
@@ -379,23 +479,58 @@ public class MultiProviderNntpClient(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0) yield break;
-        var orderedProviders = SelectOrderedProviders(out var reserved);
+        var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
         var effectiveDepth = ResolveDepth(primary, depth);
+        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
 
-        await foreach (var result in primary.DecodedBodiesPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
         {
-            if (result.Found)
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = Slice(segmentIds, offset, chunkSize);
+            var nextIndex = 0;
+
+            await using (var enumerator = primary
+                             .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
+                             .GetAsyncEnumerator(cancellationToken))
             {
-                usageTracker.RecordSuccess(primary.Host);
-                yield return WrapPipelinedBody(result, primary.Host);
+                while (nextIndex < chunk.Count)
+                {
+                    PipelinedBodyResult result;
+                    try
+                    {
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                        result = enumerator.Current;
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider}; rescuing remaining segments.",
+                            primary.Host);
+                        break;
+                    }
+
+                    nextIndex++;
+                    if (result.Found)
+                    {
+                        usageTracker.RecordSuccess(primary.Host);
+                        yield return WrapPipelinedBody(result, primary.Host);
+                        continue;
+                    }
+
+                    yield return await RescuePipelinedBody(result.SegmentId, result, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
-            else
+
+            for (; nextIndex < chunk.Count; nextIndex++)
             {
-                yield return result;
+                var segmentId = chunk[nextIndex];
+                yield return await RescuePipelinedBody(
+                    segmentId,
+                    new PipelinedBodyResult { SegmentId = segmentId, Found = false, Stream = null },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -405,25 +540,113 @@ public class MultiProviderNntpClient(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0) yield break;
-        var orderedProviders = SelectOrderedProviders(out var reserved);
+        var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
         var effectiveDepth = ResolveDepth(primary, depth);
+        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
 
-        await foreach (var result in primary.DecodedArticlesPipelinedAsync(segmentIds, effectiveDepth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
         {
-            if (result.Found)
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = Slice(segmentIds, offset, chunkSize);
+            var nextIndex = 0;
+
+            await using (var enumerator = primary
+                             .DecodedArticlesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
+                             .GetAsyncEnumerator(cancellationToken))
             {
-                usageTracker.RecordSuccess(primary.Host);
-                yield return WrapPipelinedArticle(result, primary.Host);
+                while (nextIndex < chunk.Count)
+                {
+                    PipelinedArticleResult result;
+                    try
+                    {
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                        result = enumerator.Current;
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider}; rescuing remaining segments.",
+                            primary.Host);
+                        break;
+                    }
+
+                    nextIndex++;
+                    if (result.Found)
+                    {
+                        usageTracker.RecordSuccess(primary.Host);
+                        yield return WrapPipelinedArticle(result, primary.Host);
+                        continue;
+                    }
+
+                    yield return await RescuePipelinedArticle(result.SegmentId, result, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
-            else
+
+            for (; nextIndex < chunk.Count; nextIndex++)
             {
-                yield return result;
+                var segmentId = chunk[nextIndex];
+                yield return await RescuePipelinedArticle(
+                    segmentId,
+                    new PipelinedArticleResult { SegmentId = segmentId, Found = false },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private async Task<PipelinedBodyResult> RescuePipelinedBody(
+        string segmentId,
+        PipelinedBodyResult fallback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var rescued = await DecodedBodyAsync(segmentId, cancellationToken).ConfigureAwait(false);
+            return new PipelinedBodyResult
+            {
+                SegmentId = segmentId,
+                Found = true,
+                Stream = rescued.Stream,
+            };
+        }
+        catch (UsenetArticleNotFoundException)
+        {
+            return fallback;
+        }
+    }
+
+    private async Task<PipelinedArticleResult> RescuePipelinedArticle(
+        string segmentId,
+        PipelinedArticleResult fallback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var rescued = await DecodedArticleAsync(segmentId, cancellationToken).ConfigureAwait(false);
+            return new PipelinedArticleResult
+            {
+                SegmentId = segmentId,
+                Found = true,
+                Stream = rescued.Stream,
+                ArticleHeaders = rescued.ArticleHeaders,
+            };
+        }
+        catch (UsenetArticleNotFoundException)
+        {
+            return fallback;
+        }
+    }
+
+    private static int ResolvePipelinedChunkSize(int depth) => Math.Clamp(depth, 1, 64);
+
+    private static List<string> Slice(IReadOnlyList<string> items, int offset, int maxCount)
+    {
+        var count = Math.Min(maxCount, items.Count - offset);
+        var result = new List<string>(count);
+        for (var i = 0; i < count; i++) result.Add(items[offset + i]);
+        return result;
     }
 
     private PipelinedBodyResult WrapPipelinedBody(PipelinedBodyResult result, string host)

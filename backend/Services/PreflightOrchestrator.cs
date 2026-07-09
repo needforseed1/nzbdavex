@@ -71,7 +71,7 @@ public class PreflightOrchestrator(
         {
             if (ct.IsCancellationRequested) return 0;
             var ok = await PreflightCandidateAsync(mode, candidates[i], indexers, maxWait, ct).ConfigureAwait(false);
-            if (ok) return i + 1;
+            if (ok) return 1;
         }
         return 0;
     }
@@ -115,7 +115,7 @@ public class PreflightOrchestrator(
         using (var ms = new MemoryStream(nzbBytes, writable: false))
         {
             outcome = await fastVerifier
-                .VerifyAsync(ms, "stat", configManager.GetPlayVerifySampleCount(), ct)
+                .VerifyAsync(ms, "stat", configManager.GetPreflightVerifySampleCount(), ct)
                 .ConfigureAwait(false);
         }
 
@@ -127,6 +127,13 @@ public class PreflightOrchestrator(
         }
 
         var bytesToCache = mode == "light" ? null : nzbBytes;
+        if (outcome.Verdict == PlaybackFastVerifier.Verdict.Timeout)
+        {
+            if (bytesToCache is not null)
+                preflightCache.SetVerified(candidate.NzbUrl, bytesToCache, outcome.Verdict, outcome.ResponderHost);
+            return false;
+        }
+
         preflightCache.SetVerified(candidate.NzbUrl, bytesToCache, outcome.Verdict, outcome.ResponderHost);
 
         if (mode == "full" && !ct.IsCancellationRequested)
