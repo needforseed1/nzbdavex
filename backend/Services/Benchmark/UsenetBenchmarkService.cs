@@ -78,6 +78,9 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
             result.Startup = await MeasureStartupAsync(
                 provider, configuredMaxConnections, pool, cursor, profile,
                 bytes => result.DataUsedBytes += bytes, ct).ConfigureAwait(false);
+            if (result.Startup.NonPipelinedFirstMs <= 0)
+                result.Warnings.Add(
+                    "The leading test article was unavailable, so no playback-pipelining recommendation was made.");
             Report("done", "Done.", 100, result, null);
             return result;
         }
@@ -286,8 +289,12 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
                 bestObservedDepth = depth;
             }
 
-            var improvesBuffer = sample.ReadyMs > 0 && sample.ReadyMs <= baseline.ReadyMs * 0.90;
-            var preservesFirstSegment = sample.FirstMs > 0 && sample.FirstMs <= baseline.FirstMs * 1.05;
+            var improvesBuffer = baseline.ReadyMs > 0
+                                 && sample.ReadyMs > 0
+                                 && sample.ReadyMs <= baseline.ReadyMs * 0.90;
+            var preservesFirstSegment = baseline.FirstMs > 0
+                                        && sample.FirstMs > 0
+                                        && sample.FirstMs <= baseline.FirstMs * 1.05;
             if (improvesBuffer && preservesFirstSegment && sample.ReadyMs < recommendedReadyMs)
             {
                 recommendedReadyMs = sample.ReadyMs;
@@ -311,39 +318,78 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         UsenetProviderConfig.ConnectionDetails provider, IReadOnlyList<string> ids, int requestedConnections,
         CancellationToken ct)
     {
-        var connections = new List<INntpClient>(requestedConnections);
+        if (ids.Count == 0) return new StartupSample(0, 0, 0, 0);
+
+        var workerCount = Math.Min(requestedConnections, ids.Count);
+        var openedConnections = new StrongBox<int>(0);
+        var firstReady = new TaskCompletionSource<(bool Found, double Ms)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sw = Stopwatch.StartNew();
+
+        var workers = Enumerable.Range(0, workerCount)
+            .Select(workerIndex => RunNonPipelinedStartupWorkerAsync(
+                provider, ids, workerIndex, workerCount, openedConnections, firstReady, sw, ct))
+            .ToArray();
+
+        var bytes = (await Task.WhenAll(workers).ConfigureAwait(false)).Sum();
+        sw.Stop();
+        firstReady.TrySetResult((false, 0));
+        var first = await firstReady.Task.ConfigureAwait(false);
+        return new StartupSample(first.Found ? first.Ms : 0, sw.Elapsed.TotalMilliseconds, bytes,
+            openedConnections.Value);
+    }
+
+    private async Task<long> RunNonPipelinedStartupWorkerAsync(
+        UsenetProviderConfig.ConnectionDetails provider,
+        IReadOnlyList<string> ids,
+        int workerIndex,
+        int workerCount,
+        StrongBox<int> openedConnections,
+        TaskCompletionSource<(bool Found, double Ms)> firstReady,
+        Stopwatch stopwatch,
+        CancellationToken ct)
+    {
+        INntpClient? connection = null;
+        var bytes = 0L;
         try
         {
-            for (var i = 0; i < requestedConnections; i++)
+            connection = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
+            if (connection == null)
             {
-                var conn = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
-                if (conn == null) break;
-                connections.Add(conn);
+                if (workerIndex == 0) firstReady.TrySetResult((false, 0));
+                return 0;
             }
 
-            if (connections.Count == 0) return new StartupSample(0, 0, 0, 0);
-
-            var sw = Stopwatch.StartNew();
-            var tasks = ids.Select((id, i) => FetchStartupBodyAsync(connections[i % connections.Count], id, ct)).ToList();
-            var first = await Task.WhenAny(tasks).ConfigureAwait(false);
-            var firstMs = sw.Elapsed.TotalMilliseconds;
-            var bytes = await first.ConfigureAwait(false);
-            var rest = tasks.Where(t => !ReferenceEquals(t, first)).ToList();
-            if (rest.Count > 0)
-                bytes += (await Task.WhenAll(rest).ConfigureAwait(false)).Sum();
-            sw.Stop();
-
-            return new StartupSample(firstMs, sw.Elapsed.TotalMilliseconds, bytes, connections.Count);
+            Interlocked.Increment(ref openedConnections.Value);
+            for (var index = workerIndex; index < ids.Count; index += workerCount)
+            {
+                var fetched = await FetchStartupBodyAsync(connection, ids[index], ct).ConfigureAwait(false);
+                bytes += fetched.Bytes;
+                if (index == 0)
+                    firstReady.TrySetResult((fetched.Found, fetched.Found ? stopwatch.Elapsed.TotalMilliseconds : 0));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            if (workerIndex == 0) firstReady.TrySetResult((false, 0));
+            Log.Debug(e, "Non-pipelined startup benchmark worker stopped early.");
         }
         finally
         {
-            foreach (var conn in connections) SafeDispose(conn);
+            if (connection != null) SafeDispose(connection);
         }
+
+        return bytes;
     }
 
     private async Task<StartupSample> MeasurePipelinedStartupAsync(
         UsenetProviderConfig.ConnectionDetails provider, IReadOnlyList<string> ids, int depth, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         var conn = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
         if (conn == null) return new StartupSample(0, 0, 0, 0);
 
@@ -351,17 +397,25 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         {
             var bytes = 0L;
             double? firstMs = null;
-            var sw = Stopwatch.StartNew();
+            var index = 0;
             await foreach (var result in conn.DecodedBodiesPipelinedAsync(ids, depth, ct)
                                .WithCancellation(ct).ConfigureAwait(false))
             {
-                if (result is not { Found: true, Stream: not null }) continue;
-                bytes += await DrainCountAsync(result.Stream, ct).ConfigureAwait(false);
-                firstMs ??= sw.Elapsed.TotalMilliseconds;
+                if (result is { Found: true, Stream: not null })
+                {
+                    bytes += await DrainCountAsync(result.Stream, ct).ConfigureAwait(false);
+                    if (index == 0) firstMs = sw.Elapsed.TotalMilliseconds;
+                }
+                else if (index == 0)
+                {
+                    firstMs = 0;
+                }
+
+                index++;
             }
             sw.Stop();
 
-            return new StartupSample(firstMs ?? sw.Elapsed.TotalMilliseconds, sw.Elapsed.TotalMilliseconds, bytes, 1);
+            return new StartupSample(firstMs ?? 0, sw.Elapsed.TotalMilliseconds, bytes, 1);
         }
         finally
         {
@@ -369,16 +423,20 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         }
     }
 
-    private static async Task<long> FetchStartupBodyAsync(INntpClient conn, string id, CancellationToken ct)
+    private readonly record struct StartupBodyResult(bool Found, long Bytes);
+
+    private static async Task<StartupBodyResult> FetchStartupBodyAsync(
+        INntpClient conn, string id, CancellationToken ct)
     {
         try
         {
             var response = await conn.DecodedBodyAsync(id, ct).ConfigureAwait(false);
-            return await DrainCountAsync(response.Stream, ct).ConfigureAwait(false);
+            var bytes = await DrainCountAsync(response.Stream, ct).ConfigureAwait(false);
+            return new StartupBodyResult(true, bytes);
         }
         catch (UsenetArticleNotFoundException)
         {
-            return 0;
+            return new StartupBodyResult(false, 0);
         }
     }
 

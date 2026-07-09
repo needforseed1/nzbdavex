@@ -30,6 +30,8 @@ public partial class UsenetClient
         }
 
         var isReadBodyToPipeAsyncStarted = false;
+        var operationCts = CreateOperationCts(cancellationToken);
+        var operationToken = operationCts.Token;
 
         try
         {
@@ -37,15 +39,15 @@ public partial class UsenetClient
             ThrowIfNotConnected();
 
             // Send ARTICLE command with message-id
-            await WriteLineAsync($"ARTICLE <{segmentId}>".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync($"ARTICLE <{segmentId}>".AsMemory(), operationToken);
+            var response = await ReadLineAsync(operationToken);
             var responseCode = ParseResponseCode(response);
 
             // Article retrieved - head and body follow
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
             {
                 // Parse headers
-                var headers = await ParseArticleHeadersAsync(_cts.Token);
+                var headers = await ParseArticleHeadersAsync(operationToken);
 
                 // Create a pipe for streaming the body data
                 var pipe = new Pipe(new PipeOptions(
@@ -55,11 +57,12 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, _cts.Token, () =>
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, articleBodyResult =>
                 {
                     pipe.Writer.Complete();
                     _commandLock.Release();
-                    onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
+                    onConnectionReadyAgain?.Invoke(articleBodyResult);
+                    operationCts.Dispose();
                 });
 
                 // Return immediately with the stream and headers
@@ -86,6 +89,7 @@ public partial class UsenetClient
         {
             if (!isReadBodyToPipeAsyncStarted)
             {
+                operationCts.Dispose();
                 _commandLock.Release();
                 onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved);
             }

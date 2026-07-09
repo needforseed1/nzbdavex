@@ -46,7 +46,7 @@ const defaultConfig = {
     "usenet.pipelining.playback.enabled": "false",
     "usenet.pipelining.health.enabled": "true",
     "usenet.pipelining.health.depth": "32",
-    "usenet.pipelining.health.lanes": "16",
+    "usenet.pipelining.health.lanes": "64",
     "usenet.pipelining.depth": "8",
     "usenet.cascade.enabled": "false",
     "usenet.prep-spread.enabled": "false",

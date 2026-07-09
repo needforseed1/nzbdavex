@@ -747,12 +747,12 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         type="text"
                         id="health-pipelining-lanes"
                         className={`${styles["form-input"]} ${config["usenet.pipelining.health.lanes"] !== undefined && config["usenet.pipelining.health.lanes"] !== "" && !isPositiveInteger(config["usenet.pipelining.health.lanes"]) ? styles.error : ""}`}
-                        placeholder="16"
+                        placeholder="64"
                         value={config["usenet.pipelining.health.lanes"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.lanes": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Parallel pipelined STAT connections for article health checks (1–64). Higher values can speed large NZBs but may throttle providers.
+                        Parallel pipelined STAT connections for article health checks (1–64). 64 is the default; lower it if a provider throttles checks.
                     </div>
                 </div>
             </div>

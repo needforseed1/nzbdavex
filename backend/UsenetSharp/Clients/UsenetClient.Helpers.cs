@@ -64,6 +64,11 @@ public partial class UsenetClient
         return cts;
     }
 
+    private CancellationTokenSource CreateOperationCts(CancellationToken cancellationToken)
+    {
+        return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+    }
+
     private async Task WriteLineAsync(ReadOnlyMemory<char> line, CancellationToken ct)
     {
         using var cts = CreateCtsWithTimeout(ct);

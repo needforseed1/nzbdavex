@@ -13,18 +13,25 @@ public partial class UsenetClient
         // Clean up any existing connection
         CleanupConnection();
         await _commandLock.WaitAsync(cancellationToken);
+        using var operationCts = CreateOperationCts(cancellationToken);
+        var operationToken = operationCts.Token;
         try
         {
             _tcpClient = new TcpClient();
-            await _tcpClient.ConnectAsync(host, port, cancellationToken);
+            ConfigureTcpKeepAlive(_tcpClient);
+            await _tcpClient.ConnectAsync(host, port, operationToken);
             _stream = _tcpClient.GetStream();
 
             if (useSsl)
             {
                 var sslStream = new SslStream(_stream, false);
-                await sslStream.AuthenticateAsClientAsync(host, null,
-                    System.Security.Authentication.SslProtocols.Tls12 |
-                    System.Security.Authentication.SslProtocols.Tls13, true);
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = host,
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                                          System.Security.Authentication.SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.Online,
+                }, operationToken);
                 _stream = sslStream;
             }
 
@@ -33,7 +40,7 @@ public partial class UsenetClient
             _writer = new StreamWriter(_stream, Encoding.Latin1) { AutoFlush = true };
 
             // Read the server response
-            var response = await ReadLineAsync(_cts.Token);
+            var response = await ReadLineAsync(operationToken);
             var responseCode = ParseResponseCode(response);
 
             // NNTP servers typically respond with "200" or "201" for successful connection
@@ -44,6 +51,25 @@ public partial class UsenetClient
         finally
         {
             _commandLock.Release();
+        }
+    }
+
+    private static void ConfigureTcpKeepAlive(TcpClient client)
+    {
+        try
+        {
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
+        }
+        catch (SocketException)
+        {
+            // Platform defaults are still safe; command-level timeouts remain active.
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Some runtimes expose KeepAlive without the timing controls.
         }
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
@@ -12,7 +13,8 @@ public class BenchmarkUsenetConnectionController(
     UsenetBenchmarkService benchmarkService,
     BenchmarkGate benchmarkGate,
     ActiveReadRegistry activeReads,
-    QueueManager queueManager
+    QueueManager queueManager,
+    UsenetStreamingClient usenetClient
 ) : BaseApiController
 {
     private async Task<BenchmarkUsenetConnectionResponse> BenchmarkAsync(BenchmarkUsenetConnectionRequest request)
@@ -23,6 +25,11 @@ public class BenchmarkUsenetConnectionController(
             // the test gets the provider's full connection budget. The gate is
             // released on dispose — including on cancel or error.
             using var pause = benchmarkGate.Enter();
+
+            // Ad-hoc benchmark sockets still count against the provider's limit.
+            // Release shared idle sockets first so the sweep measures the provider,
+            // not recently cached application connections. Active reads are left alone.
+            usenetClient.CloseIdleConnections(request.Host);
 
             // Activity we can't pause — a download already mid-flight or live
             // streams — still uses connections; capture it so we can flag it.

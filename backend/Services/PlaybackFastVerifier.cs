@@ -103,9 +103,12 @@ public class PlaybackFastVerifier
         if (mode == "body")
         {
             var resp = await _usenetClient.DecodedBodyAsync(messageId, ct).ConfigureAwait(false);
-            return resp.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows
-                ? Verdict.Available
-                : Verdict.Dead;
+            if (resp.ResponseType != UsenetResponseType.ArticleRetrievedBodyFollows)
+                return Verdict.Dead;
+
+            await using var body = resp.Stream;
+            await body.CopyToAsync(Stream.Null, ct).ConfigureAwait(false);
+            return Verdict.Available;
         }
 
         var stat = await _usenetClient.StatAsync(messageId, ct).ConfigureAwait(false);

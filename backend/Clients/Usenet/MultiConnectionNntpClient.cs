@@ -131,6 +131,12 @@ public class MultiConnectionNntpClient(
         );
     }
 
+    public override void CloseIdleConnections(string? targetHost = null)
+    {
+        if (targetHost == null || string.Equals(targetHost, Host, StringComparison.OrdinalIgnoreCase))
+            connectionPool.CloseIdleConnections();
+    }
+
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync
     (
         SegmentId segmentId,
@@ -173,128 +179,172 @@ public class MultiConnectionNntpClient(
         int retryCount = 1
     ) where T : UsenetResponse
     {
-        while (retryCount >= 0)
+        if (!circuitBreaker.TryBeginAttempt(out var halfOpenProbe))
+            throw new ProviderCircuitOpenException(Host);
+
+        try
         {
-            ConnectionLock<INntpClient>? connectionLock = null;
-            try
+            while (retryCount >= 0)
             {
-                connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct).ConfigureAwait(false);
-            }
-            catch (Exception e) when (e.IsCancellationException())
-            {
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
-            catch (Exception e)
-            {
-                circuitBreaker.RecordFailure();
-                LogException(() => connectionLock?.Replace());
-                LogException(() => connectionLock?.Dispose());
-                if (retryCount > 0)
+                ConnectionLock<INntpClient>? connectionLock = null;
+                var callbackLock = new object();
+                var commandReturned = false;
+                ArticleBodyResult? deferredConnectionResult = null;
+                try
                 {
-                    Log.Debug(e, "Error getting connection-lock. Retrying with a new connection.");
-                    retryCount--;
-                    continue;
+                    connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct).ConfigureAwait(false);
                 }
-
-                Log.Warning(e, "Error getting connection-lock.");
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
-
-            T? result;
-            try
-            {
-                result = await command(connectionLock.Connection, OnConnectionReadyAgain).ConfigureAwait(false);
-            }
-            catch (Exception e) when (e.IsCancellationException())
-            {
-                LogException(() => connectionLock?.Replace());
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
-            catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException _))
-            {
-                // a 'not found' on BODY/ARTICLE may be misparsed leftover bytes from
-                // an earlier poisoned connection; destroy and retry once on a fresh socket.
-                if (name is "BODY" or "ARTICLE")
+                catch (Exception e) when (e.IsCancellationException())
                 {
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    circuitBreaker.RecordFailure();
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
                     if (retryCount > 0)
                     {
-                        Log.Debug(e, $"Got 'article not found' on nntp {name}. Retrying once with a fresh connection.");
+                        Log.Debug(e, "Error getting connection-lock. Retrying with a new connection.");
                         retryCount--;
                         continue;
                     }
+
+                    Log.Warning(e, "Error getting connection-lock.");
                     LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                     throw;
                 }
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
-            catch (Exception e) when (name is "BODY" or "ARTICLE" && e.TryGetCausingException(out TimeoutException _))
-            {
-                // Read-timeout on BODY/ARTICLE means the provider stopped responding
-                // mid-command. A fresh socket to the same provider is unlikely to fare
-                // any better, and burning another timeout retrying here just doubles
-                // the wait before MultiProviderNntpClient can fall over to the next
-                // provider. Replace the socket (the read may have left partial bytes
-                // on the wire) and propagate so the outer provider loop moves on.
-                circuitBreaker.RecordFailure();
-                LogException(() => connectionLock?.Replace());
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
-            catch (Exception e)
-            {
-                circuitBreaker.RecordFailure();
-                LogException(() => connectionLock?.Replace());
-                LogException(() => connectionLock?.Dispose());
-                if (retryCount > 0)
+
+                T? result;
+                try
                 {
-                    Log.Debug(e, $"Error executing nntp {name} command. Retrying with a new connection.");
-                    retryCount--;
-                    continue;
+                    result = await command(connectionLock.Connection, OnConnectionReadyAgain).ConfigureAwait(false);
+                    ArticleBodyResult? deferred;
+                    lock (callbackLock)
+                    {
+                        commandReturned = true;
+                        deferred = deferredConnectionResult;
+                        deferredConnectionResult = null;
+                    }
+
+                    if (deferred.HasValue)
+                        HandleConnectionReadyAgain(deferred.Value);
+                }
+                catch (Exception e) when (e.IsCancellationException())
+                {
+                    LogException(() => connectionLock?.Replace());
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw;
+                }
+                catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException _))
+                {
+                    // a 'not found' on BODY/ARTICLE may be misparsed leftover bytes from
+                    // an earlier poisoned connection; destroy and retry once on a fresh socket.
+                    if (name is "BODY" or "ARTICLE")
+                    {
+                        LogException(() => connectionLock?.Replace());
+                        LogException(() => connectionLock?.Dispose());
+                        if (retryCount > 0)
+                        {
+                            Log.Debug(e, $"Got 'article not found' on nntp {name}. Retrying once with a fresh connection.");
+                            retryCount--;
+                            continue;
+                        }
+                        LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                        throw;
+                    }
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw;
+                }
+                catch (Exception e) when (name is "BODY" or "ARTICLE" && e.TryGetCausingException(out TimeoutException _))
+                {
+                    // Read-timeout on BODY/ARTICLE means the provider stopped responding
+                    // mid-command. A fresh socket to the same provider is unlikely to fare
+                    // any better, and burning another timeout retrying here just doubles
+                    // the wait before MultiProviderNntpClient can fall over to the next
+                    // provider. Replace the socket (the read may have left partial bytes
+                    // on the wire) and propagate so the outer provider loop moves on.
+                    circuitBreaker.RecordFailure();
+                    LogException(() => connectionLock?.Replace());
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    circuitBreaker.RecordFailure();
+                    LogException(() => connectionLock?.Replace());
+                    LogException(() => connectionLock?.Dispose());
+                    if (retryCount > 0)
+                    {
+                        Log.Debug(e, $"Error executing nntp {name} command. Retrying with a new connection.");
+                        retryCount--;
+                        continue;
+                    }
+
+                    Log.Warning(e, $"Error executing nntp {name} command.");
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                    throw;
                 }
 
-                Log.Warning(e, $"Error executing nntp {name} command.");
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                throw;
-            }
+                circuitBreaker.RecordSuccess();
 
-            circuitBreaker.RecordSuccess();
-
-            // stat, head, and date
-            if (name is "STAT" or "HEAD" or "DATE")
-            {
-                LogException(() => connectionLock?.Dispose());
-            }
+                // stat, head, and date
+                if (name is "STAT" or "HEAD" or "DATE")
+                {
+                    LogException(() => connectionLock?.Dispose());
+                }
             
-            // body and article
-            else if ((result?.Success ?? false) == false)
-            {
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                // body and article
+                else if ((result?.Success ?? false) == false)
+                {
+                    LogException(() => connectionLock?.Dispose());
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
+                }
+
+                return result!;
+
+                void OnConnectionReadyAgain(ArticleBodyResult articleBodyResult)
+                {
+                    lock (callbackLock)
+                    {
+                        // A synchronous NotRetrieved belongs to a command that is
+                        // about to throw and may still fail over to another provider.
+                        // A background NotRetrieved after a successful response means
+                        // the body was interrupted and this socket must be replaced.
+                        if (!commandReturned && articleBodyResult == ArticleBodyResult.NotRetrieved)
+                        {
+                            deferredConnectionResult = articleBodyResult;
+                            return;
+                        }
+                    }
+
+                    HandleConnectionReadyAgain(articleBodyResult);
+                }
+
+                void HandleConnectionReadyAgain(ArticleBodyResult articleBodyResult)
+                {
+                    if (articleBodyResult == ArticleBodyResult.NotRetrieved)
+                        LogException(() => connectionLock?.Replace());
+
+                    LogException(() => connectionLock?.Dispose());
+                    // The command already returned a usable response, so release the
+                    // outer download permit even when its background body was aborted.
+                    LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved));
+                }
             }
 
-            return result!;
-
-            void OnConnectionReadyAgain(ArticleBodyResult articleBodyResult)
-            {
-                if (articleBodyResult != ArticleBodyResult.Retrieved) return;
-
-                LogException(() => connectionLock?.Dispose());
-                LogException(() => onConnectionReadyAgain?.Invoke(articleBodyResult));
-            }
+            Log.Error("Unreachable code reached");
+            throw new InvalidOperationException("Unreachable code ");
         }
-
-        Log.Error("Unreachable code reached");
-        throw new InvalidOperationException("Unreachable code ");
+        finally
+        {
+            circuitBreaker.EndAttempt(halfOpenProbe);
+        }
     }
 
     public override IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
@@ -313,41 +363,51 @@ public class MultiConnectionNntpClient(
         Func<INntpClient, IAsyncEnumerable<T>> batchFactory,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        if (!circuitBreaker.TryBeginAttempt(out var halfOpenProbe))
+            throw new ProviderCircuitOpenException(Host);
+
         var priority = GetDownloadPriority(cancellationToken);
-        var connectionLock = await connectionPool.GetConnectionLockAsync(priority, cancellationToken).ConfigureAwait(false);
-        var completed = false;
         try
         {
+            var connectionLock = await connectionPool.GetConnectionLockAsync(priority, cancellationToken).ConfigureAwait(false);
+            var completed = false;
             await using var enumerator = batchFactory(connectionLock.Connection)
                 .GetAsyncEnumerator(cancellationToken);
-            while (true)
+            try
             {
-                T current;
-                try
+                while (true)
                 {
-                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                    T current;
+                    try
                     {
-                        completed = true;
-                        break;
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            completed = true;
+                            break;
+                        }
+
+                        current = enumerator.Current;
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        circuitBreaker.RecordFailure();
+                        connectionLock.Replace();
+                        throw;
                     }
 
-                    current = enumerator.Current;
+                    circuitBreaker.RecordSuccess();
+                    yield return current;
                 }
-                catch (Exception e) when (!e.IsCancellationException())
-                {
-                    circuitBreaker.RecordFailure();
-                    connectionLock.Replace();
-                    throw;
-                }
-
-                circuitBreaker.RecordSuccess();
-                yield return current;
+            }
+            finally
+            {
+                if (!completed) connectionLock.Replace();
+                connectionLock.Dispose();
             }
         }
         finally
         {
-            if (!completed) connectionLock.Replace();
-            connectionLock.Dispose();
+            circuitBreaker.EndAttempt(halfOpenProbe);
         }
     }
 

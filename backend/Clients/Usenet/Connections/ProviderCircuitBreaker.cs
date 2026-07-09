@@ -25,6 +25,7 @@ public class ProviderCircuitBreaker
     private int _consecutiveFailures;
     private long _trippedUntilMs;
     private TimeSpan _currentCooldown = InitialCooldown;
+    private bool _probeInFlight;
 
     public ProviderCircuitBreaker(string providerName)
     {
@@ -35,10 +36,33 @@ public class ProviderCircuitBreaker
     {
         get
         {
-            var trippedUntil = Volatile.Read(ref _trippedUntilMs);
-            if (trippedUntil == 0) return false;
-            return Environment.TickCount64 < trippedUntil;
+            lock (_lock)
+            {
+                if (_trippedUntilMs == 0) return false;
+                return Environment.TickCount64 < _trippedUntilMs || _probeInFlight;
+            }
         }
+    }
+
+    public bool TryBeginAttempt(out bool halfOpenProbe)
+    {
+        lock (_lock)
+        {
+            halfOpenProbe = false;
+            if (_trippedUntilMs == 0) return true;
+            if (Environment.TickCount64 < _trippedUntilMs || _probeInFlight) return false;
+
+            _probeInFlight = true;
+            halfOpenProbe = true;
+            return true;
+        }
+    }
+
+    public void EndAttempt(bool halfOpenProbe)
+    {
+        if (!halfOpenProbe) return;
+        lock (_lock)
+            _probeInFlight = false;
     }
 
     public void RecordSuccess()
@@ -51,6 +75,7 @@ public class ProviderCircuitBreaker
             _consecutiveFailures = 0;
             _trippedUntilMs = 0;
             _currentCooldown = InitialCooldown;
+            _probeInFlight = false;
         }
     }
 
@@ -59,6 +84,7 @@ public class ProviderCircuitBreaker
         lock (_lock)
         {
             _consecutiveFailures++;
+            _probeInFlight = false;
 
             if (_consecutiveFailures < FailureThreshold) return;
 

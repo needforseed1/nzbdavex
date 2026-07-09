@@ -35,6 +35,8 @@ public interface INntpClient : IDisposable
     Task<UsenetDateResponse> DateAsync(
         CancellationToken cancellationToken);
 
+    void CloseIdleConnections(string? host = null);
+
     // optimized for concurrency
     Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync(
         string segmentId, CancellationToken cancellationToken);

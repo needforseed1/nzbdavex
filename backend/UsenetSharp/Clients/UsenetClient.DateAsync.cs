@@ -7,13 +7,15 @@ public partial class UsenetClient
     public async Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
     {
         await _commandLock.WaitAsync(cancellationToken);
+        using var operationCts = CreateOperationCts(cancellationToken);
+        var operationToken = operationCts.Token;
         try
         {
             ThrowIfUnhealthy();
             ThrowIfNotConnected();
 
-            await WriteLineAsync("DATE".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync("DATE".AsMemory(), operationToken);
+            var response = await ReadLineAsync(operationToken);
             var responseCode = ParseResponseCode(response);
 
             // Response code 111 means success

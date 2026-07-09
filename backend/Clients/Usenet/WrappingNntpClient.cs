@@ -35,6 +35,9 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
         CancellationToken cancellationToken) =>
         _usenetClient.DateAsync(cancellationToken);
 
+    public override void CloseIdleConnections(string? host = null) =>
+        _usenetClient.CloseIdleConnections(host);
+
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
         SegmentId segmentId, Action<ArticleBodyResult>? onConnectionReadyAgain, CancellationToken cancellationToken) =>
         _usenetClient.DecodedBodyAsync(segmentId, onConnectionReadyAgain, cancellationToken);

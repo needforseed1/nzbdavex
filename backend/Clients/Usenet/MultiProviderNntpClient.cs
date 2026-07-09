@@ -98,6 +98,12 @@ public class MultiProviderNntpClient(
         return RunFromPoolWithBackup(x => x.DateAsync(cancellationToken), cancellationToken);
     }
 
+    public override void CloseIdleConnections(string? host = null)
+    {
+        foreach (var provider in providers)
+            provider.CloseIdleConnections(host);
+    }
+
     public override async Task<UsenetDecodedBodyResponse> DecodedBodyAsync
     (
         SegmentId segmentId,
@@ -426,6 +432,7 @@ public class MultiProviderNntpClient(
             var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
+            var rescueFrom = chunk.Count;
 
             await using (var enumerator = primary
                              .StatsPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -443,28 +450,31 @@ public class MultiProviderNntpClient(
                     {
                         Log.Debug(e, "Pipelined STAT chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
+                        rescueFrom = nextIndex;
                         break;
                     }
 
-                    nextIndex++;
                     if (result.Exists)
                     {
+                        nextIndex++;
                         yield return result;
                         continue;
                     }
 
-                    var rescued = await StatAsync(result.SegmentId, cancellationToken).ConfigureAwait(false);
-                    yield return new PipelinedStatResult
-                    {
-                        SegmentId = result.SegmentId,
-                        Exists = rescued.ResponseType == UsenetResponseType.ArticleExists,
-                    };
+                    // Leave the batch before rescuing. The batch owns a pool lease and
+                    // may have unread responses in flight, so attempting STAT here can
+                    // wait forever behind that same lease when the pool is saturated.
+                    rescueFrom = nextIndex;
+                    break;
                 }
+
+                if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
+                    rescueFrom = nextIndex;
             }
 
-            for (; nextIndex < chunk.Count; nextIndex++)
+            for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
-                var segmentId = chunk[nextIndex];
+                var segmentId = chunk[rescueIndex];
                 var rescued = await StatAsync(segmentId, cancellationToken).ConfigureAwait(false);
                 yield return new PipelinedStatResult
                 {
@@ -494,6 +504,7 @@ public class MultiProviderNntpClient(
             cancellationToken.ThrowIfCancellationRequested();
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
+            var rescueFrom = chunk.Count;
 
             await using (var enumerator = primary
                              .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -511,25 +522,29 @@ public class MultiProviderNntpClient(
                     {
                         Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
+                        rescueFrom = nextIndex;
                         break;
                     }
 
-                    nextIndex++;
                     if (result.Found)
                     {
+                        nextIndex++;
                         usageTracker.RecordSuccess(primary.Host);
                         yield return WrapPipelinedBody(result, primary.Host);
                         continue;
                     }
 
-                    yield return await RescuePipelinedBody(result.SegmentId, result, cancellationToken)
-                        .ConfigureAwait(false);
+                    rescueFrom = nextIndex;
+                    break;
                 }
+
+                if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
+                    rescueFrom = nextIndex;
             }
 
-            for (; nextIndex < chunk.Count; nextIndex++)
+            for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
-                var segmentId = chunk[nextIndex];
+                var segmentId = chunk[rescueIndex];
                 yield return await RescuePipelinedBody(
                     segmentId,
                     new PipelinedBodyResult { SegmentId = segmentId, Found = false, Stream = null },
@@ -555,6 +570,7 @@ public class MultiProviderNntpClient(
             cancellationToken.ThrowIfCancellationRequested();
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
+            var rescueFrom = chunk.Count;
 
             await using (var enumerator = primary
                              .DecodedArticlesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -572,25 +588,29 @@ public class MultiProviderNntpClient(
                     {
                         Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
+                        rescueFrom = nextIndex;
                         break;
                     }
 
-                    nextIndex++;
                     if (result.Found)
                     {
+                        nextIndex++;
                         usageTracker.RecordSuccess(primary.Host);
                         yield return WrapPipelinedArticle(result, primary.Host);
                         continue;
                     }
 
-                    yield return await RescuePipelinedArticle(result.SegmentId, result, cancellationToken)
-                        .ConfigureAwait(false);
+                    rescueFrom = nextIndex;
+                    break;
                 }
+
+                if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
+                    rescueFrom = nextIndex;
             }
 
-            for (; nextIndex < chunk.Count; nextIndex++)
+            for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
-                var segmentId = chunk[nextIndex];
+                var segmentId = chunk[rescueIndex];
                 yield return await RescuePipelinedArticle(
                     segmentId,
                     new PipelinedArticleResult { SegmentId = segmentId, Found = false },

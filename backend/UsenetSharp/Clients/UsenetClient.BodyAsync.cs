@@ -30,6 +30,8 @@ public partial class UsenetClient
         }
 
         var isReadBodyToPipeAsyncStarted = false;
+        var operationCts = CreateOperationCts(cancellationToken);
+        var operationToken = operationCts.Token;
 
         try
         {
@@ -37,8 +39,8 @@ public partial class UsenetClient
             ThrowIfNotConnected();
 
             // Send BODY command with message-id
-            await WriteLineAsync($"BODY <{segmentId}>".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync($"BODY <{segmentId}>".AsMemory(), operationToken);
+            var response = await ReadLineAsync(operationToken);
             var responseCode = ParseResponseCode(response);
 
             // Article retrieved - body follows
@@ -52,11 +54,12 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, _cts.Token, () =>
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, articleBodyResult =>
                 {
                     pipe.Writer.Complete();
                     _commandLock.Release();
-                    onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
+                    onConnectionReadyAgain?.Invoke(articleBodyResult);
+                    operationCts.Dispose();
                 });
 
                 // Return immediately with the stream and headers
@@ -81,14 +84,19 @@ public partial class UsenetClient
         {
             if (!isReadBodyToPipeAsyncStarted)
             {
+                operationCts.Dispose();
                 _commandLock.Release();
                 onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved);
             }
         }
     }
 
-    private async Task ReadBodyToPipeAsync(PipeWriter writer, CancellationToken cancellationToken, Action onFinally)
+    private async Task ReadBodyToPipeAsync(
+        PipeWriter writer,
+        CancellationToken cancellationToken,
+        Action<ArticleBodyResult> onFinally)
     {
+        var completed = false;
         try
         {
             if (_reader == null)
@@ -113,6 +121,7 @@ public partial class UsenetClient
                 // Check for NNTP termination sequence (single dot)
                 if (line == ".")
                 {
+                    completed = true;
                     break;
                 }
 
@@ -151,7 +160,7 @@ public partial class UsenetClient
         }
         finally
         {
-            onFinally.Invoke();
+            onFinally.Invoke(completed ? ArticleBodyResult.Retrieved : ArticleBodyResult.NotRetrieved);
         }
     }
 }

@@ -228,7 +228,7 @@ public class ConfigManager
     public int GetHealthPipeliningLanes()
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.lanes"));
-        if (configured is null || !int.TryParse(configured, out var value)) return 16;
+        if (configured is null || !int.TryParse(configured, out var value)) return 64;
         return Math.Clamp(value, 1, 64);
     }
 

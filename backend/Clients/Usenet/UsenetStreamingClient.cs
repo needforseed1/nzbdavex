@@ -119,7 +119,10 @@ public class UsenetStreamingClient : WrappingNntpClient
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
     {
-        var connectionPool = new ConnectionPool<INntpClient>(maxConnections, connectionFactory);
+        var connectionPool = new ConnectionPool<INntpClient>(
+            maxConnections,
+            connectionFactory,
+            connectionValidator: ValidateConnection);
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;
         var args = new ConnectionPoolStats.ConnectionPoolChangedEventArgs(0, 0, maxConnections);
         onConnectionPoolChanged(connectionPool, args);
@@ -133,13 +136,40 @@ public class UsenetStreamingClient : WrappingNntpClient
     )
     {
         var connection = new BaseNntpClient();
-        var host = connectionDetails.Host;
-        var port = connectionDetails.Port;
-        var useSsl = connectionDetails.UseSsl;
-        var user = connectionDetails.User;
-        var pass = connectionDetails.Pass;
-        await connection.ConnectAsync(host, port, useSsl, ct).ConfigureAwait(false);
-        await connection.AuthenticateAsync(user, pass, ct).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            var host = connectionDetails.Host;
+            var port = connectionDetails.Port;
+            var useSsl = connectionDetails.UseSsl;
+            var user = connectionDetails.User;
+            var pass = connectionDetails.Pass;
+            await connection.ConnectAsync(host, port, useSsl, ct).ConfigureAwait(false);
+            await connection.AuthenticateAsync(user, pass, ct).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    private static async ValueTask<bool> ValidateConnection(INntpClient connection, CancellationToken ct)
+    {
+        using var validationCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        validationCts.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            await connection.DateAsync(validationCts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

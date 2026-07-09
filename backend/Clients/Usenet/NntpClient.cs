@@ -43,6 +43,10 @@ public abstract class NntpClient : INntpClient
     public abstract Task<UsenetDateResponse> DateAsync(
         CancellationToken cancellationToken);
 
+    public virtual void CloseIdleConnections(string? host = null)
+    {
+    }
+
     public abstract void Dispose();
 
     public virtual Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync
@@ -219,7 +223,7 @@ public abstract class NntpClient : INntpClient
     )
     {
         if (segmentIds.Count == 0) return;
-        var lanes = ResolvePipelinedStatLanes(segmentIds.Count, depth, fallbackConcurrency);
+        var lanes = ResolvePipelinedStatLanes(segmentIds.Count, fallbackConcurrency);
         if (lanes > 1)
         {
             using var childCt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -291,11 +295,9 @@ public abstract class NntpClient : INntpClient
         }
     }
 
-    private static int ResolvePipelinedStatLanes(int segmentCount, int depth, int fallbackConcurrency)
+    private static int ResolvePipelinedStatLanes(int segmentCount, int fallbackConcurrency)
     {
-        var effectiveDepth = Math.Clamp(depth, 1, 64);
-        var usefulLanes = (int)Math.Ceiling(segmentCount / (double)effectiveDepth);
-        return Math.Clamp(Math.Min(fallbackConcurrency, usefulLanes), 1, 64);
+        return Math.Clamp(Math.Min(fallbackConcurrency, segmentCount), 1, 64);
     }
 
     private static bool TryRethrowMissingArticle(Exception e)
@@ -307,13 +309,17 @@ public abstract class NntpClient : INntpClient
 
     private static IEnumerable<IReadOnlyList<string>> Partition(IReadOnlyList<string> items, int partitions)
     {
-        var chunkSize = (int)Math.Ceiling(items.Count / (double)partitions);
-        for (var offset = 0; offset < items.Count; offset += chunkSize)
+        var partitionCount = Math.Min(partitions, items.Count);
+        var baseSize = items.Count / partitionCount;
+        var remainder = items.Count % partitionCount;
+        var offset = 0;
+        for (var partition = 0; partition < partitionCount; partition++)
         {
-            var count = Math.Min(chunkSize, items.Count - offset);
+            var count = baseSize + (partition < remainder ? 1 : 0);
             var chunk = new string[count];
             for (var i = 0; i < count; i++) chunk[i] = items[offset + i];
             yield return chunk;
+            offset += count;
         }
     }
 }

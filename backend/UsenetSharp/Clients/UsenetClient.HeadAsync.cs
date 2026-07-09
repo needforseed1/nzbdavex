@@ -7,6 +7,8 @@ public partial class UsenetClient
     public async Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         await _commandLock.WaitAsync(cancellationToken);
+        using var operationCts = CreateOperationCts(cancellationToken);
+        var operationToken = operationCts.Token;
 
         try
         {
@@ -14,15 +16,15 @@ public partial class UsenetClient
             ThrowIfNotConnected();
 
             // Send HEAD command with message-id
-            await WriteLineAsync($"HEAD <{segmentId}>".AsMemory(), _cts.Token);
-            var response = await ReadLineAsync(_cts.Token);
+            await WriteLineAsync($"HEAD <{segmentId}>".AsMemory(), operationToken);
+            var response = await ReadLineAsync(operationToken);
             var responseCode = ParseResponseCode(response);
 
             // Article retrieved - head follows (multi-line)
             if (responseCode == (int)UsenetResponseType.ArticleRetrievedHeadFollows)
             {
                 // Parse headers
-                var headers = await ParseArticleHeadersAsync(_cts.Token);
+                var headers = await ParseArticleHeadersAsync(operationToken);
 
                 return new UsenetHeadResponse
                 {
