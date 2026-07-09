@@ -229,9 +229,31 @@ public abstract class NntpClient : INntpClient
             using var childCt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var token = childCt.Token;
             var processedCount = 0;
+            var nextSegment = 0;
+            var schedulerLock = new object();
+            var batchDepth = Math.Clamp(depth, 1, 64);
 
-            var laneTasks = Partition(segmentIds, lanes)
-                .Select(lane => CheckPipelinedStatLaneAsync(lane, depth, progress, childCt, token, () =>
+            IReadOnlyList<string>? TakeNextBatch()
+            {
+                lock (schedulerLock)
+                {
+                    if (nextSegment >= segmentIds.Count) return null;
+
+                    var remaining = segmentIds.Count - nextSegment;
+                    // Keep roughly two waves of work available. Full-depth batches
+                    // dominate the run, then shrink near completion so fast lanes can
+                    // absorb work from slow providers instead of waiting on stragglers.
+                    var targetBatchSize = Math.Max(1, (remaining + lanes * 2 - 1) / (lanes * 2));
+                    var count = Math.Min(remaining, Math.Min(batchDepth, targetBatchSize));
+                    var batch = new string[count];
+                    for (var i = 0; i < count; i++) batch[i] = segmentIds[nextSegment + i];
+                    nextSegment += count;
+                    return batch;
+                }
+            }
+
+            var laneTasks = Enumerable.Range(0, lanes)
+                .Select(_ => CheckPipelinedStatLaneAsync(TakeNextBatch, batchDepth, progress, childCt, token, () =>
                     Interlocked.Increment(ref processedCount)))
                 .ToArray();
 
@@ -274,30 +296,41 @@ public abstract class NntpClient : INntpClient
     }
 
     private async Task CheckPipelinedStatLaneAsync(
-        IReadOnlyList<string> segmentIds,
+        Func<IReadOnlyList<string>?> takeNextBatch,
         int depth,
         IProgress<int>? progress,
         CancellationTokenSource childCt,
         CancellationToken cancellationToken,
         Func<int> incrementProcessed)
     {
-        await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        try
         {
-            if (result.Exists)
+            while (takeNextBatch() is { } segmentIds)
             {
-                progress?.Report(incrementProcessed());
-                continue;
-            }
+                await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+                                   .WithCancellation(cancellationToken).ConfigureAwait(false))
+                {
+                    if (result.Exists)
+                    {
+                        progress?.Report(incrementProcessed());
+                        continue;
+                    }
 
+                    await childCt.CancelAsync().ConfigureAwait(false);
+                    throw new UsenetArticleNotFoundException(result.SegmentId);
+                }
+            }
+        }
+        catch
+        {
             await childCt.CancelAsync().ConfigureAwait(false);
-            throw new UsenetArticleNotFoundException(result.SegmentId);
+            throw;
         }
     }
 
     private static int ResolvePipelinedStatLanes(int segmentCount, int fallbackConcurrency)
     {
-        return Math.Clamp(Math.Min(fallbackConcurrency, segmentCount), 1, 64);
+        return Math.Max(1, Math.Min(fallbackConcurrency, segmentCount));
     }
 
     private static bool TryRethrowMissingArticle(Exception e)
@@ -307,19 +340,4 @@ public abstract class NntpClient : INntpClient
         return true;
     }
 
-    private static IEnumerable<IReadOnlyList<string>> Partition(IReadOnlyList<string> items, int partitions)
-    {
-        var partitionCount = Math.Min(partitions, items.Count);
-        var baseSize = items.Count / partitionCount;
-        var remainder = items.Count % partitionCount;
-        var offset = 0;
-        for (var partition = 0; partition < partitionCount; partition++)
-        {
-            var count = baseSize + (partition < remainder ? 1 : 0);
-            var chunk = new string[count];
-            for (var i = 0; i < count; i++) chunk[i] = items[offset + i];
-            yield return chunk;
-            offset += count;
-        }
-    }
 }

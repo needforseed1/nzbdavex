@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Text;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace UsenetSharp.Clients;
@@ -14,18 +16,124 @@ public partial class UsenetClient
         CancellationToken cancellationToken
     )
     {
-        return RunPipelinedAsync(
-            segmentIds,
-            depth,
-            "STAT",
-            (code, message, _, _) => Task.FromResult(new UsenetStatResponse
+        return RunBulkStatPipelinedAsync(segmentIds, depth, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<UsenetStatResponse> RunBulkStatPipelinedAsync
+    (
+        IReadOnlyList<SegmentId> segmentIds,
+        int depth,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        if (segmentIds.Count == 0) yield break;
+        depth = Math.Clamp(depth, 1, segmentIds.Count);
+
+        await _commandLock.WaitAsync(cancellationToken);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        var operationToken = linkedCts.Token;
+        try
+        {
+            ThrowIfUnhealthy();
+            ThrowIfNotConnected();
+
+            for (var offset = 0; offset < segmentIds.Count; offset += depth)
             {
-                ResponseCode = code,
-                ResponseMessage = message,
-                ArticleExists = code == (int)UsenetResponseType.ArticleExists,
-            }),
-            cancellationToken
-        );
+                operationToken.ThrowIfCancellationRequested();
+                var count = Math.Min(depth, segmentIds.Count - offset);
+                UsenetStatResponse[] responses;
+                try
+                {
+                    responses = await ExecuteBulkStatBatchAsync(segmentIds, offset, count, operationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    lock (this)
+                        _backgroundException ??= ExceptionDispatchInfo.Capture(e);
+                    throw;
+                }
+
+                // Buffer the complete batch before yielding. If a caller stops after a
+                // missing result, no unread replies remain on the connection.
+                foreach (var response in responses)
+                    yield return response;
+            }
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
+    }
+
+    private async Task<UsenetStatResponse[]> ExecuteBulkStatBatchAsync
+    (
+        IReadOnlyList<SegmentId> segmentIds,
+        int offset,
+        int count,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = new StringBuilder(count * 48);
+        for (var i = 0; i < count; i++)
+            payload.Append("STAT <").Append((string)segmentIds[offset + i]).Append(">\r\n");
+
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        idleCts.CancelAfter(TimeSpan.FromSeconds(20));
+        var token = idleCts.Token;
+        try
+        {
+            var commandText = payload.ToString();
+            var byteCount = Encoding.Latin1.GetByteCount(commandText);
+            var buffer = ArrayPool<byte>.Shared.Rent(byteCount);
+            try
+            {
+                var written = Encoding.Latin1.GetBytes(commandText.AsSpan(), buffer.AsSpan());
+                await _stream!.WriteAsync(buffer.AsMemory(0, written), token).ConfigureAwait(false);
+                await _stream.FlushAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            var responses = new UsenetStatResponse[count];
+            for (var i = 0; i < count; i++)
+            {
+                var response = await _reader!.ReadLineAsync(token).ConfigureAwait(false);
+                idleCts.CancelAfter(TimeSpan.FromSeconds(20));
+                if (response is null)
+                    throw new UsenetProtocolException(
+                        "Connection closed while reading pipelined STAT responses.");
+
+                var responseCode = ParseResponseCode(response);
+                var articleExists = responseCode == (int)UsenetResponseType.ArticleExists;
+                if (articleExists && !ResponseEchoesSegmentId(response, segmentIds[offset + i]))
+                    throw new UsenetProtocolException(
+                        "Pipelined STAT responses are out of order; aborting batch.");
+
+                responses[i] = new UsenetStatResponse
+                {
+                    ResponseCode = responseCode,
+                    ResponseMessage = response,
+                    ArticleExists = articleExists,
+                };
+            }
+
+            return responses;
+        }
+        catch (OperationCanceledException e) when (
+            idleCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Timeout during pipelined STAT batch.", e);
+        }
+    }
+
+    private static bool ResponseEchoesSegmentId(string response, SegmentId segmentId)
+    {
+        var id = (string)segmentId;
+        return string.IsNullOrEmpty(id)
+               || response.AsSpan().IndexOf(id.AsSpan(), StringComparison.Ordinal) >= 0;
     }
 
     public IAsyncEnumerable<UsenetBodyResponse> BodyPipelinedAsync

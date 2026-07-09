@@ -11,6 +11,11 @@ public class UsenetProviderConfig
         .Select(x => x.MaxConnections)
         .Sum());
 
+    public int TotalStatCheckConnections => Math.Max(1, Providers
+        .Where(x => x.Type is ProviderType.Pooled or ProviderType.BackupAndStats)
+        .Select(x => x.MaxConnections)
+        .Sum());
+
     public class ConnectionDetails
     {
         public required ProviderType Type { get; set; }
@@ -33,7 +38,8 @@ public class UsenetProviderConfig
         // When global prep spreading is enabled, pooled providers with this
         // flag participate in the first-choice queue/import/preflight spread.
         // Set false to keep a pooled provider mostly idle unless others miss
-        // or fail. Backup providers are never first-choice spread targets.
+        // or fail. Backup providers are not first-choice spread targets outside
+        // the dedicated BackupAndStats health-check path.
         public bool PrepSpreadEnabled { get; set; } = true;
 
         // Optional user-friendly label shown in the UI in place of Host. Host is

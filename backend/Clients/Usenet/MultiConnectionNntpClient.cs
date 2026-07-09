@@ -48,7 +48,7 @@ public class MultiConnectionNntpClient(
     // this provider should be skipped when it has exhausted its block.
     public long? ByteLimit { get; } = byteLimit;
     public long BytesUsedOffset { get; } = bytesUsedOffset;
-    public bool IsTripped => circuitBreaker.IsTripped;
+    public bool IsTripped => circuitBreaker.IsTripped || connectionPool.CapacityUnavailable;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
@@ -202,17 +202,11 @@ public class MultiConnectionNntpClient(
                 }
                 catch (Exception e)
                 {
-                    circuitBreaker.RecordFailure();
+                    if (!e.TryGetCausingException(out UsenetConnectionLimitException _))
+                        circuitBreaker.RecordFailure(halfOpenProbe);
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
-                    if (retryCount > 0)
-                    {
-                        Log.Debug(e, "Error getting connection-lock. Retrying with a new connection.");
-                        retryCount--;
-                        continue;
-                    }
-
-                    Log.Warning(e, "Error getting connection-lock.");
+                    Log.Debug(e, "Error getting connection-lock. Failing over to another provider.");
                     LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                     throw;
                 }
@@ -268,7 +262,7 @@ public class MultiConnectionNntpClient(
                     // the wait before MultiProviderNntpClient can fall over to the next
                     // provider. Replace the socket (the read may have left partial bytes
                     // on the wire) and propagate so the outer provider loop moves on.
-                    circuitBreaker.RecordFailure();
+                    circuitBreaker.RecordFailure(halfOpenProbe);
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
                     LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
@@ -276,7 +270,7 @@ public class MultiConnectionNntpClient(
                 }
                 catch (Exception e)
                 {
-                    circuitBreaker.RecordFailure();
+                    circuitBreaker.RecordFailure(halfOpenProbe);
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
                     if (retryCount > 0)
@@ -291,7 +285,7 @@ public class MultiConnectionNntpClient(
                     throw;
                 }
 
-                circuitBreaker.RecordSuccess();
+                circuitBreaker.RecordSuccess(halfOpenProbe);
 
                 // stat, head, and date
                 if (name is "STAT" or "HEAD" or "DATE")
@@ -390,12 +384,12 @@ public class MultiConnectionNntpClient(
                     }
                     catch (Exception e) when (!e.IsCancellationException())
                     {
-                        circuitBreaker.RecordFailure();
+                        circuitBreaker.RecordFailure(halfOpenProbe);
                         connectionLock.Replace();
                         throw;
                     }
 
-                    circuitBreaker.RecordSuccess();
+                    circuitBreaker.RecordSuccess(halfOpenProbe);
                     yield return current;
                 }
             }

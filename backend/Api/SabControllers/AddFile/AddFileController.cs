@@ -1,4 +1,5 @@
-﻿using System.Xml;
+﻿using System.Diagnostics;
+using System.Xml;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Api.SabControllers.GetQueue;
@@ -9,6 +10,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
+using Serilog;
 
 namespace NzbWebDAV.Api.SabControllers.AddFile;
 
@@ -29,10 +31,13 @@ public class AddFileController(
     public async Task<AddFileResponse> AddFileAsync(AddFileRequest request)
     {
         var id = Guid.NewGuid();
+        var timer = Stopwatch.StartNew();
+        Log.Information("queue-intake nzo={NzoId} file={FileName} stage=store start", id, request.FileName);
 
         // write the file to the blob-store
         await using var stream = request.NzbFileStream;
         await BlobStore.WriteBlob(id, stream);
+        var storeMs = timer.ElapsedMilliseconds;
 
         // save the queue item to the database
         QueueItem? queueItem;
@@ -51,6 +56,7 @@ public class AddFileController(
             // compute the total segment bytes
             await using var nzbFileStream = BlobStore.ReadBlob(id);
             var totalSegmentBytes = ComputeTotalSegmentBytes(nzbFileStream);
+            var scanMs = timer.ElapsedMilliseconds - storeMs;
 
             // create the queue item record
             queueItem = new QueueItem
@@ -81,6 +87,10 @@ public class AddFileController(
             dbClient.Ctx.NzbNames.Add(nzbName);
             await dbClient.Ctx.SaveChangesAsync(request.CancellationToken).ConfigureAwait(false);
             _ = DavDatabaseContext.RcloneVfsForget(["/nzbs"]);
+
+            Log.Information(
+                "queue-intake nzo={NzoId} file={FileName} stage=stored bytes={Bytes} storeMs={StoreMs} scanAndBackupMs={ScanMs} totalMs={TotalMs}",
+                id, request.FileName, nzbFileStream.Length, storeMs, scanMs, timer.ElapsedMilliseconds);
         }
         catch
         {

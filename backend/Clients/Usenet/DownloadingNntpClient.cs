@@ -17,6 +17,7 @@ public class DownloadingNntpClient : WrappingNntpClient
     private readonly ConfigManager _configManager;
     private readonly PrioritizedSemaphore _streamingSemaphore;
     private readonly PrioritizedSemaphore _queueSemaphore;
+    private volatile bool _limitQueueDownloads;
 
     public DownloadingNntpClient(INntpClient usenetClient, ConfigManager configManager) : base(usenetClient)
     {
@@ -26,6 +27,7 @@ public class DownloadingNntpClient : WrappingNntpClient
         _configManager = configManager;
         _streamingSemaphore = new PrioritizedSemaphore(maxDownloadConnections, maxDownloadConnections, streamingPriority);
         _queueSemaphore = new PrioritizedSemaphore(maxQueueConnections, maxQueueConnections);
+        _limitQueueDownloads = maxQueueConnections < configManager.GetUsenetProviderConfig().TotalPooledConnections;
         configManager.OnConfigChanged += OnConfigChanged;
     }
 
@@ -40,7 +42,11 @@ public class DownloadingNntpClient : WrappingNntpClient
         if (e.ChangedConfig.ContainsKey("usenet.max-queue-connections")
             || e.ChangedConfig.ContainsKey("usenet.max-download-connections")
             || e.ChangedConfig.ContainsKey("usenet.providers"))
+        {
             _queueSemaphore.UpdateMaxAllowed(_configManager.GetMaxQueueConnections());
+            _limitQueueDownloads = _configManager.GetMaxQueueConnections()
+                                   < _configManager.GetUsenetProviderConfig().TotalPooledConnections;
+        }
 
         if (e.ChangedConfig.ContainsKey("usenet.streaming-priority"))
             _streamingSemaphore.UpdatePriorityOdds(_configManager.GetStreamingPriority());
@@ -85,7 +91,7 @@ public class DownloadingNntpClient : WrappingNntpClient
         }
     }
 
-    private async Task<PrioritizedSemaphore> AcquireExclusiveConnectionAsync(Action<ArticleBodyResult>? onConnectionReadyAgain,
+    private async Task<DownloadPermit> AcquireExclusiveConnectionAsync(Action<ArticleBodyResult>? onConnectionReadyAgain,
         CancellationToken cancellationToken)
     {
         try
@@ -99,13 +105,16 @@ public class DownloadingNntpClient : WrappingNntpClient
         }
     }
 
-    private async Task<PrioritizedSemaphore> AcquireExclusiveConnectionAsync(CancellationToken cancellationToken)
+    private async Task<DownloadPermit> AcquireExclusiveConnectionAsync(CancellationToken cancellationToken)
     {
         var downloadPriorityContext = cancellationToken.GetContext<DownloadPriorityContext>();
         var semaphorePriority = downloadPriorityContext?.Priority ?? SemaphorePriority.Low;
+        if (semaphorePriority == SemaphorePriority.Low && !_limitQueueDownloads)
+            return default;
+
         var semaphore = semaphorePriority == SemaphorePriority.High ? _streamingSemaphore : _queueSemaphore;
         await semaphore.WaitAsync(semaphorePriority, cancellationToken).ConfigureAwait(false);
-        return semaphore;
+        return new DownloadPermit(semaphore);
     }
 
     public override async Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync
@@ -130,25 +139,6 @@ public class DownloadingNntpClient : WrappingNntpClient
     {
         var onConnectionReadyAgain = exclusiveConnection.OnConnectionReadyAgain;
         return base.DecodedArticleAsync(segmentId, onConnectionReadyAgain, cancellationToken);
-    }
-
-    public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
-        IReadOnlyList<string> segmentIds, int depth,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
-        var semaphore = priority == SemaphorePriority.High ? _streamingSemaphore : _queueSemaphore;
-        await semaphore.WaitAsync(priority, cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await foreach (var result in base.StatsPipelinedAsync(segmentIds, depth, cancellationToken)
-                               .WithCancellation(cancellationToken).ConfigureAwait(false))
-                yield return result;
-        }
-        finally
-        {
-            semaphore.Release();
-        }
     }
 
     public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
@@ -194,5 +184,10 @@ public class DownloadingNntpClient : WrappingNntpClient
         _configManager.OnConfigChanged -= OnConfigChanged;
         base.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private readonly struct DownloadPermit(PrioritizedSemaphore? semaphore)
+    {
+        public void Release() => semaphore?.Release();
     }
 }

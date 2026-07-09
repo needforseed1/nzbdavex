@@ -7,6 +7,9 @@ namespace UsenetSharp.Clients;
 
 public partial class UsenetClient
 {
+    private const int StreamingPipePauseThreshold = 64 * 1024;
+    private const int StreamingPipeResumeThreshold = 32 * 1024;
+
     public Task<UsenetArticleResponse> ArticleAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         return ArticleAsync(segmentId, null, cancellationToken);
@@ -51,8 +54,9 @@ public partial class UsenetClient
 
                 // Create a pipe for streaming the body data
                 var pipe = new Pipe(new PipeOptions(
-                    pauseWriterThreshold: long.MaxValue,
-                    resumeWriterThreshold: long.MaxValue - 1
+                    pauseWriterThreshold: StreamingPipePauseThreshold,
+                    resumeWriterThreshold: StreamingPipeResumeThreshold,
+                    useSynchronizationContext: false
                 ));
 
                 // Start background task to read the body and write to pipe

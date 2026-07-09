@@ -154,8 +154,11 @@ public class QueueItemProcessor(
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
-        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files}",
-            queueItem.Id, queueItem.JobName, nzbFiles.Count);
+        var prepConnections = Math.Min(nzbFiles.Count, configManager.GetMaxQueueConnections());
+        var queuedMs = Math.Max(0, (long)(DateTime.Now - queueItem.CreatedAt).TotalMilliseconds);
+        Log.Information(
+            "queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files} connections={Connections} queuedMs={QueuedMs}",
+            queueItem.Id, queueItem.JobName, nzbFiles.Count, prepConnections, queuedMs);
         var segments = await FetchFirstSegmentsStep.FetchFirstSegments(
             nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
@@ -203,10 +206,76 @@ public class QueueItemProcessor(
             .ToMultiProgress(fileProcessors.Count);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors start processors={Processors}",
             queueItem.Id, queueItem.JobName, fileProcessors.Count);
-        var fileProcessingResultsAll = await fileProcessors
+        var fileProcessingTask = fileProcessors
             .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
             .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
-            .GetAllAsync(ct).ConfigureAwait(false);
+            .GetAllAsync(ct);
+
+        // Step 3 can overlap the small per-file processor tail. Lazy RAR mounting
+        // often leaves only a handful of processors, which otherwise creates a
+        // visible connection-activity trough before the bulk STAT pass starts.
+        var checkedFullHealth = false;
+        var healthArticleCount = 0;
+        Task? healthCheckTask = null;
+        Stopwatch? healthTimer = null;
+        DeferredProgress? deferredHealthProgress = null;
+        using var healthCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
+        if (healthCheckCategories.Contains(queueItem.Category.ToLower()))
+        {
+            var articlesToCheck = fileInfos
+                .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
+                .SelectMany(x => x.NzbFile.GetSegmentIds())
+                .ToList();
+            healthArticleCount = articlesToCheck.Count;
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} overlap=processors",
+                queueItem.Id, queueItem.JobName, articlesToCheck.Count);
+            deferredHealthProgress = new DeferredProgress(progress
+                .Offset(100)
+                .ToPercentage(articlesToCheck.Count));
+            var healthCheckConcurrency = configManager
+                .GetUsenetProviderConfig()
+                .TotalStatCheckConnections;
+            var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
+            var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health mode={Mode} depth={Depth} lanes={Lanes}",
+                queueItem.Id, queueItem.JobName,
+                configManager.IsHealthPipeliningEnabled() ? "pipelined-stat" : "parallel-stat",
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
+            healthTimer = Stopwatch.StartNew();
+            healthCheckTask = configManager.IsHealthPipeliningEnabled()
+                ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
+                    healthPipelineLanes, deferredHealthProgress, healthCts.Token)
+                : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
+                    deferredHealthProgress, healthCts.Token);
+        }
+
+        List<BaseProcessor.Result?> fileProcessingResultsAll;
+        try
+        {
+            fileProcessingResultsAll = await fileProcessingTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            await healthCts.CancelAsync().ConfigureAwait(false);
+            if (healthCheckTask is not null)
+            {
+                try
+                {
+                    await healthCheckTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Preserve the processor exception that caused the cancellation.
+                }
+            }
+
+            throw;
+        }
+
         var fileProcessingResults = fileProcessingResultsAll
             .Where(x => x is not null)
             .Select(x => x!)
@@ -217,52 +286,33 @@ public class QueueItemProcessor(
             queueItem.Id, queueItem.JobName, msProcessors, fileProcessingResults.Count);
         stepTimer.Restart();
 
-        // step 3 -- Optionally check full article existence
-        var checkedFullHealth = false;
-        var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
-        if (healthCheckCategories.Contains(queueItem.Category.ToLower()))
+        // Do not let overlapped health reports move the queue progress into the
+        // health range before the processor phase has reached 100%.
+        deferredHealthProgress?.Enable();
+        var healthWaitTimer = Stopwatch.StartNew();
+        if (healthCheckTask is not null)
         {
-            var articlesToCheck = fileInfos
-                .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
-                .SelectMany(x => x.NzbFile.GetSegmentIds())
-                .ToList();
-            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles}",
-                queueItem.Id, queueItem.JobName, articlesToCheck.Count);
-            var part3Progress = progress
-                .Offset(100)
-                .ToPercentage(articlesToCheck.Count);
-            var healthCheckConcurrency = configManager
-                .GetUsenetProviderConfig()
-                .TotalPooledConnections;
-            var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
-            var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
-            Log.Information(
-                "queue-stage nzo={NzoId} job={JobName} stage=health mode={Mode} depth={Depth} lanes={Lanes}",
-                queueItem.Id, queueItem.JobName,
-                configManager.IsHealthPipeliningEnabled() ? "pipelined-stat" : "parallel-stat",
-                configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
-                configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
-            if (configManager.IsHealthPipeliningEnabled())
-                await usenetClient
-                    .CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
-                        healthPipelineLanes, part3Progress, ct)
-                    .ConfigureAwait(false);
-            else
-                await usenetClient
-                    .CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency, part3Progress, ct)
-                    .ConfigureAwait(false);
+            await healthCheckTask.ConfigureAwait(false);
             checkedFullHealth = true;
         }
-        var msHealth = stepTimer.ElapsedMilliseconds;
+        var msHealthWait = healthWaitTimer.ElapsedMilliseconds;
+        var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
         if (checkedFullHealth)
-            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=health done ms={ElapsedMs}",
-                queueItem.Id, queueItem.JobName, msHealth);
+        {
+            var statRate = msHealth > 0
+                ? (int)Math.Round(healthArticleCount * 1000d / msHealth)
+                : healthArticleCount;
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health done ms={ElapsedMs} waitMs={WaitMs} " +
+                "rate={StatRate}stat/s",
+                queueItem.Id, queueItem.JobName, msHealth, msHealthWait, statRate);
+        }
         stepTimer.Stop();
 
         Log.Information(
             "play-timing nzo={NzoId} files={Files} firstSeg={FirstSeg}ms par2={Par2}ms rar={Rar}ms " +
-            "processors={Processors}ms health={Health}ms",
-            queueItem.Id, nzbFiles.Count, msFirstSeg, msPar2, msRar, msProcessors, msHealth);
+            "processors={Processors}ms health={Health}ms healthWait={HealthWait}ms",
+            queueItem.Id, nzbFiles.Count, msFirstSeg, msPar2, msRar, msProcessors, msHealth, msHealthWait);
 
         // update the database
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database start",
@@ -545,6 +595,24 @@ public class QueueItemProcessor(
         catch (Exception e)
         {
             Log.Debug($"Could not refresh monitored downloads for Arr instance: `{arrClient.Host}`. {e.Message}");
+        }
+    }
+
+    private sealed class DeferredProgress(IProgress<int> target) : IProgress<int>
+    {
+        private int _enabled;
+        private int _latest;
+
+        public void Report(int value)
+        {
+            Interlocked.Exchange(ref _latest, value);
+            if (Volatile.Read(ref _enabled) != 0) target.Report(value);
+        }
+
+        public void Enable()
+        {
+            if (Interlocked.Exchange(ref _enabled, 1) == 0)
+                target.Report(Volatile.Read(ref _latest));
         }
     }
 }

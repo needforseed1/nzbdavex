@@ -50,10 +50,180 @@ public class ConnectionPoolTests
         Assert.Equal(0, pool.IdleConnections);
     }
 
+    [Fact]
+    public async Task ColdPoolLimitsConcurrentConnectionCreationWithoutReducingCapacity()
+    {
+        var releaseFactories = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedFactories = 0;
+        var activeFactories = 0;
+        var maxActiveFactories = 0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            64,
+            async ct =>
+            {
+                var active = Interlocked.Increment(ref activeFactories);
+                var started = Interlocked.Increment(ref startedFactories);
+                UpdateMaximum(ref maxActiveFactories, active);
+                try
+                {
+                    await releaseFactories.Task.WaitAsync(ct);
+                    return new TrackedConnection(started, () => { });
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeFactories);
+                }
+            });
+
+        var leases = Enumerable.Range(0, 64)
+            .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.Low, timeout.Token))
+            .ToArray();
+
+        while (Volatile.Read(ref startedFactories) < 8 && !timeout.IsCancellationRequested)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(8, Volatile.Read(ref maxActiveFactories));
+        releaseFactories.TrySetResult();
+        var acquired = await Task.WhenAll(leases);
+        Assert.Equal(64, pool.LiveConnections);
+        foreach (var lease in acquired) lease.Dispose();
+    }
+
+    [Fact]
+    public async Task PrewarmCreatesRequestedIdleConnections()
+    {
+        var created = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            8,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                Interlocked.Increment(ref created), () => { })),
+            minimumIdleConnections: 3);
+
+        await pool.PrewarmAsync(3);
+
+        Assert.Equal(3, created);
+        Assert.Equal(3, pool.LiveConnections);
+        Assert.Equal(3, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task ProviderLimitReducesCapacityAndReusesAcceptedConnections()
+    {
+        var attempts = 0;
+        var reducedTo = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt > 2) throw new TestConnectionLimitException();
+                return ValueTask.FromResult(new TrackedConnection(attempt, () => { }));
+            },
+            connectionCapacityRejected: e => e is TestConnectionLimitException,
+            onConnectionCapacityReduced: (capacity, _) => reducedTo = capacity);
+
+        var first = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var firstId = first.Connection.Id;
+        using var second = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await Assert.ThrowsAsync<TestConnectionLimitException>(
+            () => pool.GetConnectionLockAsync(SemaphorePriority.Low));
+        Assert.Equal(2, reducedTo);
+
+        var waiting = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await Task.Delay(20);
+        Assert.False(waiting.IsCompleted);
+        first.Dispose();
+        using var reused = await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(3, attempts);
+        Assert.Equal(firstId, reused.Connection.Id);
+    }
+
+    [Fact]
+    public async Task ProviderLimitWithNoAcceptedConnectionsFailsAllWaiters()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            8,
+            _ => throw new TestConnectionLimitException(),
+            connectionCapacityRejected: e => e is TestConnectionLimitException);
+
+        var acquisitions = Enumerable.Range(0, 8)
+            .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.Low))
+            .ToArray();
+
+        await Task.WhenAll(acquisitions.Select(async acquisition =>
+            await Assert.ThrowsAnyAsync<Exception>(() => acquisition)))
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(pool.CapacityUnavailable);
+        Assert.Equal(0, pool.AvailableConnections);
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => pool.GetConnectionLockAsync(SemaphorePriority.Low)).WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task CreationWaitersReuseConnectionsReturnedDuringLaterHandshakes()
+    {
+        var attempts = 0;
+        var releaseLaterHandshakes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            17,
+            async ct =>
+            {
+                var attempt = Interlocked.Increment(ref attempts);
+                if (attempt > 8) await releaseLaterHandshakes.Task.WaitAsync(ct);
+                return new TrackedConnection(attempt, () => { });
+            });
+
+        var acquisitions = Enumerable.Range(0, 17)
+            .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.Low, timeout.Token))
+            .ToArray();
+
+        while (Volatile.Read(ref attempts) < 16)
+            await Task.Delay(5, timeout.Token);
+        var completedBefore = acquisitions.Where(x => x.IsCompletedSuccessfully).ToHashSet();
+        Assert.Equal(8, completedBefore.Count);
+        var returnedTask = completedBefore.First();
+        var returned = await returnedTask;
+        var returnedId = returned.Connection.Id;
+        returned.Dispose();
+
+        while (acquisitions.Count(x => x.IsCompletedSuccessfully) == completedBefore.Count)
+            await Task.Delay(5, timeout.Token);
+        var reusedTask = acquisitions.First(x => x.IsCompletedSuccessfully && !completedBefore.Contains(x));
+        var reused = await reusedTask;
+        Assert.Equal(returnedId, reused.Connection.Id);
+        Assert.Equal(16, Volatile.Read(ref attempts));
+
+        reused.Dispose();
+        releaseLaterHandshakes.TrySetResult();
+        var all = await Task.WhenAll(acquisitions);
+        for (var i = 0; i < acquisitions.Length; i++)
+            if (acquisitions[i] != returnedTask && acquisitions[i] != reusedTask)
+                all[i].Dispose();
+    }
+
+    private static void UpdateMaximum(ref int maximum, int value)
+    {
+        var observed = Volatile.Read(ref maximum);
+        while (value > observed)
+        {
+            var previous = Interlocked.CompareExchange(ref maximum, value, observed);
+            if (previous == observed) return;
+            observed = previous;
+        }
+    }
+
     private sealed class TrackedConnection(int id, Action onDispose) : IDisposable
     {
         public int Id { get; } = id;
         public bool Healthy { get; set; } = true;
         public void Dispose() => onDispose();
+    }
+
+    private sealed class TestConnectionLimitException : Exception
+    {
     }
 }

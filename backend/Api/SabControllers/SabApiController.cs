@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using System.Diagnostics;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Api.SabControllers.AddFile;
 using NzbWebDAV.Api.SabControllers.AddUrl;
@@ -17,6 +18,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
+using Serilog;
 
 namespace NzbWebDAV.Api.SabControllers;
 
@@ -35,10 +37,27 @@ public class SabApiController(
     [HttpPost]
     public async Task<IActionResult> HandleApiRequests()
     {
+        var requestTimer = Stopwatch.StartNew();
+        var queryMode = HttpContext.GetQueryParam("mode");
+        var isMultipartUpload = HttpContext.Request.ContentType?.StartsWith(
+            "multipart/form-data", StringComparison.OrdinalIgnoreCase) == true;
+        var isIntake = queryMode is "addfile" or "addurl" || isMultipartUpload;
+        if (isIntake)
+            Log.Information(
+                "queue-intake request stage=received mode={Mode} contentLength={ContentLength}",
+                queryMode ?? "form", HttpContext.Request.ContentLength);
+
         try
         {
             var controller = GetController();
-            return await controller.HandleRequest().ConfigureAwait(false);
+            if (isIntake)
+                Log.Information("queue-intake request stage=routed mode={Mode} ms={ElapsedMs}",
+                    queryMode ?? "form", requestTimer.ElapsedMilliseconds);
+            var result = await controller.HandleRequest().ConfigureAwait(false);
+            if (isIntake)
+                Log.Information("queue-intake request stage=done mode={Mode} ms={ElapsedMs}",
+                    queryMode ?? "form", requestTimer.ElapsedMilliseconds);
+            return result;
         }
         catch (BadHttpRequestException e)
         {

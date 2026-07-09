@@ -634,8 +634,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         </label>
                     </div>
                     <div className={styles["form-hint"]}>
-                        Queue imports, preflight and health checks will fan out across eligible Pool Connections providers by open capacity.
-                        Backup providers remain rescue-only, and playback streams keep the normal fastest-provider routing.
+                        Queue imports and preflight will fan out across eligible Pool Connections providers by open capacity.
+                        Backup &amp; Health Checks providers always join bulk STAT health checks; playback keeps fastest-provider routing.
                     </div>
                 </div>
             </div>
@@ -752,7 +752,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.lanes": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Parallel pipelined STAT connections for article health checks (1–64). 64 is the default; lower it if a provider throttles checks.
+                        Parallel pipelined STAT connections for article health checks. 64 is the default; raise it to use more provider connections or lower it if a provider throttles checks.
                     </div>
                 </div>
             </div>

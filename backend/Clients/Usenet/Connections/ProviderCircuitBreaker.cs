@@ -65,12 +65,17 @@ public class ProviderCircuitBreaker
             _probeInFlight = false;
     }
 
-    public void RecordSuccess()
+    public void RecordSuccess(bool halfOpenProbe)
     {
         lock (_lock)
         {
+            // Requests admitted before another request tripped the breaker may
+            // still complete successfully. They must not reopen the provider;
+            // only the deliberately admitted half-open probe can do that.
+            if (_trippedUntilMs > 0 && !halfOpenProbe) return;
+
             if (_consecutiveFailures > 0 || _trippedUntilMs > 0)
-                Log.Information("Provider {Provider} recovered — circuit breaker reset.", _providerName);
+                Log.Information("Provider {Provider} recovered - circuit breaker reset.", _providerName);
 
             _consecutiveFailures = 0;
             _trippedUntilMs = 0;
@@ -79,10 +84,15 @@ public class ProviderCircuitBreaker
         }
     }
 
-    public void RecordFailure()
+    public void RecordFailure(bool halfOpenProbe = false)
     {
         lock (_lock)
         {
+            // Ignore the tail of a concurrent failure burst after the breaker
+            // has opened. Extending the cooldown is reserved for a failed
+            // half-open probe after the current cooldown has elapsed.
+            if (_trippedUntilMs > 0 && !halfOpenProbe) return;
+
             _consecutiveFailures++;
             _probeInFlight = false;
 

@@ -367,6 +367,47 @@ public class MultiProviderNntpClient(
         }
     }
 
+    private List<MultiConnectionNntpClient> SelectOrderedProvidersForPipelinedStat(
+        CancellationToken cancellationToken,
+        out MultiConnectionNntpClient? reserved)
+    {
+        lock (_selectLock)
+        {
+            var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
+            var enabled = providers
+                .Where(x => x.ProviderType != ProviderType.Disabled)
+                .Where(x => priority != SemaphorePriority.High || !x.PrepOnly)
+                .Where(x => !IsOverLimit(x))
+                .ToList();
+            var healthy = enabled.Where(x => !x.IsTripped).ToList();
+            var pool = healthy.Count > 0 ? healthy : enabled;
+
+            // STAT transfers no article bodies, so spread health-eligible traffic by
+            // normalized occupancy. Pending reservations prevent a burst of lanes
+            // from all selecting the same nominally-fast provider before its sockets
+            // have finished connecting. BackupOnly providers remain rescue-only.
+            var primary = pool
+                .Where(x => x.ProviderType is ProviderType.Pooled or ProviderType.BackupAndStats)
+                .OrderBy(PrepSpreadScore)
+                .ThenBy(EffectivePriority)
+                .ThenBy(EstimatedDeliveryScore)
+                .ThenByDescending(GetRemainingBytes)
+                .ToList();
+            var primarySet = primary.ToHashSet();
+            var fallback = pool
+                .Where(x => !primarySet.Contains(x))
+                .OrderBy(x => x.ProviderType)
+                .ThenBy(EffectivePriority)
+                .ThenBy(EstimatedDeliveryScore)
+                .ThenByDescending(GetRemainingBytes);
+            var ordered = primary.Concat(fallback).ToList();
+
+            reserved = ordered.Count > 0 ? ordered[0] : null;
+            reserved?.ReservePending();
+            return ordered;
+        }
+    }
+
     private static int EffectivePriority(MultiConnectionNntpClient provider)
     {
         const int saturationDemotion = 1 << 20;
@@ -423,68 +464,99 @@ public class MultiProviderNntpClient(
         for (var offset = 0; offset < segmentIds.Count;)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
+            var orderedProviders = SelectOrderedProvidersForPipelinedStat(cancellationToken, out var reserved);
             using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
             var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
-            if (primary == null) yield break;
+            if (primary == null) throw new InvalidOperationException("There are no usenet providers configured.");
 
             var effectiveDepth = ResolveDepth(primary, depth);
             var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
             var chunk = Slice(segmentIds, offset, chunkSize);
-            var nextIndex = 0;
-            var rescueFrom = chunk.Count;
-
-            await using (var enumerator = primary
-                             .StatsPipelinedAsync(chunk, effectiveDepth, cancellationToken)
-                             .GetAsyncEnumerator(cancellationToken))
-            {
-                while (nextIndex < chunk.Count)
-                {
-                    PipelinedStatResult result;
-                    try
-                    {
-                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
-                        result = enumerator.Current;
-                    }
-                    catch (Exception e) when (!e.IsCancellationException())
-                    {
-                        Log.Debug(e, "Pipelined STAT chunk failed on primary provider {Provider}; rescuing remaining segments.",
-                            primary.Host);
-                        rescueFrom = nextIndex;
-                        break;
-                    }
-
-                    if (result.Exists)
-                    {
-                        nextIndex++;
-                        yield return result;
-                        continue;
-                    }
-
-                    // Leave the batch before rescuing. The batch owns a pool lease and
-                    // may have unread responses in flight, so attempting STAT here can
-                    // wait forever behind that same lease when the pool is saturated.
-                    rescueFrom = nextIndex;
-                    break;
-                }
-
-                if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
-                    rescueFrom = nextIndex;
-            }
-
-            for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
-            {
-                var segmentId = chunk[rescueIndex];
-                var rescued = await StatAsync(segmentId, cancellationToken).ConfigureAwait(false);
-                yield return new PipelinedStatResult
-                {
-                    SegmentId = segmentId,
-                    Exists = rescued.ResponseType == UsenetResponseType.ArticleExists,
-                };
-            }
+            var results = await ResolvePipelinedStatBatchAsync(
+                chunk, orderedProviders, depth, cancellationToken).ConfigureAwait(false);
+            foreach (var result in results)
+                yield return result;
 
             offset += chunk.Count;
         }
+    }
+
+    private static async Task<IReadOnlyList<PipelinedStatResult>> ResolvePipelinedStatBatchAsync(
+        IReadOnlyList<string> segmentIds,
+        IReadOnlyList<MultiConnectionNntpClient> orderedProviders,
+        int fallbackDepth,
+        CancellationToken cancellationToken)
+    {
+        var resolved = new PipelinedStatResult?[segmentIds.Count];
+        var pending = Enumerable.Range(0, segmentIds.Count).ToList();
+        ExceptionDispatchInfo? lastException = null;
+        var lastAttemptFailed = false;
+
+        foreach (var provider in orderedProviders)
+        {
+            if (pending.Count == 0) break;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var attempted = pending;
+            var batch = attempted.Select(index => segmentIds[index]).ToArray();
+            var stillPending = new List<int>(attempted.Count);
+            var received = 0;
+            lastAttemptFailed = false;
+            try
+            {
+                var providerDepth = ResolveDepth(provider, fallbackDepth);
+                await foreach (var result in provider.StatsPipelinedAsync(batch, providerDepth, cancellationToken)
+                                   .WithCancellation(cancellationToken).ConfigureAwait(false))
+                {
+                    if (received >= attempted.Count)
+                        throw new InvalidDataException(
+                            $"Provider {provider.Host} returned too many pipelined STAT responses.");
+
+                    var resultIndex = attempted[received];
+                    var expectedSegmentId = segmentIds[resultIndex];
+                    if (!string.Equals(result.SegmentId, expectedSegmentId, StringComparison.Ordinal))
+                        throw new InvalidDataException(
+                            $"Provider {provider.Host} returned an out-of-order pipelined STAT response.");
+
+                    resolved[resultIndex] = result;
+                    if (!result.Exists) stillPending.Add(resultIndex);
+                    received++;
+                }
+
+                if (received != attempted.Count)
+                    throw new IOException(
+                        $"Provider {provider.Host} ended a pipelined STAT batch after {received} of {attempted.Count} responses.");
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                lastAttemptFailed = true;
+                lastException = ExceptionDispatchInfo.Capture(e);
+                for (var i = received; i < attempted.Count; i++)
+                    stillPending.Add(attempted[i]);
+                Log.Debug(e,
+                    "Pipelined STAT batch failed on provider {Provider}; retrying {Count} unresolved segments as a batch.",
+                    provider.Host, stillPending.Count);
+            }
+
+            pending = stillPending;
+        }
+
+        if (pending.Count > 0 && lastAttemptFailed)
+        {
+            lastException?.Throw();
+            throw new IOException("Pipelined STAT batch failed without a provider error.");
+        }
+
+        for (var i = 0; i < resolved.Length; i++)
+        {
+            resolved[i] ??= new PipelinedStatResult
+            {
+                SegmentId = segmentIds[i],
+                Exists = false,
+            };
+        }
+
+        return resolved!;
     }
 
     public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(

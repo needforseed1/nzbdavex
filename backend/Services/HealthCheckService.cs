@@ -67,7 +67,7 @@ public class HealthCheckService : BackgroundService
                 }
 
                 // get concurrency
-                var concurrency = _configManager.GetUsenetProviderConfig().TotalPooledConnections;
+                var concurrency = _configManager.GetUsenetProviderConfig().TotalStatCheckConnections;
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
                 // get the davItem to health-check
@@ -142,7 +142,16 @@ public class HealthCheckService : BackgroundService
 
             // perform health check
             var progress = progressHook.ToPercentage(segments.Count);
-            await _usenetClient.CheckAllSegmentsAsync(segments, concurrency, progress, ct).ConfigureAwait(false);
+            if (_configManager.IsHealthPipeliningEnabled())
+            {
+                var lanes = Math.Min(concurrency, _configManager.GetHealthPipeliningLanes());
+                await _usenetClient.CheckAllSegmentsPipelinedAsync(
+                    segments, _configManager.GetHealthPipeliningDepth(), lanes, progress, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await _usenetClient.CheckAllSegmentsAsync(segments, concurrency, progress, ct).ConfigureAwait(false);
+            }
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
 

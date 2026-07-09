@@ -7,34 +7,63 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class HealthPipeliningTests
 {
-    [Fact]
-    public async Task ConfiguredLanesAreIndependentOfPipelineDepth()
+    [Theory]
+    [InlineData(64)]
+    [InlineData(96)]
+    public async Task ConfiguredLanesAreIndependentOfPipelineDepth(int lanes)
     {
         var client = new LaneCountingClient();
         var segments = Enumerable.Range(0, 352).Select(x => $"segment-{x}").ToArray();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
         var check = client.CheckAllSegmentsPipelinedAsync(
-            segments, depth: 32, fallbackConcurrency: 64, progress: null, timeout.Token);
+            segments, depth: 32, fallbackConcurrency: lanes, progress: null, timeout.Token);
 
-        while (client.StartedLanes < 64 && !timeout.IsCancellationRequested)
+        while (client.StartedLanes < lanes && !timeout.IsCancellationRequested)
             await Task.Delay(10, timeout.Token);
 
         client.ReleaseLanes();
         await check;
 
-        Assert.Equal(64, client.MaxConcurrentLanes);
+        Assert.Equal(lanes, client.MaxConcurrentLanes);
+    }
+
+    [Fact]
+    public async Task CompletedLanesStealWorkFromBlockedLane()
+    {
+        var client = new LaneCountingClient(blockFirstLaneOnly: true);
+        var segments = Enumerable.Range(0, 80).Select(x => $"segment-{x}").ToArray();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        var check = client.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 4, progress: null, timeout.Token);
+
+        while (client.ProcessedSegments < 72 && !timeout.IsCancellationRequested)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(72, client.ProcessedSegments);
+        client.ReleaseLanes();
+        await check;
+        Assert.Equal(80, client.ProcessedSegments);
     }
 
     private sealed class LaneCountingClient : NntpClient
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly bool _blockFirstLaneOnly;
         private int _activeLanes;
         private int _startedLanes;
         private int _maxConcurrentLanes;
+        private int _processedSegments;
+
+        public LaneCountingClient(bool blockFirstLaneOnly = false)
+        {
+            _blockFirstLaneOnly = blockFirstLaneOnly;
+        }
 
         public int StartedLanes => Volatile.Read(ref _startedLanes);
         public int MaxConcurrentLanes => Volatile.Read(ref _maxConcurrentLanes);
+        public int ProcessedSegments => Volatile.Read(ref _processedSegments);
 
         public void ReleaseLanes() => _release.TrySetResult();
 
@@ -44,13 +73,17 @@ public class HealthPipeliningTests
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var active = Interlocked.Increment(ref _activeLanes);
-            Interlocked.Increment(ref _startedLanes);
+            var started = Interlocked.Increment(ref _startedLanes);
             UpdateMaximum(active);
             try
             {
-                await _release.Task.WaitAsync(cancellationToken);
+                if (!_blockFirstLaneOnly || started == 1)
+                    await _release.Task.WaitAsync(cancellationToken);
                 foreach (var segmentId in segmentIds)
+                {
+                    Interlocked.Increment(ref _processedSegments);
                     yield return new PipelinedStatResult { SegmentId = segmentId, Exists = true };
+                }
             }
             finally
             {

@@ -1,7 +1,11 @@
 ﻿using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Config;
+using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
+using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 using NzbWebDAV.Services.Metrics;
+using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
 
@@ -9,6 +13,8 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public class UsenetStreamingClient : WrappingNntpClient
 {
+    private const int WarmConnectionsPerProvider = 16;
+
     public UsenetStreamingClient(
         ConfigManager configManager,
         WebsocketManager websocketManager,
@@ -92,11 +98,18 @@ public class UsenetStreamingClient : WrappingNntpClient
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
     {
+        var keepWarm = connectionDetails.Type is ProviderType.Pooled or ProviderType.BackupAndStats
+            ? Math.Min(connectionDetails.MaxConnections, WarmConnectionsPerProvider)
+            : 0;
         var connectionPool = CreateNewConnectionPool(
             maxConnections: connectionDetails.MaxConnections,
             connectionFactory: ct => CreateNewConnection(connectionDetails, ct),
-            onConnectionPoolChanged
+            minimumIdleConnections: keepWarm,
+            providerHost: connectionDetails.Host,
+            onConnectionPoolChanged: onConnectionPoolChanged
         );
+        if (keepWarm > 0)
+            _ = PrewarmConnectionPoolAsync(connectionPool, keepWarm, connectionDetails.Host);
         var circuitBreaker = new ProviderCircuitBreaker(connectionDetails.Host);
         return new MultiConnectionNntpClient(
             connectionPool,
@@ -116,17 +129,48 @@ public class UsenetStreamingClient : WrappingNntpClient
     (
         int maxConnections,
         Func<CancellationToken, ValueTask<INntpClient>> connectionFactory,
+        int minimumIdleConnections,
+        string providerHost,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
     {
         var connectionPool = new ConnectionPool<INntpClient>(
             maxConnections,
             connectionFactory,
-            connectionValidator: ValidateConnection);
+            connectionValidator: ValidateConnection,
+            minimumIdleConnections: minimumIdleConnections,
+            connectionCapacityRejected: IsConnectionCapacityRejected,
+            onConnectionCapacityReduced: (effectiveMax, _) => Log.Warning(
+                "NNTP provider {Provider} rejected additional connections; limiting this pool to {EffectiveMax} " +
+                "accepted connections until provider settings are reloaded.", providerHost, effectiveMax));
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;
         var args = new ConnectionPoolStats.ConnectionPoolChangedEventArgs(0, 0, maxConnections);
         onConnectionPoolChanged(connectionPool, args);
         return connectionPool;
+    }
+
+    private static bool IsConnectionCapacityRejected(Exception exception)
+    {
+        return exception.TryGetCausingException(out UsenetConnectionLimitException _);
+    }
+
+    private static async Task PrewarmConnectionPoolAsync(
+        ConnectionPool<INntpClient> connectionPool,
+        int count,
+        string host)
+    {
+        try
+        {
+            await connectionPool.PrewarmAsync(count, SigtermUtil.GetCancellationToken()).ConfigureAwait(false);
+            Log.Information("Prewarmed {Count} NNTP connections for {Provider}.", count, host);
+        }
+        catch (OperationCanceledException) when (SigtermUtil.GetCancellationToken().IsCancellationRequested)
+        {
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Could not prewarm NNTP connections for {Provider}.", host);
+        }
     }
 
     public static async ValueTask<INntpClient> CreateNewConnection

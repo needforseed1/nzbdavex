@@ -229,7 +229,8 @@ public class ConfigManager
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.lanes"));
         if (configured is null || !int.TryParse(configured, out var value)) return 64;
-        return Math.Clamp(value, 1, 64);
+        var availableConnections = Math.Max(1, GetUsenetProviderConfig().TotalStatCheckConnections);
+        return Math.Clamp(value, 1, availableConnections);
     }
 
     public int GetArticleBufferSize()
