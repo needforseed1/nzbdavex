@@ -662,7 +662,27 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     </div>
                     <div className={styles["form-hint"]}>
                         Sends multiple article requests per connection without waiting for each response.
-                        Speeds up queue imports and health checks, especially on high-latency providers.
+                        Speeds up queue imports, especially on high-latency providers.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="health-pipelining-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.pipelining.health.enabled"] !== "false"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.pipelining.health.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="health-pipelining-enabled" className={styles["form-checkbox-label"]}>
+                            Enable health-check STAT pipelining
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Uses pipelined NNTP STAT checks for SAB article health checks. STAT responses are tiny, so this is the safest pipelining mode.
                     </div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -701,6 +721,38 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <div className={styles["form-hint"]}>
                         Requests kept in flight per connection (1–64). 8 is a good default. Each
                         provider can override this in its own settings.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <label htmlFor="health-pipelining-depth" className={styles["form-label"]}>
+                        Health-check pipeline depth
+                    </label>
+                    <input
+                        type="text"
+                        id="health-pipelining-depth"
+                        className={`${styles["form-input"]} ${config["usenet.pipelining.health.depth"] !== undefined && config["usenet.pipelining.health.depth"] !== "" && !isPositiveInteger(config["usenet.pipelining.health.depth"]) ? styles.error : ""}`}
+                        placeholder="32"
+                        value={config["usenet.pipelining.health.depth"] ?? ""}
+                        onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.depth": e.target.value })}
+                    />
+                    <div className={styles["form-hint"]}>
+                        STAT requests kept in flight per connection for article health checks (1–64). 32 is the default.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <label htmlFor="health-pipelining-lanes" className={styles["form-label"]}>
+                        Health-check pipeline lanes
+                    </label>
+                    <input
+                        type="text"
+                        id="health-pipelining-lanes"
+                        className={`${styles["form-input"]} ${config["usenet.pipelining.health.lanes"] !== undefined && config["usenet.pipelining.health.lanes"] !== "" && !isPositiveInteger(config["usenet.pipelining.health.lanes"]) ? styles.error : ""}`}
+                        placeholder="16"
+                        value={config["usenet.pipelining.health.lanes"] ?? ""}
+                        onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.lanes": e.target.value })}
+                    />
+                    <div className={styles["form-hint"]}>
+                        Parallel pipelined STAT connections for article health checks (1–64). Higher values can speed large NZBs but may throttle providers.
                     </div>
                 </div>
             </div>
@@ -1823,6 +1875,9 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
         || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
         || config["usenet.pipelining.queue.enabled"] !== newConfig["usenet.pipelining.queue.enabled"]
         || config["usenet.pipelining.playback.enabled"] !== newConfig["usenet.pipelining.playback.enabled"]
+        || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
+        || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]
+        || config["usenet.pipelining.health.lanes"] !== newConfig["usenet.pipelining.health.lanes"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
         || config["usenet.prep-spread.enabled"] !== newConfig["usenet.prep-spread.enabled"]

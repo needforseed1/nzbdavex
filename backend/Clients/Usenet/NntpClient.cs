@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -217,6 +218,30 @@ public abstract class NntpClient : INntpClient
         CancellationToken cancellationToken
     )
     {
+        if (segmentIds.Count == 0) return;
+        var lanes = ResolvePipelinedStatLanes(segmentIds.Count, depth, fallbackConcurrency);
+        if (lanes > 1)
+        {
+            using var childCt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var token = childCt.Token;
+            var processedCount = 0;
+
+            var laneTasks = Partition(segmentIds, lanes)
+                .Select(lane => CheckPipelinedStatLaneAsync(lane, depth, progress, childCt, token, () =>
+                    Interlocked.Increment(ref processedCount)))
+                .ToArray();
+
+            try
+            {
+                await Task.WhenAll(laneTasks).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception e) when (TryRethrowMissingArticle(e))
+            {
+                throw;
+            }
+        }
+
         var processed = 0;
         var anyMissing = false;
         await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
@@ -241,6 +266,54 @@ public abstract class NntpClient : INntpClient
                 : new Progress<int>(x => progress.Report(verifiedPrefix + x));
             await CheckAllSegmentsAsync(remaining, fallbackConcurrency, fallbackProgress, cancellationToken)
                 .ConfigureAwait(false);
+        }
+    }
+
+    private async Task CheckPipelinedStatLaneAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        IProgress<int>? progress,
+        CancellationTokenSource childCt,
+        CancellationToken cancellationToken,
+        Func<int> incrementProcessed)
+    {
+        await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            if (result.Exists)
+            {
+                progress?.Report(incrementProcessed());
+                continue;
+            }
+
+            await childCt.CancelAsync().ConfigureAwait(false);
+            throw new UsenetArticleNotFoundException(result.SegmentId);
+        }
+    }
+
+    private static int ResolvePipelinedStatLanes(int segmentCount, int depth, int fallbackConcurrency)
+    {
+        var effectiveDepth = Math.Clamp(depth, 1, 64);
+        var usefulLanes = (int)Math.Ceiling(segmentCount / (double)effectiveDepth);
+        return Math.Clamp(Math.Min(fallbackConcurrency, usefulLanes), 1, 64);
+    }
+
+    private static bool TryRethrowMissingArticle(Exception e)
+    {
+        if (!e.TryGetCausingException(out UsenetArticleNotFoundException? missing) || missing is null) return false;
+        ExceptionDispatchInfo.Capture(missing).Throw();
+        return true;
+    }
+
+    private static IEnumerable<IReadOnlyList<string>> Partition(IReadOnlyList<string> items, int partitions)
+    {
+        var chunkSize = (int)Math.Ceiling(items.Count / (double)partitions);
+        for (var offset = 0; offset < items.Count; offset += chunkSize)
+        {
+            var count = Math.Min(chunkSize, items.Count - offset);
+            var chunk = new string[count];
+            for (var i = 0; i < count; i++) chunk[i] = items[offset + i];
+            yield return chunk;
         }
     }
 }

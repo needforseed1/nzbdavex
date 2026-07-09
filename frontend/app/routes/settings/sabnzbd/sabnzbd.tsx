@@ -204,7 +204,9 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                     checked={!ensureArticleExistanceSetting.areNoneSelected}
                     onChange={e => ensureArticleExistanceSetting.onMasterCheckboxChange(e.target.checked)} />
                 <Form.Text id="ensure-article-existence-help" muted>
-                    Whether to check for the existence of all articles within an NZB during queue processing. This process may be slow.
+                    Checks required articles for important files with NNTP STAT before marking the queue item complete.
+                    This does not download, repair, hash-check, or validate media quality. If any required article is
+                    unavailable, the queue item fails so Radarr / Sonarr can try another NZB.
                 </Form.Text>
                 <MultiCheckboxInput
                     options={ensureArticleExistanceSetting.categories}

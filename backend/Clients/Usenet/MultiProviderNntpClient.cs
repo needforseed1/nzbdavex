@@ -413,16 +413,17 @@ public class MultiProviderNntpClient(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0) yield break;
-        var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
-        using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
-        var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
-        if (primary == null) yield break;
-        var effectiveDepth = ResolveDepth(primary, depth);
-        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
 
-        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
+        for (var offset = 0; offset < segmentIds.Count;)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var orderedProviders = SelectOrderedProviders(cancellationToken, out var reserved);
+            using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+            var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
+            if (primary == null) yield break;
+
+            var effectiveDepth = ResolveDepth(primary, depth);
+            var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
 
@@ -471,6 +472,8 @@ public class MultiProviderNntpClient(
                     Exists = rescued.ResponseType == UsenetResponseType.ArticleExists,
                 };
             }
+
+            offset += chunk.Count;
         }
     }
 

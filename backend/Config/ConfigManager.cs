@@ -193,6 +193,12 @@ public class ConfigManager
         return v != null && bool.Parse(v);
     }
 
+    public bool IsHealthPipeliningEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.enabled"));
+        return v == null || bool.Parse(v);
+    }
+
     public bool IsCascadeEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("usenet.cascade.enabled"));
@@ -209,6 +215,20 @@ public class ConfigManager
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.depth"));
         if (configured is null || !int.TryParse(configured, out var value)) return 8;
+        return Math.Clamp(value, 1, 64);
+    }
+
+    public int GetHealthPipeliningDepth()
+    {
+        var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.depth"));
+        if (configured is null || !int.TryParse(configured, out var value)) return 32;
+        return Math.Clamp(value, 1, 64);
+    }
+
+    public int GetHealthPipeliningLanes()
+    {
+        var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.lanes"));
+        if (configured is null || !int.TryParse(configured, out var value)) return 16;
         return Math.Clamp(value, 1, 64);
     }
 

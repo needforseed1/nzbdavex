@@ -234,10 +234,18 @@ public class QueueItemProcessor(
             var healthCheckConcurrency = configManager
                 .GetUsenetProviderConfig()
                 .TotalPooledConnections;
-            if (configManager.IsQueuePipeliningEnabled())
+            var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
+            var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health mode={Mode} depth={Depth} lanes={Lanes}",
+                queueItem.Id, queueItem.JobName,
+                configManager.IsHealthPipeliningEnabled() ? "pipelined-stat" : "parallel-stat",
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
+            if (configManager.IsHealthPipeliningEnabled())
                 await usenetClient
-                    .CheckAllSegmentsPipelinedAsync(articlesToCheck, configManager.GetPipeliningDepth(),
-                        healthCheckConcurrency, part3Progress, ct)
+                    .CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
+                        healthPipelineLanes, part3Progress, ct)
                     .ConfigureAwait(false);
             else
                 await usenetClient
