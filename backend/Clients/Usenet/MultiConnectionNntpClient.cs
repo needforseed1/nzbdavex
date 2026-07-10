@@ -34,7 +34,8 @@ public class MultiConnectionNntpClient(
     int priority,
     bool prepOnly,
     bool prepSpreadEnabled,
-    int? pipeliningDepth = null
+    int? pipeliningDepth = null,
+    int? healthPipeliningDepth = null
 ) : NntpClient
 {
     public ProviderType ProviderType { get; } = type;
@@ -44,6 +45,7 @@ public class MultiConnectionNntpClient(
     public bool PrepSpreadEnabled { get; } = prepSpreadEnabled;
 
     public int? ConfiguredPipeliningDepth { get; } = pipeliningDepth;
+    public int? ConfiguredHealthPipeliningDepth { get; } = healthPipeliningDepth;
     // null or non-positive = uncapped. Routing reads these to decide whether
     // this provider should be skipped when it has exhausted its block.
     public long? ByteLimit { get; } = byteLimit;
@@ -235,21 +237,10 @@ public class MultiConnectionNntpClient(
                 }
                 catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException _))
                 {
-                    // a 'not found' on BODY/ARTICLE may be misparsed leftover bytes from
-                    // an earlier poisoned connection; destroy and retry once on a fresh socket.
-                    if (name is "BODY" or "ARTICLE")
-                    {
-                        LogException(() => connectionLock?.Replace());
-                        LogException(() => connectionLock?.Dispose());
-                        if (retryCount > 0)
-                        {
-                            Log.Debug(e, $"Got 'article not found' on nntp {name}. Retrying once with a fresh connection.");
-                            retryCount--;
-                            continue;
-                        }
-                        LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
-                        throw;
-                    }
+                    // A completed 430/423 response leaves the NNTP command stream in
+                    // sync. Reuse the socket and let MultiProvider fail over directly;
+                    // retrying the same provider only extends prep tails and drains the
+                    // warm pool when an article is genuinely absent.
                     LogException(() => connectionLock?.Dispose());
                     LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                     throw;

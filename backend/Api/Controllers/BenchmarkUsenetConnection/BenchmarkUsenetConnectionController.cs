@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Models;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
 using NzbWebDAV.Services.Benchmark;
@@ -19,6 +20,15 @@ public class BenchmarkUsenetConnectionController(
 {
     private async Task<BenchmarkUsenetConnectionResponse> BenchmarkAsync(BenchmarkUsenetConnectionRequest request)
     {
+        if (request.Type == ProviderType.HealthChecksOnly && !request.HealthOnly)
+        {
+            return new BenchmarkUsenetConnectionResponse
+            {
+                Status = false,
+                Error = "Health Checks Only providers can only run the STAT health benchmark."
+            };
+        }
+
         try
         {
             // Pause the download queue + background verifiers for the duration so
@@ -42,6 +52,7 @@ public class BenchmarkUsenetConnectionController(
                 request.Intensity,
                 request.PipeliningOnly,
                 request.StartupOnly,
+                request.HealthOnly,
                 HttpContext.RequestAborted
             ).ConfigureAwait(false);
 

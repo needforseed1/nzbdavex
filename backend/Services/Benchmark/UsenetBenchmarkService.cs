@@ -45,10 +45,16 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         BenchmarkIntensity intensity,
         bool pipeliningOnly,
         bool startupOnly,
+        bool healthOnly,
         CancellationToken ct)
     {
         var profile = BenchmarkProfile.For(intensity);
-        var result = new BenchmarkResult { PipeliningOnly = pipeliningOnly, StartupOnly = startupOnly };
+        var result = new BenchmarkResult
+        {
+            PipeliningOnly = pipeliningOnly,
+            StartupOnly = startupOnly,
+            HealthOnly = healthOnly,
+        };
         var cursor = new int[1]; // shared round-robin index into the segment pool
 
         // 1) Latency — also doubles as a connectivity/credentials check.
@@ -61,16 +67,25 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         if (pool.Count == 0)
         {
             result.ThroughputTested = false;
-            result.Warnings.Add(
-                "No downloaded articles were available to measure speed, so only latency was tested. " +
-                "Download something first, then re-run to get a connection recommendation.");
+            result.Warnings.Add(healthOnly
+                ? "No stored article ids were available for a mixed STAT benchmark. Import something first, then re-run."
+                : "No downloaded articles were available to measure speed, so only latency was tested. " +
+                  "Download something first, then re-run to get a connection recommendation.");
             Report("done", "Done — latency only.", 100, result, null);
             return result;
         }
 
         result.ThroughputTested = true;
-        if (pool.Count < 200)
+        if (!healthOnly && pool.Count < 200)
             result.Warnings.Add("Only a small pool of test articles was available, so speed numbers may be a little noisy.");
+
+        if (healthOnly)
+        {
+            result.HealthPipelining = await MeasureHealthPipeliningAsync(
+                provider, pool, profile, result, ct).ConfigureAwait(false);
+            Report("done", "Done.", 100, result, null);
+            return result;
+        }
 
         if (startupOnly)
         {
@@ -247,6 +262,177 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
         return result;
     }
+
+    private async Task<BenchmarkHealthPipelining> MeasureHealthPipeliningAsync(
+        UsenetProviderConfig.ConnectionDetails provider,
+        IReadOnlyList<string> pool,
+        BenchmarkProfile profile,
+        BenchmarkResult benchmarkResult,
+        CancellationToken ct)
+    {
+        var realCount = Math.Min(profile.HealthStatSegments, pool.Count);
+        var knownMissingCount = Math.Clamp(Math.Max(1, realCount / 8), 8, 32);
+        var knownMissing = Enumerable.Range(0, knownMissingCount)
+            .Select(i => $"nzbdav-health-benchmark-{Guid.NewGuid():N}-{i}@invalid.local")
+            .ToArray();
+        var knownMissingSet = knownMissing.ToHashSet(StringComparer.Ordinal);
+        var ids = pool.Take(realCount).Concat(knownMissing).ToList();
+        Shuffle(ids);
+
+        var result = new BenchmarkHealthPipelining
+        {
+            ArticlesPerRound = ids.Count,
+            Rounds = profile.HealthStatRounds,
+            KnownMissingArticles = knownMissingCount,
+        };
+        var samples = new List<HealthDepthSample>(profile.HealthPipelineDepths.Length);
+
+        for (var i = 0; i < profile.HealthPipelineDepths.Length; i++)
+        {
+            var depth = profile.HealthPipelineDepths[i];
+            Report("health-pipelining", $"Testing health STAT depth {depth}…",
+                ProgressPercent(20, 92, i, profile.HealthPipelineDepths.Length), benchmarkResult, null);
+            var sample = await MeasureHealthDepthAsync(
+                provider, ids, knownMissingSet, depth, profile.HealthStatRounds,
+                profile.HealthStatRoundTimeout, ct).ConfigureAwait(false);
+            samples.Add(sample);
+            result.Tested.Add(sample.Point);
+        }
+
+        // The lowest depth that completed every repeated round is the correctness
+        // reference. Faster depths must return exactly the same existence vector.
+        var reference = samples
+            .Where(x => x.Point.Reliable && x.Fingerprint is not null)
+            .OrderBy(x => x.Point.Depth)
+            .FirstOrDefault();
+        if (reference is not null)
+        {
+            foreach (var sample in samples.Where(x => x.Point.Reliable && x.Fingerprint is not null))
+            {
+                if (sample.Fingerprint!.AsSpan().SequenceEqual(reference.Fingerprint!)) continue;
+                sample.Point.Reliable = false;
+                sample.Point.Failure = $"Results disagreed with reliable depth {reference.Point.Depth}.";
+            }
+        }
+
+        var recommendation = HealthPipelineRecommendation.Select(result.Tested);
+        result.Reliable = recommendation.HasValue;
+        result.RecommendedDepth = recommendation ?? 0;
+        if (!recommendation.HasValue)
+            benchmarkResult.Warnings.Add(
+                "No STAT pipeline depth completed every round reliably. Do not enable health pipelining for this provider.");
+
+        return result;
+    }
+
+    private static async Task<HealthDepthSample> MeasureHealthDepthAsync(
+        UsenetProviderConfig.ConnectionDetails provider,
+        IReadOnlyList<string> ids,
+        IReadOnlySet<string> knownMissing,
+        int depth,
+        int requiredRounds,
+        TimeSpan roundTimeout,
+        CancellationToken ct)
+    {
+        var point = new BenchmarkHealthPipeliningPoint
+        {
+            Depth = depth,
+            RequiredRounds = requiredRounds,
+        };
+        bool[]? fingerprint = null;
+        var totalElapsedMs = 0d;
+        INntpClient? connection = null;
+        try
+        {
+            connection = await TryOpenConnectionAsync(provider, ct).ConfigureAwait(false);
+            if (connection is null)
+            {
+                point.Errors = 1;
+                point.Failure = "Could not open a benchmark connection.";
+                return new HealthDepthSample(point, null);
+            }
+
+            for (var round = 0; round < requiredRounds; round++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var ordered = Rotate(ids, round * Math.Max(1, ids.Count / requiredRounds));
+                var byId = new Dictionary<string, bool>(ids.Count, StringComparer.Ordinal);
+                using var roundCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                roundCts.CancelAfter(roundTimeout);
+                var stopwatch = Stopwatch.StartNew();
+                point.Requests += ordered.Count;
+                try
+                {
+                    var responseIndex = 0;
+                    await foreach (var response in connection.StatsPipelinedAsync(ordered, depth, roundCts.Token)
+                                       .WithCancellation(roundCts.Token).ConfigureAwait(false))
+                    {
+                        if (responseIndex >= ordered.Count ||
+                            !string.Equals(response.SegmentId, ordered[responseIndex], StringComparison.Ordinal))
+                            throw new InvalidDataException("Provider returned an out-of-order STAT response.");
+                        if (!byId.TryAdd(response.SegmentId, response.Exists))
+                            throw new InvalidDataException("Provider returned a duplicate STAT response.");
+
+                        responseIndex++;
+                        point.Responses++;
+                        if (response.Exists) point.Found++;
+                        else point.Missing++;
+                    }
+
+                    if (responseIndex != ordered.Count)
+                        throw new InvalidDataException(
+                            $"Provider returned {responseIndex} of {ordered.Count} STAT responses.");
+                    if (knownMissing.Any(id => byId.GetValueOrDefault(id)))
+                        throw new InvalidDataException("Provider reported a synthetic missing article as present.");
+
+                    var roundFingerprint = ids.Select(id => byId[id]).ToArray();
+                    if (fingerprint is null)
+                        fingerprint = roundFingerprint;
+                    else if (!roundFingerprint.AsSpan().SequenceEqual(fingerprint))
+                        throw new InvalidDataException("Repeated STAT rounds returned inconsistent results.");
+
+                    point.CompletedRounds++;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && roundCts.IsCancellationRequested)
+                {
+                    point.Timeouts++;
+                    point.Failure = $"Round exceeded {roundTimeout.TotalSeconds:0.#} seconds.";
+                    break;
+                }
+                catch (Exception e) when (!e.IsCancellationException())
+                {
+                    point.Errors++;
+                    point.Failure = e.Message;
+                    Log.Debug(e, "Health STAT benchmark failed for {Provider} at depth {Depth}.",
+                        provider.Host, depth);
+                    break;
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    totalElapsedMs += stopwatch.Elapsed.TotalMilliseconds;
+                }
+            }
+        }
+        finally
+        {
+            if (connection is not null) SafeDispose(connection);
+        }
+
+        point.AverageMs = point.CompletedRounds == 0
+            ? Math.Round(totalElapsedMs, 1)
+            : Math.Round(totalElapsedMs / point.CompletedRounds, 1);
+        point.StatsPerSecond = totalElapsedMs <= 0
+            ? 0
+            : Math.Round(point.Responses * 1000d / totalElapsedMs, 1);
+        point.Reliable = point.CompletedRounds == requiredRounds
+                         && point.Timeouts == 0
+                         && point.Errors == 0
+                         && fingerprint is not null;
+        return new HealthDepthSample(point, fingerprint);
+    }
+
+    private sealed record HealthDepthSample(BenchmarkHealthPipeliningPoint Point, bool[]? Fingerprint);
 
     private async Task<BenchmarkStartup> MeasureStartupAsync(
         UsenetProviderConfig.ConnectionDetails provider, int configuredMaxConnections, IReadOnlyList<string> pool,
@@ -666,6 +852,24 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         var batch = new List<string>(count);
         for (var i = 0; i < count; i++) batch.Add(NextId(pool, cursor));
         return batch;
+    }
+
+    private static List<string> Rotate(IReadOnlyList<string> items, int offset)
+    {
+        if (items.Count == 0) return [];
+        offset = ((offset % items.Count) + items.Count) % items.Count;
+        var rotated = new List<string>(items.Count);
+        for (var i = 0; i < items.Count; i++) rotated.Add(items[(i + offset) % items.Count]);
+        return rotated;
+    }
+
+    private static void Shuffle<T>(IList<T> items)
+    {
+        for (var i = items.Count - 1; i > 0; i--)
+        {
+            var j = Random.Shared.Next(i + 1);
+            (items[i], items[j]) = (items[j], items[i]);
+        }
     }
 
     private static int ProgressPercent(int start, int end, int step, int totalSteps) =>

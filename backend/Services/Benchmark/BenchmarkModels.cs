@@ -42,6 +42,18 @@ public sealed class BenchmarkProfile
     /// <summary>Number of leading articles used to approximate playback startup.</summary>
     public required int StartupSegments { get; init; }
 
+    /// <summary>Real article ids mixed with synthetic misses for each health STAT trial.</summary>
+    public required int HealthStatSegments { get; init; }
+
+    /// <summary>Repeated trials required before a health pipeline depth is considered reliable.</summary>
+    public required int HealthStatRounds { get; init; }
+
+    /// <summary>Per-round deadline. A depth that misses it is rejected rather than merely scored as slow.</summary>
+    public required TimeSpan HealthStatRoundTimeout { get; init; }
+
+    /// <summary>Pipeline depths tested against the provider using the real STAT transport.</summary>
+    public required int[] HealthPipelineDepths { get; init; }
+
     public static BenchmarkProfile For(BenchmarkIntensity intensity) => intensity switch
     {
         BenchmarkIntensity.Thorough => new BenchmarkProfile
@@ -55,6 +67,10 @@ public sealed class BenchmarkProfile
             PipelineTestConnections = 6,
             PipelineDepths = [4, 8, 16],
             StartupSegments = 12,
+            HealthStatSegments = 128,
+            HealthStatRounds = 3,
+            HealthStatRoundTimeout = TimeSpan.FromSeconds(6),
+            HealthPipelineDepths = [1, 4, 8, 16, 32, 64],
         },
         _ => new BenchmarkProfile
         {
@@ -67,6 +83,10 @@ public sealed class BenchmarkProfile
             PipelineTestConnections = 4,
             PipelineDepths = [8, 16],
             StartupSegments = 8,
+            HealthStatSegments = 64,
+            HealthStatRounds = 2,
+            HealthStatRoundTimeout = TimeSpan.FromSeconds(4),
+            HealthPipelineDepths = [1, 4, 8, 16, 32, 64],
         },
     };
 }
@@ -117,6 +137,33 @@ public sealed class BenchmarkStartupPipeliningPoint
     public double ReadyMs { get; set; }
 }
 
+public sealed class BenchmarkHealthPipeliningPoint
+{
+    public int Depth { get; set; }
+    public int CompletedRounds { get; set; }
+    public int RequiredRounds { get; set; }
+    public int Requests { get; set; }
+    public int Responses { get; set; }
+    public int Found { get; set; }
+    public int Missing { get; set; }
+    public int Timeouts { get; set; }
+    public int Errors { get; set; }
+    public double AverageMs { get; set; }
+    public double StatsPerSecond { get; set; }
+    public bool Reliable { get; set; }
+    public string? Failure { get; set; }
+}
+
+public sealed class BenchmarkHealthPipelining
+{
+    public int ArticlesPerRound { get; set; }
+    public int Rounds { get; set; }
+    public int KnownMissingArticles { get; set; }
+    public List<BenchmarkHealthPipeliningPoint> Tested { get; set; } = [];
+    public bool Reliable { get; set; }
+    public int RecommendedDepth { get; set; }
+}
+
 /// <summary>
 /// The full structured outcome of a benchmark run. Returned from the POST and
 /// mirrored (in part) over the websocket progress topic while running.
@@ -132,6 +179,9 @@ public sealed class BenchmarkResult
     /// <summary>True when the run only measured playback startup behavior.</summary>
     public bool StartupOnly { get; set; }
 
+    /// <summary>True when the run only measured health-check STAT pipelining.</summary>
+    public bool HealthOnly { get; set; }
+
     public List<BenchmarkSweepPoint> Sweep { get; set; } = [];
     public int? RecommendedConnections { get; set; }
 
@@ -140,6 +190,7 @@ public sealed class BenchmarkResult
 
     public BenchmarkPipelining? Pipelining { get; set; }
     public BenchmarkStartup? Startup { get; set; }
+    public BenchmarkHealthPipelining? HealthPipelining { get; set; }
     public long DataUsedBytes { get; set; }
     public List<string> Warnings { get; set; } = [];
 }

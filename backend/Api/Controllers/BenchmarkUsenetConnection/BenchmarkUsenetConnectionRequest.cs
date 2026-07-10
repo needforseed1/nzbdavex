@@ -24,6 +24,11 @@ public class BenchmarkUsenetConnectionRequest
     /// <summary>When true, skip throughput and measure first-buffer playback startup behavior.</summary>
     public bool StartupOnly { get; init; }
 
+    /// <summary>When true, benchmark repeated pipelined STAT health-check batches.</summary>
+    public bool HealthOnly { get; init; }
+
+    public ProviderType Type { get; init; }
+
     public BenchmarkUsenetConnectionRequest(HttpContext context)
     {
         Host = context.Request.Form["host"].FirstOrDefault()
@@ -63,6 +68,14 @@ public class BenchmarkUsenetConnectionRequest
 
         var startupOnly = context.Request.Form["startup-only"].FirstOrDefault();
         StartupOnly = bool.TryParse(startupOnly, out var so) && so;
+
+        var healthOnly = context.Request.Form["health-only"].FirstOrDefault();
+        HealthOnly = bool.TryParse(healthOnly, out var ho) && ho;
+
+        var providerType = context.Request.Form["provider-type"].FirstOrDefault();
+        Type = int.TryParse(providerType, out var pt) && Enum.IsDefined(typeof(ProviderType), pt)
+            ? (ProviderType)pt
+            : ProviderType.Pooled;
     }
 
     public UsenetProviderConfig.ConnectionDetails ToConnectionDetails()

@@ -12,7 +12,9 @@ public class UsenetProviderConfig
         .Sum());
 
     public int TotalStatCheckConnections => Math.Max(1, Providers
-        .Where(x => x.Type is ProviderType.Pooled or ProviderType.BackupAndStats)
+        .Where(x => x.Type is ProviderType.Pooled
+            or ProviderType.BackupAndStats
+            or ProviderType.HealthChecksOnly)
         .Select(x => x.MaxConnections)
         .Sum());
 
@@ -29,6 +31,10 @@ public class UsenetProviderConfig
         public int Priority { get; set; }
 
         public int? PipeliningDepth { get; set; }
+
+        // Optional STAT-only override. Kept separate because health checks can
+        // safely use much deeper pipelines than BODY/ARTICLE traffic.
+        public int? HealthPipeliningDepth { get; set; }
 
         // When true, this provider can be used for preparation work such as
         // imports, first-segment checks, fast verification and health/preflight

@@ -45,16 +45,41 @@ type BenchmarkStartup = {
     recommendPlaybackPipelining: boolean;
     recommendedDepth: number;
 };
+type BenchmarkHealthPipeliningPoint = {
+    depth: number;
+    completedRounds: number;
+    requiredRounds: number;
+    requests: number;
+    responses: number;
+    found: number;
+    missing: number;
+    timeouts: number;
+    errors: number;
+    averageMs: number;
+    statsPerSecond: number;
+    reliable: boolean;
+    failure?: string | null;
+};
+type BenchmarkHealthPipelining = {
+    articlesPerRound: number;
+    rounds: number;
+    knownMissingArticles: number;
+    tested: BenchmarkHealthPipeliningPoint[];
+    reliable: boolean;
+    recommendedDepth: number;
+};
 type BenchmarkResult = {
     latency?: BenchmarkLatency | null;
     throughputTested: boolean;
     pipeliningOnly: boolean;
     startupOnly: boolean;
+    healthOnly: boolean;
     sweep: BenchmarkSweepPoint[];
     recommendedConnections?: number | null;
     providerConnectionCap?: number | null;
     pipelining?: BenchmarkPipelining | null;
     startup?: BenchmarkStartup | null;
+    healthPipelining?: BenchmarkHealthPipelining | null;
     dataUsedBytes: number;
     warnings: string[];
 };
@@ -67,6 +92,7 @@ type BenchmarkProgress = {
     sweep: BenchmarkSweepPoint[];
 };
 type BenchmarkIntensity = "quick" | "thorough";
+type BenchmarkMode = "speed" | "pipelining" | "startup" | "health";
 
 type UsenetSettingsProps = {
     config: Record<string, string>
@@ -78,6 +104,7 @@ enum ProviderType {
     Pooled = 1,
     BackupAndStats = 2,
     BackupOnly = 3,
+    HealthChecksOnly = 4,
 }
 
 type ConnectionDetails = {
@@ -90,6 +117,7 @@ type ConnectionDetails = {
     MaxConnections: number;
     Priority?: number;
     PipeliningDepth?: number | null;
+    HealthPipeliningDepth?: number | null;
     PrepOnly?: boolean;
     PrepSpreadEnabled?: boolean;
     // Optional user-set label. Shown in the UI in place of Host when present;
@@ -182,6 +210,7 @@ const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
     [ProviderType.Pooled]: "Pool Connections",
     [ProviderType.BackupAndStats]: "Backup & Health Checks",
     [ProviderType.BackupOnly]: "Backup Only",
+    [ProviderType.HealthChecksOnly]: "Health Checks Only",
 };
 
 function parseProviderConfig(jsonString: string): UsenetProviderConfig {
@@ -288,9 +317,12 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         } else {
             providers.push({ ...provider, Priority: providers.length });
         }
-        setNewConfig({ ...config, "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }) });
+        setNewConfig(prev => ({
+            ...prev,
+            "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }),
+        }));
         handleCloseModal();
-    }, [config, providerConfig, editingIndex, setNewConfig, handleCloseModal]);
+    }, [providerConfig, editingIndex, setNewConfig, handleCloseModal]);
 
     const handleApplyPipelining = useCallback((enabled: boolean) => {
         setNewConfig(prev => ({
@@ -303,6 +335,13 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         setNewConfig(prev => ({
             ...prev,
             "usenet.pipelining.playback.enabled": enabled ? "true" : "false",
+        }));
+    }, [setNewConfig]);
+
+    const handleApplyHealthPipelining = useCallback((enabled: boolean) => {
+        setNewConfig(prev => ({
+            ...prev,
+            "usenet.pipelining.health.enabled": enabled ? "true" : "false",
         }));
     }, [setNewConfig]);
 
@@ -420,6 +459,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 {provider.Nickname?.trim() || provider.Host}
                                                 {isDisabled && <span className={styles["provider-disabled-badge"]}>Disabled</span>}
                                                 {provider.PrepOnly && !isDisabled && <span className={styles["provider-prep-badge"]}>Prep only</span>}
+                                                {provider.Type === ProviderType.HealthChecksOnly && <span className={styles["provider-prep-badge"]}>STAT only</span>}
                                                 {provider.Type === ProviderType.Pooled && provider.PrepSpreadEnabled === false && !isDisabled && <span className={styles["provider-prep-badge"]}>No prep spread</span>}
                                             </div>
                                             {provider.Nickname?.trim() && (
@@ -635,7 +675,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     </div>
                     <div className={styles["form-hint"]}>
                         Queue imports and preflight will fan out across eligible Pool Connections providers by open capacity.
-                        Backup &amp; Health Checks providers always join bulk STAT health checks; playback keeps fastest-provider routing.
+                        Health Checks Only providers can issue STAT requests but are blocked from HEAD, BODY and ARTICLE traffic.
+                        Playback keeps fastest-provider routing across download-capable providers.
                     </div>
                 </div>
             </div>
@@ -764,7 +805,9 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 onSave={handleSaveProvider}
                 onApplyPipelining={handleApplyPipelining}
                 onApplyPlaybackPipelining={handleApplyPlaybackPipelining}
+                onApplyHealthPipelining={handleApplyHealthPipelining}
                 defaultPipeliningDepth={config["usenet.pipelining.depth"] || "8"}
+                defaultHealthPipeliningDepth={config["usenet.pipelining.health.depth"] || "32"}
             />
         </div>
     );
@@ -840,10 +883,15 @@ type ProviderModalProps = {
     onSave: (provider: ConnectionDetails) => void;
     onApplyPipelining: (enabled: boolean) => void;
     onApplyPlaybackPipelining: (enabled: boolean) => void;
+    onApplyHealthPipelining: (enabled: boolean) => void;
     defaultPipeliningDepth: string;
+    defaultHealthPipeliningDepth: string;
 };
 
-function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onApplyPlaybackPipelining, defaultPipeliningDepth }: ProviderModalProps) {
+function ProviderModal({
+    show, provider, onClose, onSave, onApplyPipelining, onApplyPlaybackPipelining,
+    onApplyHealthPipelining, defaultPipeliningDepth, defaultHealthPipeliningDepth,
+}: ProviderModalProps) {
     const isEditing = provider !== null;
     const initialLimit = bytesToValueAndUnit(provider?.ByteLimit);
     const initialUsed = bytesToValueAndUnit(provider?.BytesUsedOffset);
@@ -856,6 +904,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
     const [pass, setPass] = useState(provider?.Pass || "");
     const [maxConnections, setMaxConnections] = useState(provider?.MaxConnections?.toString() || "");
     const [pipeliningDepth, setPipeliningDepth] = useState(provider?.PipeliningDepth?.toString() || "");
+    const [healthPipeliningDepth, setHealthPipeliningDepth] = useState(provider?.HealthPipeliningDepth?.toString() || "");
     const [prepOnly, setPrepOnly] = useState(provider?.PrepOnly ?? false);
     const [prepSpreadEnabled, setPrepSpreadEnabled] = useState(provider?.PrepSpreadEnabled ?? true);
     const [type, setType] = useState<ProviderType>(provider?.Type ?? ProviderType.Pooled);
@@ -871,8 +920,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
     const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress | null>(null);
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
-    const [pipeliningOnly, setPipeliningOnly] = useState(false);
-    const [startupOnly, setStartupOnly] = useState(false);
+    const [benchmarkMode, setBenchmarkMode] = useState<BenchmarkMode>("speed");
     const benchmarkAbortRef = useRef<AbortController | null>(null);
 
     // Reset form when modal opens or provider changes
@@ -888,6 +936,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             setPass(provider?.Pass || "");
             setMaxConnections(provider?.MaxConnections?.toString() || "");
             setPipeliningDepth(provider?.PipeliningDepth?.toString() || "");
+            setHealthPipeliningDepth(provider?.HealthPipeliningDepth?.toString() || "");
             setPrepOnly(provider?.PrepOnly ?? false);
             setPrepSpreadEnabled(provider?.PrepSpreadEnabled ?? true);
             setType(provider?.Type ?? ProviderType.Pooled);
@@ -902,8 +951,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             setBenchmarkProgress(null);
             setBenchmarkResult(null);
             setBenchmarkError(null);
-            setPipeliningOnly(false);
-            setStartupOnly(false);
+            setBenchmarkMode("speed");
         }
     }, [show, provider]);
 
@@ -913,6 +961,10 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
         if (!show) benchmarkAbortRef.current?.abort();
     }, [show]);
     useEffect(() => () => benchmarkAbortRef.current?.abort(), []);
+
+    useEffect(() => {
+        if (type === ProviderType.HealthChecksOnly) setBenchmarkMode("health");
+    }, [type]);
 
     // Handle Escape key to close modal
     useEffect(() => {
@@ -964,6 +1016,9 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
     }, [host, port, useSsl, user, pass]);
 
     const handleAutoTune = useCallback(async () => {
+        const pipeliningOnly = benchmarkMode === "pipelining";
+        const startupOnly = benchmarkMode === "startup";
+        const healthOnly = benchmarkMode === "health";
         // Abort any previous run still in flight before starting a new one.
         benchmarkAbortRef.current?.abort();
         const controller = new AbortController();
@@ -1003,6 +1058,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             formData.append('intensity', intensity);
             formData.append('pipelining-only', pipeliningOnly ? 'true' : 'false');
             formData.append('startup-only', startupOnly ? 'true' : 'false');
+            formData.append('health-only', healthOnly ? 'true' : 'false');
+            formData.append('provider-type', String(type));
 
             const response = await fetch('/api/benchmark-usenet-connection', {
                 method: 'POST', body: formData, signal: controller.signal,
@@ -1030,7 +1087,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             if (benchmarkAbortRef.current === controller) benchmarkAbortRef.current = null;
             ws?.close();
         }
-    }, [host, port, useSsl, user, pass, maxConnections, intensity, pipeliningOnly, startupOnly]);
+    }, [host, port, useSsl, user, pass, maxConnections, intensity, benchmarkMode, type]);
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
@@ -1047,7 +1104,11 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
             onApplyPlaybackPipelining(benchmarkResult.startup.recommendPlaybackPipelining);
         }
-    }, [benchmarkResult, onApplyPipelining, onApplyPlaybackPipelining]);
+        if (benchmarkResult.healthPipelining?.reliable) {
+            setHealthPipeliningDepth(String(benchmarkResult.healthPipelining.recommendedDepth));
+            onApplyHealthPipelining(true);
+        }
+    }, [benchmarkResult, onApplyPipelining, onApplyPlaybackPipelining, onApplyHealthPipelining]);
 
     const handleCancelBenchmark = useCallback(() => {
         benchmarkAbortRef.current?.abort();
@@ -1079,8 +1140,9 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             Pass: pass,
             MaxConnections: parseInt(maxConnections, 10),
             PipeliningDepth: pipeliningDepth.trim() === "" ? null : parseInt(pipeliningDepth, 10),
-            PrepOnly: prepOnly,
-            PrepSpreadEnabled: prepSpreadEnabled,
+            HealthPipeliningDepth: healthPipeliningDepth.trim() === "" ? null : parseInt(healthPipeliningDepth, 10),
+            PrepOnly: type === ProviderType.HealthChecksOnly ? false : prepOnly,
+            PrepSpreadEnabled: type === ProviderType.HealthChecksOnly ? false : prepSpreadEnabled,
             Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
@@ -1088,7 +1150,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
             BytesUsedOffset: offsetToPersist,
             BytesUsedResetAt: resetAtToPersist,
         });
-    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, prepOnly, prepSpreadEnabled, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
+    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, healthPipeliningDepth, prepOnly, prepSpreadEnabled, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
 
     const handleOverlayClick = useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -1098,13 +1160,16 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
 
     const isPipeliningDepthValid = pipeliningDepth.trim() === ""
         || (isPositiveInteger(pipeliningDepth) && Number(pipeliningDepth) <= 64);
+    const isHealthPipeliningDepthValid = healthPipeliningDepth.trim() === ""
+        || (isPositiveInteger(healthPipeliningDepth) && Number(healthPipeliningDepth) <= 64);
 
     const isFormValid = host.trim() !== ""
         && isPositiveInteger(port)
         && user.trim() !== ""
         && pass.trim() !== ""
         && isPositiveInteger(maxConnections)
-        && isPipeliningDepthValid;
+        && isPipeliningDepthValid
+        && isHealthPipeliningDepthValid;
 
     // The speed test doesn't need Max Connections (it can recommend one), just
     // a reachable provider.
@@ -1232,7 +1297,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
 
                         <div className={styles["form-group"]}>
                             <label htmlFor="provider-pipelining-depth" className={styles["form-label"]}>
-                                Pipeline depth
+                                BODY pipeline depth
                             </label>
                             <input
                                 type="text"
@@ -1249,6 +1314,24 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
                         </div>
 
                         <div className={styles["form-group"]}>
+                            <label htmlFor="provider-health-pipelining-depth" className={styles["form-label"]}>
+                                Health pipeline depth
+                            </label>
+                            <input
+                                type="text"
+                                id="provider-health-pipelining-depth"
+                                className={`${styles["form-input"]} ${!isHealthPipeliningDepthValid ? styles.error : ""}`}
+                                placeholder={defaultHealthPipeliningDepth || "32"}
+                                value={healthPipeliningDepth}
+                                onChange={(e) => setHealthPipeliningDepth(e.target.value)}
+                            />
+                            <div className={styles["form-hint"]}>
+                                STAT requests kept in flight per connection (1–64) during health checks.
+                                Leave blank to use the global health depth.
+                            </div>
+                        </div>
+
+                        <div className={styles["form-group"]}>
                             <label htmlFor="provider-type" className={styles["form-label"]}>
                                 Type
                             </label>
@@ -1261,7 +1344,11 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
                                 <option value={ProviderType.Disabled}>Disabled</option>
                                 <option value={ProviderType.Pooled}>Pool Connections</option>
                                 <option value={ProviderType.BackupOnly}>Backup Only</option>
+                                <option value={ProviderType.HealthChecksOnly}>Health Checks Only</option>
                             </select>
+                            <div className={styles["form-hint"]}>
+                                Health Checks Only permits STAT requests and blocks all article and header downloads.
+                            </div>
                         </div>
 
 
@@ -1289,7 +1376,8 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
                                     type="checkbox"
                                     id="provider-prep-only"
                                     className={`${styles["form-checkbox"]} toggle-switch`}
-                                    checked={prepOnly}
+                                    checked={type !== ProviderType.HealthChecksOnly && prepOnly}
+                                    disabled={type === ProviderType.HealthChecksOnly}
                                     onChange={(e) => setPrepOnly(e.target.checked)}
                                 />
                                 <label htmlFor="provider-prep-only" className={styles["form-checkbox-label"]}>
@@ -1307,7 +1395,7 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
                                     type="checkbox"
                                     id="provider-prep-spread"
                                     className={`${styles["form-checkbox"]} toggle-switch`}
-                                    checked={prepSpreadEnabled}
+                                    checked={type !== ProviderType.HealthChecksOnly && prepSpreadEnabled}
                                     disabled={type !== ProviderType.Pooled}
                                     onChange={(e) => setPrepSpreadEnabled(e.target.checked)}
                                 />
@@ -1396,10 +1484,9 @@ function ProviderModal({ show, provider, onClose, onSave, onApplyPipelining, onA
                         isBenchmarking={isBenchmarking}
                         intensity={intensity}
                         setIntensity={setIntensity}
-                        pipeliningOnly={pipeliningOnly}
-                        setPipeliningOnly={(value) => { setPipeliningOnly(value); if (value) setStartupOnly(false); }}
-                        startupOnly={startupOnly}
-                        setStartupOnly={(value) => { setStartupOnly(value); if (value) setPipeliningOnly(false); }}
+                        mode={benchmarkMode}
+                        setMode={setBenchmarkMode}
+                        healthChecksOnly={type === ProviderType.HealthChecksOnly}
                         progress={benchmarkProgress}
                         result={benchmarkResult}
                         error={benchmarkError}
@@ -1440,10 +1527,9 @@ type BenchmarkPanelProps = {
     isBenchmarking: boolean;
     intensity: BenchmarkIntensity;
     setIntensity: (value: BenchmarkIntensity) => void;
-    pipeliningOnly: boolean;
-    setPipeliningOnly: (value: boolean) => void;
-    startupOnly: boolean;
-    setStartupOnly: (value: boolean) => void;
+    mode: BenchmarkMode;
+    setMode: (value: BenchmarkMode) => void;
+    healthChecksOnly: boolean;
     progress: BenchmarkProgress | null;
     result: BenchmarkResult | null;
     error: string | null;
@@ -1455,8 +1541,11 @@ type BenchmarkPanelProps = {
 function BenchmarkPanel(props: BenchmarkPanelProps) {
     const {
         canBenchmark, isBenchmarking, intensity, setIntensity,
-        pipeliningOnly, setPipeliningOnly, startupOnly, setStartupOnly, progress, result, error, onRun, onCancel, onApply,
+        mode, setMode, healthChecksOnly, progress, result, error, onRun, onCancel, onApply,
     } = props;
+    const pipeliningOnly = mode === "pipelining";
+    const startupOnly = mode === "startup";
+    const healthOnly = mode === "health";
     const [applied, setApplied] = useState(false);
     // A fresh result means the previous "Applied" state no longer holds.
     useEffect(() => { setApplied(false); }, [result]);
@@ -1468,24 +1557,34 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
         : null;
     const pipe = result?.pipelining ?? null;
     const startup = result?.startup ?? null;
+    const health = result?.healthPipelining ?? null;
     const startupRecommended = startup ? getStartupPoint(startup, startup.recommendedDepth) : null;
     const startupFirstGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedFirstMs, startupRecommended.firstMs) : null;
     const startupReadyGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedReadyMs, startupRecommended.readyMs) : null;
     const pipeBest = pipe && pipe.tested.length > 0 ? Math.max(...pipe.tested.map(t => t.mbPerSec)) : (pipe?.baselineMbPerSec ?? 0);
     const pipeGainPct = pipe && pipe.baselineMbPerSec > 0 ? Math.round((pipeBest / pipe.baselineMbPerSec - 1) * 100) : 0;
-    const canApply = !!result && result.throughputTested && (recommended != null || (result.pipeliningOnly && !!pipe) || (result.startupOnly && !!startup));
+    const canApply = !!result && result.throughputTested && (
+        recommended != null
+        || (result.pipeliningOnly && !!pipe)
+        || (result.startupOnly && !!startup)
+        || (result.healthOnly && health?.reliable === true)
+    );
 
     return (
         <div className={styles["bench-panel"]}>
             <div className={styles["bench-head"]}>
                 <div className={styles["bench-heading"]}>
-                    <div className={styles["bench-title"]}>Auto-tune connections</div>
+                    <div className={styles["bench-title"]}>
+                        {healthOnly ? "Health STAT pipeline" : "Auto-tune connections"}
+                    </div>
                     <div className={styles["form-hint"]} style={{ marginTop: 0 }}>
                         {pipeliningOnly
                             ? "Keeps your Max Connections and just measures the best NNTP pipelining depth at that count."
                             : startupOnly
                                 ? "Measures first-buffer playback startup with normal parallel fetching vs NNTP pipelining."
-                            : "Runs a real speed & latency test, then recommends the best connection count and pipelining settings."}
+                                : healthOnly
+                                    ? "Repeats the real health-check STAT workload and rejects fast but unreliable pipeline depths."
+                                    : "Runs a real speed & latency test, then recommends the best connection count and pipelining settings."}
                     </div>
                 </div>
                 <div className={styles["bench-controls"]}>
@@ -1508,7 +1607,9 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </Button>
                     </div>
                     <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
-                        {isBenchmarking ? "Testing…" : (startupOnly ? "Test startup" : pipeliningOnly ? "Test pipelining" : "Run speed test")}
+                        {isBenchmarking ? "Testing…" : (
+                            healthOnly ? "Test health STAT" : startupOnly ? "Test startup" : pipeliningOnly ? "Test pipelining" : "Run speed test"
+                        )}
                     </Button>
                     {isBenchmarking && (
                         <Button variant="secondary" onClick={onCancel}>Cancel</Button>
@@ -1516,31 +1617,28 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 </div>
             </div>
 
-            <div className={styles["form-checkbox-wrapper"]} style={{ marginTop: 12 }}>
-                <input
-                    type="checkbox"
-                    id="bench-pipe-only"
-                    className={`${styles["form-checkbox"]} toggle-switch`}
-                    checked={pipeliningOnly}
-                    disabled={isBenchmarking}
-                    onChange={(e) => setPipeliningOnly(e.target.checked)}
-                />
-                <label htmlFor="bench-pipe-only" className={styles["form-checkbox-label"]}>
-                    Only tune pipelining (keep my Max Connections)
-                </label>
-            </div>
-            <div className={styles["form-checkbox-wrapper"]} style={{ marginTop: 8 }}>
-                <input
-                    type="checkbox"
-                    id="bench-startup-only"
-                    className={`${styles["form-checkbox"]} toggle-switch`}
-                    checked={startupOnly}
-                    disabled={isBenchmarking}
-                    onChange={(e) => setStartupOnly(e.target.checked)}
-                />
-                <label htmlFor="bench-startup-only" className={styles["form-checkbox-label"]}>
-                    Test playback startup
-                </label>
+            <div
+                className={styles["bench-intensity"]}
+                style={{ marginTop: 12 }}
+                role="group"
+                aria-label="Benchmark mode"
+            >
+                {([
+                    ["speed", "Speed"],
+                    ["pipelining", "BODY pipeline"],
+                    ["startup", "Playback startup"],
+                    ["health", "Health STAT"],
+                ] as const).map(([value, label]) => (
+                    <Button
+                        key={value}
+                        variant={mode === value ? "primary" : "secondary"}
+                        onClick={() => setMode(value)}
+                        disabled={isBenchmarking || (healthChecksOnly && value !== "health")}
+                        aria-pressed={mode === value}
+                    >
+                        {label}
+                    </Button>
+                ))}
             </div>
 
             <div className={styles["form-hint"]}>
@@ -1548,9 +1646,11 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                     ? "Won't change your connection count — it tests pipelining depth at the Max Connections you've set. Run it idle for the cleanest read."
                     : startupOnly
                         ? "Compares time to the first decoded article and a small startup buffer. This is the best benchmark for first-frame speed."
-                    : (intensity === "quick"
-                        ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
-                        : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
+                        : healthOnly
+                            ? "Runs repeated mixed present/missing STAT batches at depths 1, 4, 8, 16, 32 and 64. No article bodies are downloaded."
+                            : (intensity === "quick"
+                                ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
+                                : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
             </div>
 
             {error && (
@@ -1561,7 +1661,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 <div className={styles["bench-progress"]}>
                     <div className={styles["bench-progress-head"]}>
                         <span>{progress.status}</span>
-                        <span>{formatBytes(progress.dataUsedBytes)} used</span>
+                        <span>{healthOnly ? "STAT only" : `${formatBytes(progress.dataUsedBytes)} used`}</span>
                     </div>
                     <div className={styles["usage-bar-track"]}>
                         <div
@@ -1572,13 +1672,53 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 </div>
             )}
 
-            {livePoints.length > 0 && !(isBenchmarking ? (pipeliningOnly || startupOnly) : (result?.pipeliningOnly || result?.startupOnly)) && (
+            {livePoints.length > 0 && !(isBenchmarking ? (pipeliningOnly || startupOnly || healthOnly) : (result?.pipeliningOnly || result?.startupOnly || result?.healthOnly)) && (
                 <SweepChart points={livePoints} recommended={recommended} />
             )}
 
             {result && !isBenchmarking && (
                 <>
-                    {result.startupOnly ? (
+                    {result.healthOnly ? (
+                        health ? (
+                            <>
+                                <HealthStatTable health={health} />
+                                <div className={styles["bench-stats"]}>
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Recommendation</span>
+                                        <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>
+                                            {health.reliable ? `Depth ${health.recommendedDepth}` : "Unavailable"}
+                                        </span>
+                                        <span className={styles["bench-stat-sub"]}>
+                                            {health.reliable ? "all reliability checks passed" : "no reliable tested depth"}
+                                        </span>
+                                    </div>
+                                    <div className={styles["bench-stat"]}>
+                                        <span className={styles["bench-stat-label"]}>Test shape</span>
+                                        <span className={styles["bench-stat-value"]}>
+                                            {health.articlesPerRound} × {health.rounds}
+                                        </span>
+                                        <span className={styles["bench-stat-sub"]}>
+                                            STATs per depth · {health.knownMissingArticles} known missing
+                                        </span>
+                                    </div>
+                                    {result.latency && (
+                                        <div className={styles["bench-stat"]}>
+                                            <span className={styles["bench-stat-label"]}>Latency</span>
+                                            <span className={styles["bench-stat-value"]}>{result.latency.avgMs} ms</span>
+                                            <span className={styles["bench-stat-sub"]}>{result.latency.minMs} ms min</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className={styles["bench-pipe"]}>
+                                    {health.reliable
+                                        ? <>Use provider health depth <strong>{health.recommendedDepth}</strong>. Every repeated batch completed and matched the reference results.</>
+                                        : <>Health STAT pipelining was not reliable on this provider. Leave its health-depth override blank and consider disabling it for health checks.</>}
+                                </div>
+                            </>
+                        ) : (
+                            <div className={styles["bench-note"]}>Couldn’t measure health STAT pipelining. Try again when idle.</div>
+                        )
+                    ) : result.startupOnly ? (
                         startup ? (
                             <>
                                 <div className={styles["bench-stats"]}>
@@ -1732,12 +1872,47 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                     {canApply && (
                         <div className={styles["bench-actions"]}>
                             <Button variant={applied ? "secondary" : "primary"} onClick={() => { onApply(); setApplied(true); }}>
-                                {applied ? "Applied ✓ — review & save" : (result.startupOnly ? "Apply playback recommendation" : result.pipeliningOnly ? "Apply pipelining" : "Apply recommendation")}
+                                {applied ? "Applied ✓ — review & save" : (
+                                    result.healthOnly ? "Apply health depth"
+                                        : result.startupOnly ? "Apply playback recommendation"
+                                            : result.pipeliningOnly ? "Apply pipelining"
+                                                : "Apply recommendation"
+                                )}
                             </Button>
                         </div>
                     )}
                 </>
             )}
+        </div>
+    );
+}
+
+function HealthStatTable({ health }: { health: BenchmarkHealthPipelining }) {
+    return (
+        <div className={styles["bench-startup-table"]}>
+            <div className={`${styles["bench-startup-row"]} ${styles["bench-startup-head"]}`}>
+                <span>Depth</span>
+                <span>STAT rate</span>
+                <span>Average batch</span>
+                <span>Reliability</span>
+            </div>
+            {health.tested.map(point => {
+                const recommended = health.reliable && point.reliable && point.depth === health.recommendedDepth;
+                const failure = point.failure
+                    ?? (point.reliable ? `${point.completedRounds}/${point.requiredRounds} rounds` : "failed");
+                return (
+                    <div
+                        className={`${styles["bench-startup-row"]} ${recommended ? styles["bench-startup-row-rec"] : ""}`}
+                        key={point.depth}
+                        title={point.failure ?? undefined}
+                    >
+                        <span>D{point.depth}</span>
+                        <span>{point.statsPerSecond.toFixed(0)} /s</span>
+                        <span>{point.averageMs.toFixed(0)} ms</span>
+                        <span>{recommended ? "recommended" : point.reliable ? "reliable" : failure}</span>
+                    </div>
+                );
+            })}
         </div>
     );
 }

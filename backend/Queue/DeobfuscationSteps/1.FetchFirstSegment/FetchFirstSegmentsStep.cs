@@ -3,14 +3,18 @@
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
-using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
+using Serilog;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
 public static class FetchFirstSegmentsStep
 {
+    private const int TailRetryMinimumFiles = 64;
+    private const int TailRetryMaximumRemaining = 8;
+    private static readonly TimeSpan TailStallThreshold = TimeSpan.FromSeconds(2);
+
     public static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
     (
         List<NzbFile> nzbFiles,
@@ -21,11 +25,128 @@ public static class FetchFirstSegmentsStep
     )
     {
         var files = nzbFiles.Where(x => x.Segments.Count > 0).ToList();
-        return await files
-            .Select(x => FetchFirstSegment(x, usenetClient, cancellationToken))
-            .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
-            .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+        var concurrency = configManager.GetMaxQueueConnections() + 5;
+        var pending = new Queue<NzbFile>(files);
+        var running = new Dictionary<Task<NzbFileWithFirstSegment>, FirstSegmentWork>();
+        var results = new List<NzbFileWithFirstSegment>(files.Count);
+        var completed = 0;
+        var tailRetryEnabled = files.Count >= TailRetryMinimumFiles;
+
+        FirstSegmentWork Start(NzbFile file, bool isRetry)
+        {
+            var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var task = FetchFirstSegment(file, usenetClient, attemptCts.Token);
+            return new FirstSegmentWork(file, task, attemptCts, isRetry);
+        }
+
+        void AddResult(NzbFileWithFirstSegment result)
+        {
+            results.Add(result);
+            progress?.Report(++completed);
+        }
+
+        void FillAvailableSlots()
+        {
+            while (pending.Count > 0 && running.Count < concurrency)
+            {
+                var work = Start(pending.Dequeue(), isRetry: false);
+                running.Add(work.Task, work);
+            }
+        }
+
+        try
+        {
+            FillAvailableSlots();
+            while (running.Count > 0)
+            {
+                var retryableTail = tailRetryEnabled &&
+                                    pending.Count == 0 &&
+                                    running.Count <= TailRetryMaximumRemaining &&
+                                    running.Values.Any(x => !x.IsRetry);
+                Task completedTask;
+                if (retryableTail)
+                {
+                    var stallTimer = Task.Delay(TailStallThreshold, cancellationToken);
+                    completedTask = await Task.WhenAny(running.Keys.Cast<Task>().Append(stallTimer))
+                        .ConfigureAwait(false);
+                    if (ReferenceEquals(completedTask, stallTimer))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var stalled = running.Values.Where(x => !x.IsRetry).ToList();
+                        Log.Information(
+                            "prep-first-segment tail stalled remaining={Remaining} retrying={Retrying} stallMs={StallMs}",
+                            running.Count, stalled.Count, (int)TailStallThreshold.TotalMilliseconds);
+
+                        foreach (var work in stalled) work.AttemptCts.Cancel();
+                        foreach (var work in stalled)
+                        {
+                            running.Remove(work.Task);
+                            try
+                            {
+                                AddResult(await work.Task.ConfigureAwait(false));
+                            }
+                            catch (OperationCanceledException) when (
+                                work.AttemptCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                            {
+                                var retry = Start(work.File, isRetry: true);
+                                running.Add(retry.Task, retry);
+                            }
+                            finally
+                            {
+                                work.AttemptCts.Dispose();
+                            }
+                        }
+
+                        continue;
+                    }
+                }
+                else
+                {
+                    completedTask = await Task.WhenAny(running.Keys).ConfigureAwait(false);
+                }
+
+                var completedWork = running[(Task<NzbFileWithFirstSegment>)completedTask];
+                running.Remove(completedWork.Task);
+                try
+                {
+                    AddResult(await completedWork.Task.ConfigureAwait(false));
+                }
+                finally
+                {
+                    completedWork.AttemptCts.Dispose();
+                }
+
+                FillAvailableSlots();
+            }
+
+            return results;
+        }
+        finally
+        {
+            foreach (var work in running.Values) work.AttemptCts.Cancel();
+            foreach (var work in running.Values)
+            {
+                try
+                {
+                    await work.Task.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Preserve the exception or cancellation already leaving this method.
+                }
+                finally
+                {
+                    work.AttemptCts.Dispose();
+                }
+            }
+        }
     }
+
+    private sealed record FirstSegmentWork(
+        NzbFile File,
+        Task<NzbFileWithFirstSegment> Task,
+        CancellationTokenSource AttemptCts,
+        bool IsRetry);
 
     private static NzbFileWithFirstSegment BuildMissingFirstSegment(NzbFile nzbFile) => new()
     {

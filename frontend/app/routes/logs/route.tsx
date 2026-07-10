@@ -46,7 +46,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
     const [source, setSource] = useState<string>(initialQuery.get("src") ?? "");
     const [paused, setPaused] = useState<boolean>(false);
     const [pendingCount, setPendingCount] = useState<number>(0);
-    const [followTail, setFollowTail] = useState<boolean>(true);
+    const [followLatest, setFollowLatest] = useState<boolean>(true);
     const [expanded, setExpanded] = useState<Set<number>>(new Set());
     const [connection, setConnection] = useState<ConnectionStatus>("connecting");
     const [errorText, setErrorText] = useState<string | null>(null);
@@ -56,8 +56,8 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
     const pausedQueueRef = useRef<LogEntry[]>([]);
     const pausedRef = useRef<boolean>(paused);
     pausedRef.current = paused;
-    const followTailRef = useRef<boolean>(followTail);
-    followTailRef.current = followTail;
+    const followLatestRef = useRef<boolean>(followLatest);
+    followLatestRef.current = followLatest;
     const enabledLevelsRef = useRef<Set<LogLevel>>(enabledLevels);
     enabledLevelsRef.current = enabledLevels;
     const searchRefValue = useRef<string>(search);
@@ -118,7 +118,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
                 setEntries(data.entries ?? []);
                 setCounts(data.countsByLevel ?? {});
                 setErrorText(null);
-                if (followTailRef.current) requestAnimationFrame(scrollToBottom);
+                if (followLatestRef.current) requestAnimationFrame(scrollToTop);
             })
             .catch(e => {
                 if (cancelled) return;
@@ -150,7 +150,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
         });
         if (matches.length > 0) {
             setEntries(prev => mergeAndCap(prev, matches));
-            if (followTailRef.current) requestAnimationFrame(scrollToBottom);
+            if (followLatestRef.current) requestAnimationFrame(scrollToTop);
         }
     }
 
@@ -172,9 +172,8 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
 
     useLogsWebsocket(onBatch, setConnection);
 
-    // smart auto-scroll: detect when the user scrolls up to disengage follow.
-    // Programmatic scrolls (scrollToBottom) set a suppression flag so the
-    // resulting scroll event doesn't bounce followTail.
+    // Newest entries render at the top. Scrolling away disengages live follow;
+    // programmatic jumps suppress the resulting scroll event.
     const suppressScrollRef = useRef(false);
     const handleScroll = useCallback(() => {
         if (suppressScrollRef.current) {
@@ -183,21 +182,20 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
         }
         const el = listRef.current;
         if (!el) return;
-        const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        const near = distanceFromBottom < 48;
-        setFollowTail(prev => (prev !== near ? near : prev));
+        const near = el.scrollTop < 48;
+        setFollowLatest(prev => (prev !== near ? near : prev));
     }, []);
 
-    function scrollToBottom() {
+    function scrollToTop() {
         const el = listRef.current;
         if (!el) return;
         suppressScrollRef.current = true;
-        el.scrollTop = el.scrollHeight;
+        el.scrollTop = 0;
     }
 
-    // when the entries list mounts/first-loads, scroll to bottom
+    // The latest entry is already at the top on first load.
     useEffect(() => {
-        requestAnimationFrame(scrollToBottom);
+        requestAnimationFrame(scrollToTop);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -219,8 +217,8 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
             }
             if ((ev.key === "f" || ev.key === "F") && !inField && !ev.metaKey && !ev.ctrlKey) {
                 ev.preventDefault();
-                setFollowTail(v => {
-                    if (!v) requestAnimationFrame(scrollToBottom);
+                setFollowLatest(v => {
+                    if (!v) requestAnimationFrame(scrollToTop);
                     return !v;
                 });
             }
@@ -279,6 +277,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
         () => Object.values(counts).reduce((a, b) => a + b, 0),
         [counts],
     );
+    const displayEntries = useMemo(() => entries.slice().reverse(), [entries]);
 
     return (
         <div className={styles.page}>
@@ -300,15 +299,15 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
                     <div className={styles.controls}>
                         <button
                             type="button"
-                            className={`${styles.toolbarBtn} ${followTail ? styles.toolbarBtnOn : ""}`}
+                            className={`${styles.toolbarBtn} ${followLatest ? styles.toolbarBtnOn : ""}`}
                             onClick={() => {
-                                setFollowTail(v => {
-                                    if (!v) requestAnimationFrame(scrollToBottom);
+                                setFollowLatest(v => {
+                                    if (!v) requestAnimationFrame(scrollToTop);
                                     return !v;
                                 });
                             }}
                             title="Auto-follow the latest entry. Shortcut: f">
-                            {followTail ? "Following" : "Follow tail"}
+                            {followLatest ? "Following" : "Follow latest"}
                         </button>
                         <button
                             type="button"
@@ -395,7 +394,7 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
                     </div>
                 ) : (
                     <div ref={listRef} className={styles.list} onScroll={handleScroll}>
-                        {entries.map(entry => (
+                        {displayEntries.map(entry => (
                             <LogRow
                                 key={entry.seq}
                                 entry={entry}
@@ -405,13 +404,13 @@ export default function Logs({ loaderData }: Route.ComponentProps) {
                         ))}
                     </div>
                 )}
-                {!followTail && entries.length > 0 && (
+                {!followLatest && entries.length > 0 && (
                     <button
                         type="button"
                         className={styles.jumpBtn}
-                        onClick={() => { setFollowTail(true); requestAnimationFrame(scrollToBottom); }}>
+                        onClick={() => { setFollowLatest(true); requestAnimationFrame(scrollToTop); }}>
                         <svg className={styles.jumpBtnArrow} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                            <path d="M8 12.5a.5.5 0 0 1-.354-.146l-5-5a.5.5 0 1 1 .708-.708L8 11.293l4.646-4.647a.5.5 0 0 1 .708.708l-5 5A.5.5 0 0 1 8 12.5z" />
+                            <path d="M8 3.5a.5.5 0 0 1 .354.146l5 5a.5.5 0 0 1-.708.708L8 4.707 3.354 9.354a.5.5 0 1 1-.708-.708l5-5A.5.5 0 0 1 8 3.5z" />
                         </svg>
                         Jump to live
                     </button>

@@ -32,7 +32,7 @@ public class ConnectionPoolStats
         _pending = new int[count];
         _effectiveMax = providerConfig.Providers.Select(x => x.MaxConnections).ToArray();
         _max = providerConfig.Providers
-            .Where(x => x.Type is ProviderType.Pooled or ProviderType.BackupAndStats)
+            .Where(x => IsVisiblePoolType(x.Type))
             .Select(x => x.MaxConnections)
             .Sum();
 
@@ -48,7 +48,7 @@ public class ConnectionPoolStats
         void OnEvent(object? _, ConnectionPoolChangedEventArgs args)
         {
             string? transitionMessage = null;
-            if (_providerConfig.Providers[providerIndex].Type is ProviderType.Pooled or ProviderType.BackupAndStats)
+            if (IsVisiblePoolType(_providerConfig.Providers[providerIndex].Type))
             {
                 lock (this)
                 {
@@ -88,7 +88,7 @@ public class ConnectionPoolStats
     {
         return string.Join("; ", _providerConfig.Providers
             .Select((provider, index) => new { provider, index })
-            .Where(x => x.provider.Type is ProviderType.Pooled or ProviderType.BackupAndStats)
+            .Where(x => IsVisiblePoolType(x.provider.Type))
             .Select(x =>
             {
                 var name = string.IsNullOrWhiteSpace(x.provider.Nickname)
@@ -119,8 +119,7 @@ public class ConnectionPoolStats
 
             for (var providerIndex = 0; providerIndex < _providerConfig.Providers.Count; providerIndex++)
             {
-                if (_providerConfig.Providers[providerIndex].Type is not
-                    (ProviderType.Pooled or ProviderType.BackupAndStats)) continue;
+                if (!IsVisiblePoolType(_providerConfig.Providers[providerIndex].Type)) continue;
                 var message =
                     $"{providerIndex}|{live[providerIndex]}|{idle[providerIndex]}|{totalLive}|{_max}|{totalIdle}";
                 await _websocketManager.SendMessage(WebsocketTopic.UsenetConnections, message)
@@ -132,6 +131,11 @@ public class ConnectionPoolStats
             _broadcastGate.Release();
         }
     }
+
+    private static bool IsVisiblePoolType(ProviderType type) =>
+        type is ProviderType.Pooled
+            or ProviderType.BackupAndStats
+            or ProviderType.HealthChecksOnly;
 
     public sealed class ConnectionPoolChangedEventArgs(
         int live, int idle, int max, int pending = 0, int? effectiveMax = null) : EventArgs

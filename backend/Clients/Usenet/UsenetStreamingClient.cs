@@ -98,7 +98,9 @@ public class UsenetStreamingClient : WrappingNntpClient
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
     {
-        var keepWarm = connectionDetails.Type is ProviderType.Pooled or ProviderType.BackupAndStats
+        var keepWarm = connectionDetails.Type is ProviderType.Pooled
+            or ProviderType.BackupAndStats
+            or ProviderType.HealthChecksOnly
             ? Math.Min(connectionDetails.MaxConnections, WarmConnectionsPerProvider)
             : 0;
         var connectionPool = CreateNewConnectionPool(
@@ -121,7 +123,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             connectionDetails.Priority,
             connectionDetails.PrepOnly,
             connectionDetails.PrepSpreadEnabled,
-            connectionDetails.PipeliningDepth
+            connectionDetails.PipeliningDepth,
+            connectionDetails.HealthPipeliningDepth
         );
     }
 

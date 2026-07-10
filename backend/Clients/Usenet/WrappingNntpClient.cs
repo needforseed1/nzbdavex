@@ -73,6 +73,22 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken) =>
         _usenetClient.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken);
 
+    public override Task CheckAllSegmentsAsync(
+        IEnumerable<string> segmentIds,
+        int concurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken) =>
+        _usenetClient.CheckAllSegmentsAsync(segmentIds, concurrency, progress, cancellationToken);
+
+    public override Task CheckAllSegmentsPipelinedAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken) =>
+        _usenetClient.CheckAllSegmentsPipelinedAsync(
+            segmentIds, depth, fallbackConcurrency, progress, cancellationToken);
+
     protected void ReplaceUnderlyingClient(INntpClient usenetClient)
     {
         var old = _usenetClient;

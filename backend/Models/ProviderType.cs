@@ -6,4 +6,5 @@ public enum ProviderType
     Pooled = 1,
     BackupAndStats = 2,
     BackupOnly = 3,
+    HealthChecksOnly = 4,
 }
