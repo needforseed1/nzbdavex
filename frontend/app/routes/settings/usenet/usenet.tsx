@@ -324,13 +324,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         handleCloseModal();
     }, [providerConfig, editingIndex, setNewConfig, handleCloseModal]);
 
-    const handleApplyPipelining = useCallback((enabled: boolean) => {
-        setNewConfig(prev => ({
-            ...prev,
-            "usenet.pipelining.queue.enabled": enabled ? "true" : "false",
-        }));
-    }, [setNewConfig]);
-
     const handleApplyPlaybackPipelining = useCallback((enabled: boolean) => {
         setNewConfig(prev => ({
             ...prev,
@@ -689,27 +682,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <div className={styles["form-checkbox-wrapper"]}>
                         <input
                             type="checkbox"
-                            id="queue-pipelining-enabled"
-                            className={`${styles["form-checkbox"]} toggle-switch`}
-                            checked={(config["usenet.pipelining.queue.enabled"] || config["usenet.pipelining.enabled"]) === "true"}
-                            onChange={(e) => setNewConfig({
-                                ...config,
-                                "usenet.pipelining.queue.enabled": e.target.checked ? "true" : "false",
-                            })}
-                        />
-                        <label htmlFor="queue-pipelining-enabled" className={styles["form-checkbox-label"]}>
-                            Enable queue/import pipelining
-                        </label>
-                    </div>
-                    <div className={styles["form-hint"]}>
-                        Sends multiple article requests per connection without waiting for each response.
-                        Speeds up queue imports, especially on high-latency providers.
-                    </div>
-                </div>
-                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
-                    <div className={styles["form-checkbox-wrapper"]}>
-                        <input
-                            type="checkbox"
                             id="health-pipelining-enabled"
                             className={`${styles["form-checkbox"]} toggle-switch`}
                             checked={config["usenet.pipelining.health.enabled"] !== "false"}
@@ -803,7 +775,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 provider={editingIndex !== null ? providerConfig.Providers[editingIndex] : null}
                 onClose={handleCloseModal}
                 onSave={handleSaveProvider}
-                onApplyPipelining={handleApplyPipelining}
                 onApplyPlaybackPipelining={handleApplyPlaybackPipelining}
                 onApplyHealthPipelining={handleApplyHealthPipelining}
                 defaultPipeliningDepth={config["usenet.pipelining.depth"] || "8"}
@@ -881,7 +852,6 @@ type ProviderModalProps = {
     provider: ConnectionDetails | null;
     onClose: () => void;
     onSave: (provider: ConnectionDetails) => void;
-    onApplyPipelining: (enabled: boolean) => void;
     onApplyPlaybackPipelining: (enabled: boolean) => void;
     onApplyHealthPipelining: (enabled: boolean) => void;
     defaultPipeliningDepth: string;
@@ -889,7 +859,7 @@ type ProviderModalProps = {
 };
 
 function ProviderModal({
-    show, provider, onClose, onSave, onApplyPipelining, onApplyPlaybackPipelining,
+    show, provider, onClose, onSave, onApplyPlaybackPipelining,
     onApplyHealthPipelining, defaultPipeliningDepth, defaultHealthPipeliningDepth,
 }: ProviderModalProps) {
     const isEditing = provider !== null;
@@ -1098,7 +1068,6 @@ function ProviderModal({
         }
         if (benchmarkResult.pipelining) {
             setPipeliningDepth(String(benchmarkResult.pipelining.recommendedDepth));
-            onApplyPipelining(benchmarkResult.pipelining.recommendEnabled);
         }
         if (benchmarkResult.startup) {
             setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
@@ -1108,7 +1077,7 @@ function ProviderModal({
             setHealthPipeliningDepth(String(benchmarkResult.healthPipelining.recommendedDepth));
             onApplyHealthPipelining(true);
         }
-    }, [benchmarkResult, onApplyPipelining, onApplyPlaybackPipelining, onApplyHealthPipelining]);
+    }, [benchmarkResult, onApplyPlaybackPipelining, onApplyHealthPipelining]);
 
     const handleCancelBenchmark = useCallback(() => {
         benchmarkAbortRef.current?.abort();
@@ -2047,8 +2016,6 @@ function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
 
 export function isUsenetSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["usenet.providers"] !== newConfig["usenet.providers"]
-        || config["usenet.pipelining.enabled"] !== newConfig["usenet.pipelining.enabled"]
-        || config["usenet.pipelining.queue.enabled"] !== newConfig["usenet.pipelining.queue.enabled"]
         || config["usenet.pipelining.playback.enabled"] !== newConfig["usenet.pipelining.playback.enabled"]
         || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
         || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]

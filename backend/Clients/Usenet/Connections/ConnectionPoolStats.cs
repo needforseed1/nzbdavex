@@ -16,7 +16,6 @@ public class ConnectionPoolStats
     private readonly int _max;
     private int _totalLive;
     private int _totalIdle;
-    private int _previousActive;
     private long? _zeroActiveStartedAt;
     private string? _zeroActiveSnapshot;
     private readonly UsenetProviderConfig _providerConfig;
@@ -59,23 +58,28 @@ public class ConnectionPoolStats
                     _totalLive = _live.Sum();
                     _totalIdle = _idle.Sum();
                     var active = _totalLive - _totalIdle;
-                    if (active == 0 && _previousActive > 0)
+                    var pending = _pending.Sum();
+                    if (active == 0 && pending > 0 && !_zeroActiveStartedAt.HasValue)
                     {
                         _zeroActiveStartedAt = Stopwatch.GetTimestamp();
                         _zeroActiveSnapshot = FormatProviderSnapshot();
                     }
-                    else if (active > 0 && _previousActive == 0 && _zeroActiveStartedAt.HasValue)
+                    else if (active > 0 && _zeroActiveStartedAt.HasValue)
                     {
                         var zeroFor = Stopwatch.GetElapsedTime(_zeroActiveStartedAt.Value);
-                        if (zeroFor <= TimeSpan.FromSeconds(30))
+                        if (zeroFor >= TimeSpan.FromMilliseconds(50) &&
+                            zeroFor <= TimeSpan.FromSeconds(30))
                             transitionMessage =
                                 $"Usenet active connections resumed after {zeroFor.TotalMilliseconds:F0}ms at zero; " +
                                 $"zeroState=[{_zeroActiveSnapshot}]; resumedState=[{FormatProviderSnapshot()}].";
                         _zeroActiveStartedAt = null;
                         _zeroActiveSnapshot = null;
                     }
-
-                    _previousActive = active;
+                    else if (active == 0 && pending == 0)
+                    {
+                        _zeroActiveStartedAt = null;
+                        _zeroActiveSnapshot = null;
+                    }
                 }
             }
 

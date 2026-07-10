@@ -14,6 +14,8 @@ namespace NzbWebDAV.Clients.Usenet;
 public class UsenetStreamingClient : WrappingNntpClient
 {
     private const int WarmConnectionsPerProvider = 16;
+    private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan WarmConnectionRefreshInterval = TimeSpan.FromSeconds(15);
 
     public UsenetStreamingClient(
         ConfigManager configManager,
@@ -140,8 +142,12 @@ public class UsenetStreamingClient : WrappingNntpClient
         var connectionPool = new ConnectionPool<INntpClient>(
             maxConnections,
             connectionFactory,
+            idleTimeout: ConnectionIdleTimeout,
             connectionValidator: ValidateConnection,
             minimumIdleConnections: minimumIdleConnections,
+            warmConnectionRefreshInterval: minimumIdleConnections > 0
+                ? WarmConnectionRefreshInterval
+                : null,
             connectionCapacityRejected: IsConnectionCapacityRejected,
             onConnectionCapacityReduced: (effectiveMax, _) => Log.Warning(
                 "NNTP provider {Provider} rejected additional connections; limiting this pool to {EffectiveMax} " +

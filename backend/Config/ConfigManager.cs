@@ -174,19 +174,6 @@ public class ConfigManager
         return Math.Clamp(value, 1, pool);
     }
 
-    public bool IsPipeliningEnabled()
-    {
-        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.enabled"));
-        return v != null && bool.Parse(v);
-    }
-
-    public bool IsQueuePipeliningEnabled()
-    {
-        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.queue.enabled"));
-        if (v != null) return bool.Parse(v);
-        return IsPipeliningEnabled();
-    }
-
     public bool IsPlaybackPipeliningEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.playback.enabled"));

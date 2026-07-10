@@ -64,6 +64,46 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task DedicatedHealthProvidersKeepPooledProvidersOutOfPrimaryLanes()
+    {
+        var coordinator = new LaneCoordinator(2);
+        var firstHealthClient = new CoordinatedPipelineClient(coordinator);
+        var secondHealthClient = new CoordinatedPipelineClient(coordinator);
+        var pooledClient = new RecordingPipelineClient([true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
+            CreateProvider(firstHealthClient, ProviderType.HealthChecksOnly, "health-1", 1),
+            CreateProvider(secondHealthClient, ProviderType.HealthChecksOnly, "health-2", 2),
+        ], new ProviderUsageTracker());
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        await client.CheckAllSegmentsPipelinedAsync(
+            ["a", "b"], depth: 1, fallbackConcurrency: 2, progress: null, timeout.Token);
+
+        Assert.Empty(pooledClient.Batches);
+        Assert.Single(firstHealthClient.Batches);
+        Assert.Single(secondHealthClient.Batches);
+    }
+
+    [Fact]
+    public async Task DedicatedHealthMissesStillFallBackToPooledProvider()
+    {
+        var healthClient = new RecordingPipelineClient([false]);
+        var pooledClient = new RecordingPipelineClient([true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
+            CreateProvider(healthClient, ProviderType.HealthChecksOnly, "health-only", 1),
+        ], new ProviderUsageTracker());
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["missing-on-health"], 8, CancellationToken.None));
+
+        Assert.True(results.Single().Exists);
+        Assert.Single(healthClient.Batches);
+        Assert.Single(pooledClient.Batches);
+    }
+
+    [Fact]
     public async Task HealthChecksOnlyProviderServesStatsButNeverBodies()
     {
         var healthClient = new RecordingPipelineClient([true]);

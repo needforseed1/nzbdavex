@@ -41,8 +41,6 @@ const defaultConfig = {
     "usenet.segment-cache.enabled": "false",
     "usenet.segment-cache.path": "/config/segment-cache",
     "usenet.segment-cache.max-gb": "10",
-    "usenet.pipelining.enabled": "false",
-    "usenet.pipelining.queue.enabled": "",
     "usenet.pipelining.playback.enabled": "false",
     "usenet.pipelining.health.enabled": "true",
     "usenet.pipelining.health.depth": "32",

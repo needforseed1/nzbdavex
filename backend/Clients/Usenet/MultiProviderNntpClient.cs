@@ -423,8 +423,7 @@ public class MultiProviderNntpClient(
             // normalized occupancy. Pending reservations prevent a burst of lanes
             // from all selecting the same nominally-fast provider before its sockets
             // have finished connecting. BackupOnly providers remain rescue-only.
-            var primary = pool
-                .Where(IsPrimaryStatProvider)
+            var primary = SelectPrimaryStatTier(pool)
                 .OrderBy(PrepSpreadScore)
                 .ThenBy(EffectivePriority)
                 .ThenBy(EstimatedDeliveryScore)
@@ -469,6 +468,17 @@ public class MultiProviderNntpClient(
         provider.ProviderType is ProviderType.Pooled
             or ProviderType.BackupAndStats
             or ProviderType.HealthChecksOnly;
+
+    private static IEnumerable<MultiConnectionNntpClient> SelectPrimaryStatTier(
+        IReadOnlyCollection<MultiConnectionNntpClient> pool)
+    {
+        var dedicated = pool
+            .Where(x => x.ProviderType == ProviderType.HealthChecksOnly)
+            .ToList();
+        return dedicated.Count > 0
+            ? dedicated
+            : pool.Where(x => x.ProviderType is ProviderType.Pooled or ProviderType.BackupAndStats);
+    }
 
     private bool IsOverLimit(MultiConnectionNntpClient client)
     {
@@ -568,12 +578,13 @@ public class MultiProviderNntpClient(
             candidates = healthy.Count > 0 ? healthy : enabled;
         }
 
-        if (candidates.Count <= 1) return BulkStatQualification.None;
+        var probeCandidates = SelectPrimaryStatTier(candidates).ToList();
+        if (probeCandidates.Count <= 1) return BulkStatQualification.None;
 
         var sampleIndexes = SelectProbeIndexes(segmentIds.Count, BulkStatProbeSize);
         var sample = sampleIndexes.Select(index => segmentIds[index]).ToArray();
         var qualificationTimer = Stopwatch.StartNew();
-        var pendingProbes = candidates
+        var pendingProbes = probeCandidates
             .Select(provider => ProbeStatProviderAsync(provider, sample, depth, cancellationToken))
             .ToList();
         var probes = new List<BulkStatProbe>(pendingProbes.Count);
@@ -587,8 +598,7 @@ public class MultiProviderNntpClient(
             probes.Add(completedProbe);
 
             var hasCompletePrimary = completedProbe.Success &&
-                                     completedProbe.Found == sample.Length &&
-                                     IsPrimaryStatProvider(completedProbe.Provider);
+                                     completedProbe.Found == sample.Length;
             if (!hasCompletePrimary) continue;
 
             // A full-coverage result cannot be beaten. Give similarly fast peers a
@@ -614,13 +624,10 @@ public class MultiProviderNntpClient(
         var successful = probes.Where(x => x.Success).ToList();
         if (successful.Count == 0) return BulkStatQualification.None;
 
-        var primaryCandidates = successful
-            .Where(x => IsPrimaryStatProvider(x.Provider))
-            .ToList();
-        var bestCoverage = primaryCandidates.Count == 0 ? 0 : primaryCandidates.Max(x => x.Found);
+        var bestCoverage = successful.Count == 0 ? 0 : successful.Max(x => x.Found);
         var preferred = bestCoverage == 0
             ? []
-            : primaryCandidates.Where(x => x.Found == bestCoverage).Select(x => x.Provider).ToHashSet();
+            : successful.Where(x => x.Found == bestCoverage).Select(x => x.Provider).ToHashSet();
         var plan = new BulkStatPlan(this, probes, preferred);
         plan.ObserveLateProbes(pendingProbes, sample.Length, cancellationToken);
 

@@ -6,7 +6,7 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 public class ConnectionPoolTests
 {
     [Fact]
-    public async Task ValidationDiscardsUnhealthyIdleConnectionsWithoutExceedingCapacity()
+    public async Task ValidationReplacesOneUnhealthyIdleConnectionWithoutExceedingCapacity()
     {
         var created = 0;
         var disposed = 0;
@@ -28,8 +28,112 @@ public class ConnectionPoolTests
         using var replacement = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
         Assert.True(replacement.Connection.Healthy);
         Assert.Equal(3, created);
-        Assert.Equal(2, disposed);
+        Assert.Equal(1, disposed);
+        Assert.Equal(2, pool.LiveConnections);
+        Assert.Equal(1, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task ValidationFailureStartsReplacementBeforeDrainingOtherIdleConnections()
+    {
+        var created = 0;
+        var disposed = 0;
+        var replacementStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReplacement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            async ct =>
+            {
+                var id = Interlocked.Increment(ref created);
+                if (id > 2)
+                {
+                    replacementStarted.TrySetResult();
+                    await releaseReplacement.Task.WaitAsync(ct);
+                }
+
+                return new TrackedConnection(id, () => Interlocked.Increment(ref disposed));
+            },
+            connectionValidator: (connection, _) => ValueTask.FromResult(connection.Healthy),
+            validateAfterIdle: TimeSpan.Zero);
+
+        var first = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var second = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        first.Connection.Healthy = false;
+        second.Connection.Healthy = false;
+        first.Dispose();
+        second.Dispose();
+
+        var replacement = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await replacementStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, Volatile.Read(ref disposed));
         Assert.Equal(1, pool.LiveConnections);
+        Assert.Equal(1, pool.IdleConnections);
+
+        releaseReplacement.TrySetResult();
+        using var lease = await replacement;
+        Assert.Equal(3, lease.Connection.Id);
+    }
+
+    [Fact]
+    public async Task RefreshWarmConnectionsValidatesAndReplacesTheWarmFloor()
+    {
+        var created = 0;
+        var disposed = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                Interlocked.Increment(ref created), () => Interlocked.Increment(ref disposed))),
+            connectionValidator: (connection, _) => ValueTask.FromResult(connection.Healthy),
+            minimumIdleConnections: 2);
+
+        await pool.PrewarmAsync(2);
+        var stale = new List<TrackedConnection>();
+        using (var first = await pool.GetConnectionLockAsync(SemaphorePriority.Low))
+        using (var second = await pool.GetConnectionLockAsync(SemaphorePriority.Low))
+        {
+            stale.Add(first.Connection);
+            stale.Add(second.Connection);
+        }
+        foreach (var connection in stale) connection.Healthy = false;
+
+        await pool.RefreshWarmConnectionsAsync();
+
+        Assert.Equal(4, created);
+        Assert.Equal(2, disposed);
+        Assert.Equal(2, pool.LiveConnections);
+        Assert.Equal(2, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task WarmRefreshTimerReplacesDeadIdleConnections()
+    {
+        var created = 0;
+        var disposed = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                Interlocked.Increment(ref created), () => Interlocked.Increment(ref disposed))),
+            connectionValidator: (connection, _) => ValueTask.FromResult(connection.Healthy),
+            minimumIdleConnections: 2,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20));
+
+        await pool.PrewarmAsync(2);
+        var stale = new List<TrackedConnection>();
+        using (var first = await pool.GetConnectionLockAsync(SemaphorePriority.Low))
+        using (var second = await pool.GetConnectionLockAsync(SemaphorePriority.Low))
+        {
+            stale.Add(first.Connection);
+            stale.Add(second.Connection);
+        }
+        foreach (var connection in stale) connection.Healthy = false;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (Volatile.Read(ref created) < 4)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(2, disposed);
+        Assert.Equal(2, pool.LiveConnections);
+        Assert.Equal(2, pool.IdleConnections);
     }
 
     [Fact]
