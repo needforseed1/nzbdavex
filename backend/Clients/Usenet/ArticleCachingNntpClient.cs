@@ -20,6 +20,11 @@ public class ArticleCachingNntpClient(
     bool leaveOpen = true
 ) : WrappingNntpClient(usenetClient)
 {
+    // Initial queue inspection only needs the yEnc header and a small prefix.
+    // Bypassing this full-article cache avoids downloading every first segment
+    // to a temporary file before FetchFirstSegmentsStep can inspect 16KB.
+    internal INntpClient FirstSegmentProbeClient => UnderlyingClient;
+
     private readonly string _cacheDir = Directory.CreateTempSubdirectory().FullName;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _pendingRequests = new();
     private readonly ConcurrentDictionary<string, CacheEntry> _cachedSegments = new();

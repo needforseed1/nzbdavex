@@ -49,6 +49,11 @@ public class QueueItemProcessor(
         return TimeSpan.FromSeconds(seconds);
     }
 
+    internal static bool ShouldDeferHealthCheck(int processorCount, int processorConcurrency)
+    {
+        return processorCount > processorConcurrency;
+    }
+
     public async Task ProcessAsync()
     {
         // initialize
@@ -217,14 +222,15 @@ public class QueueItemProcessor(
             .ToMultiProgress(fileProcessors.Count);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors start processors={Processors}",
             queueItem.Id, queueItem.JobName, fileProcessors.Count);
+        var processorConcurrency = configManager.GetMaxQueueConnections() + 5;
         var fileProcessingTask = fileProcessors
             .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
-            .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
+            .WithConcurrencyAsync(processorConcurrency)
             .GetAllAsync(ct);
 
-        // Step 3 can overlap the small per-file processor tail. Lazy RAR mounting
-        // often leaves only a handful of processors, which otherwise creates a
-        // visible connection-activity trough before the bulk STAT pass starts.
+        // Step 3 can overlap a processor set that fits in one concurrency wave.
+        // When processors are already queued behind that wave, starting the full
+        // STAT workload can starve both workloads and trip provider timeouts.
         var checkedFullHealth = false;
         var healthArticleCount = 0;
         Task? healthCheckTask = null;
@@ -232,19 +238,36 @@ public class QueueItemProcessor(
         DeferredProgress? deferredHealthProgress = null;
         using var healthCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
-        if (healthCheckCategories.Contains(queueItem.Category.ToLower()))
-        {
-            var articlesToCheck = fileInfos
+        var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
+        var articlesToCheck = shouldCheckHealth
+            ? fileInfos
                 .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
                 .SelectMany(x => x.NzbFile.GetSegmentIds())
-                .ToList();
+                .ToList()
+            : [];
+        var deferHealthCheck = shouldCheckHealth &&
+            ShouldDeferHealthCheck(fileProcessors.Count, processorConcurrency);
+
+        void StartHealthCheck(bool overlapsProcessors)
+        {
             healthArticleCount = articlesToCheck.Count;
-            Log.Information(
-                "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} overlap=processors",
-                queueItem.Id, queueItem.JobName, articlesToCheck.Count);
+            if (overlapsProcessors)
+            {
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} overlap=processors",
+                    queueItem.Id, queueItem.JobName, articlesToCheck.Count);
+            }
+            else
+            {
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} " +
+                    "overlap=none reason=processor-backlog",
+                    queueItem.Id, queueItem.JobName, articlesToCheck.Count);
+            }
             deferredHealthProgress = new DeferredProgress(progress
                 .Offset(100)
                 .ToPercentage(articlesToCheck.Count));
+            if (!overlapsProcessors) deferredHealthProgress.Enable();
             var healthCheckConcurrency = configManager.GetHealthCheckConnections();
             var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
             var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
@@ -262,6 +285,8 @@ public class QueueItemProcessor(
                     deferredHealthProgress, healthCts.Token);
             healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
         }
+
+        if (shouldCheckHealth && !deferHealthCheck) StartHealthCheck(overlapsProcessors: true);
 
         List<BaseProcessor.Result?> fileProcessingResultsAll;
         try
@@ -299,6 +324,7 @@ public class QueueItemProcessor(
         // Do not let overlapped health reports move the queue progress into the
         // health range before the processor phase has reached 100%.
         deferredHealthProgress?.Enable();
+        if (deferHealthCheck) StartHealthCheck(overlapsProcessors: false);
         var healthWaitTimer = Stopwatch.StartNew();
         if (healthCheckTask is not null)
         {

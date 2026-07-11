@@ -21,8 +21,11 @@ public static class FetchFirstSegmentsStep
     )
     {
         var files = nzbFiles.Where(x => x.Segments.Count > 0).ToList();
+        var probeClient = usenetClient is ArticleCachingNntpClient cachingClient
+            ? cachingClient.FirstSegmentProbeClient
+            : usenetClient;
         return await files
-            .Select(x => FetchFirstSegment(x, usenetClient, cancellationToken))
+            .Select(x => FetchFirstSegment(x, probeClient, cancellationToken))
             .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
             .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
     }

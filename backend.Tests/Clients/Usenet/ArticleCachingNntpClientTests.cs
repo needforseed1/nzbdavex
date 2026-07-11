@@ -1,11 +1,32 @@
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Config;
+using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
+using NzbWebDAV.Streams;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class ArticleCachingNntpClientTests
 {
+    [Fact]
+    public async Task FirstSegmentProbeBypassesFullArticleCache()
+    {
+        const int articleSize = 256 * 1024;
+        using var inner = new PrefixTrackingClient(articleSize);
+        using var cache = new ArticleCachingNntpClient(inner);
+        var file = new NzbFile { Subject = "first.rar" };
+        file.Segments.Add(new NzbSegment { Bytes = articleSize, MessageId = "first-segment" });
+
+        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
+            [file], cache, new ConfigManager(), CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal(16 * 1024, results[0].First16KB?.Length);
+        Assert.Equal(16 * 1024, inner.BytesRead);
+    }
+
     [Fact]
     public async Task HeaderProbeBypassesFullArticleCache()
     {
@@ -74,6 +95,96 @@ public class ArticleCachingNntpClientTests
 
         public override void Dispose()
         {
+        }
+    }
+
+    private sealed class PrefixTrackingClient(int articleSize) : NntpClient
+    {
+        private int _bytesRead;
+        public int BytesRead => Volatile.Read(ref _bytesRead);
+
+        public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) =>
+            DecodedArticleAsync(segmentId, null, cancellationToken);
+
+        public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
+            SegmentId segmentId,
+            Action<ArticleBodyResult>? onConnectionReadyAgain,
+            CancellationToken cancellationToken)
+        {
+            var header = new UsenetYencHeader
+            {
+                FileName = "first.rar",
+                FileSize = articleSize,
+                LineLength = 128,
+                PartNumber = 1,
+                TotalParts = 1,
+                PartSize = articleSize,
+                PartOffset = 0,
+            };
+            return Task.FromResult(new UsenetDecodedArticleResponse
+            {
+                SegmentId = segmentId,
+                ResponseCode = (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow,
+                ResponseMessage = "220 article follows",
+                ArticleHeaders = new UsenetArticleHeader { Headers = [] },
+                Stream = new CachedYencStream(header, new CountingStream(
+                    new MemoryStream(new byte[articleSize]), count => Interlocked.Add(ref _bytesRead, count))),
+            });
+        }
+
+        public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public override Task<UsenetResponse> AuthenticateAsync(
+            string user, string pass, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public override Task<UsenetStatResponse> StatAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public override Task<UsenetHeadResponse> HeadAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
+            SegmentId segmentId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(
+            SegmentId segmentId,
+            Action<ArticleBodyResult>? onConnectionReadyAgain,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public override void Dispose()
+        {
+        }
+    }
+
+    private sealed class CountingStream(Stream inner, Action<int> onRead) : Stream
+    {
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            onRead(read);
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken);
+            onRead(read);
+            return read;
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
         }
     }
 }
