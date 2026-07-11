@@ -436,6 +436,8 @@ export type WatchdogEntry = {
     outcome: WatchdogOutcome,
     failReason: string | null,
     durationMs: number,
+    prepDurationMs?: number | null,
+    healthDurationMs?: number | null,
     isWinner: boolean,
     providerHost?: string | null,
     providerNickname?: string | null,

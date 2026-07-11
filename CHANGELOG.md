@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased (2026-07-10)
+
+This work focuses on getting from an added NZB to verified, playable content faster, while making high-connection Usenet setups more predictable.
+
+### Faster preparation and health checks
+
+* NZB preparation now starts promptly and spreads work across eligible providers based on available connection capacity.
+* Article health checks use bulk, pipelined `STAT` batches instead of checking articles one at a time. Batches remain intact when work falls back to another provider.
+* Health-check lanes and pipeline depth can be tuned independently from playback. Providers can override the global pipeline depth.
+* A per-provider health pipeline benchmark measures throughput and reliability, then recommends a suitable depth.
+* Providers can be marked as health-check-only. This is useful for fast block or trial accounts because `STAT` checks transfer very little data and the account is kept out of playback traffic.
+* The default Usenet connection limit is now 64 and remains configurable.
+* File-size probes read only the required yEnc header instead of waiting for an entire article to be cached, removing an intermittent processor-tail delay during prep.
+* Queue imports begin warming Pool provider connections as soon as an NZB arrives, up to the configured queue connection budget.
+
+### More reliable connections and failover
+
+* Frequently used provider connections are prewarmed and retained between jobs, reducing repeated connection and authentication delays.
+* Connection creation is bounded so a cold start does not overwhelm a provider, while queued work can immediately reuse connections that become idle.
+* Provider-reported connection limits reduce that provider's effective pool capacity without stopping other successful connection attempts.
+* Cancelled connection attempts no longer leak pool capacity, and concurrent connection handshakes can no longer incorrectly disable a provider.
+* Incomplete pipelined batches now count as provider failures. Repeated partial failures trip the provider circuit breaker, and later batches rotate to another eligible provider.
+* Successfully completed pipelined batches return their healthy connection to the pool instead of reconnecting for the next batch.
+
+### Diagnostics
+
+* Connection and health-check logging now includes enough provider, lane, batch, and timing detail to diagnose stalls and unreliable pipelining.
+* Queue percentages now update inline with completed work instead of lagging behind prep at 48–49% while callbacks drain in the background.
+* Overlapped health timing now stops when STAT work finishes, rather than including time spent waiting for prep processors.
+* The in-app log view shows newest entries first.
+
+### Settings experience
+
+* Usenet provider setup now uses clear operational roles and integrates protocol overrides and all provider benchmarks into the normal edit workflow.
+* Queue preparation now always balances across Primary providers; the redundant routing toggle was removed.
+* Bulk health checks use all health-eligible provider capacity, weighted by measured STAT speed and open connections.
+* Backup providers can optionally join normal bulk health checks without becoming eligible for prep or playback.
+* Provider action tooltips appear promptly instead of waiting for the browser's native tooltip delay.
+* Prep connection limits are optional; Automatic remains the default and recommended behavior.
+
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 
 Adds **Watchtower** — a time-shifted watchdog that keeps the titles on your lists pre-resolved and verified so the first read lands on a known-good release with no search at request time — alongside a major **Warden** expansion (GitHub backup, remote sources, import/export), per-indexer search/retrieve user agents with authenticated proxies, smarter search-profile fallback and identity matching, and a round of read-path and connection-pool reliability work.

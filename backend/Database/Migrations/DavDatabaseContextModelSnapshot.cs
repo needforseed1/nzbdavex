@@ -279,6 +279,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<int>("DownloadTimeSeconds")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("HealthDurationMs")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("FailMessage")
                         .HasColumnType("TEXT");
 
@@ -292,6 +295,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<string>("JobName")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("PrepDurationMs")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long?>("LastPlayedAt")
                         .HasColumnType("INTEGER");
@@ -372,6 +378,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<string>("FailReason")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("HealthDurationMs")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("IndexerName")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -381,6 +390,9 @@ namespace NzbWebDAV.Database.Migrations
 
                     b.Property<string>("ProviderHost")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("PrepDurationMs")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("QueueItemId")
                         .HasColumnType("TEXT");

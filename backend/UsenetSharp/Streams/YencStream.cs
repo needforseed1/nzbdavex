@@ -39,6 +39,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
     private const int ReadBufferSize = 8192; // 8KB read chunks for efficient I/O
     private const int DecodeBufferSize = 512; // Typical yEnc line decodes to ~128 bytes
     private const int LineAssemblyBufferSize = 1024; // Max line length with overhead
+    private const int MaxEncodedLineLength = 1024 * 1024;
 
     public YencStream(Stream innerStream)
     {
@@ -119,9 +120,9 @@ public class YencStream : FastReadOnlyNonSeekableStream
 
                 int remainingBufferSpace = buffer.Length - totalRead;
 
-                // Optimization: decode directly into caller's buffer if there's enough space
-                // Typical decoded yEnc line is ~128 bytes (from ~170 byte encoded line)
-                if (remainingBufferSpace >= DecodeBufferSize)
+                // RapidYenc requires the destination to be at least as large as the
+                // encoded input, even though the decoded result is usually smaller.
+                if (remainingBufferSpace >= lineSpan.Length)
                 {
                     // Decode directly to caller's buffer - ZERO COPY!
                     int decodedLength = YencDecoder.DecodeEx(
@@ -131,6 +132,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                 else
                 {
                     // Not enough space - decode to intermediate buffer and copy what fits
+                    EnsureDecodeBufferCapacity(lineSpan.Length);
                     int decodedLength = YencDecoder.DecodeEx(lineSpan, _decodeBuffer, ref _decoderState, isRaw: false);
                     _decodeBufferPosition = 0;
                     _decodeBufferLength = decodedLength;
@@ -190,6 +192,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                 // If we have a partial line in assembly buffer, combine them
                 if (_lineAssemblyLength > 0)
                 {
+                    EnsureLineAssemblyCapacity(_lineAssemblyLength + lineLength);
                     searchSpan.Slice(0, lineLength).CopyTo(_lineAssemblyBuffer.AsSpan(_lineAssemblyLength));
                     int totalLength = _lineAssemblyLength + lineLength;
                     _lineAssemblyLength = 0;
@@ -205,6 +208,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
             {
                 // No line ending in current buffer - save to assembly buffer and read more
                 int remainingLength = _readBufferLength - _readBufferPosition;
+                EnsureLineAssemblyCapacity(_lineAssemblyLength + remainingLength);
                 searchSpan.CopyTo(_lineAssemblyBuffer.AsSpan(_lineAssemblyLength));
                 _lineAssemblyLength += remainingLength;
                 _readBufferPosition = _readBufferLength; // Consumed entire buffer
@@ -270,6 +274,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
             else if (!StartsWithYEnd(nextLineSpan))
             {
                 // This is the first encoded data line - decode it now
+                EnsureDecodeBufferCapacity(nextLineSpan.Length);
                 int decodedLength = YencDecoder.DecodeEx(nextLineSpan, _decodeBuffer!, ref _decoderState, isRaw: false);
                 _decodeBufferPosition = 0;
                 _decodeBufferLength = decodedLength;
@@ -277,6 +282,29 @@ public class YencStream : FastReadOnlyNonSeekableStream
         }
 
         _yencHeaders = ParseYencHeaders(ybeginLine, ypartLine);
+    }
+
+    private void EnsureDecodeBufferCapacity(int required)
+    {
+        if (_decodeBuffer!.Length >= required) return;
+        if (required > MaxEncodedLineLength)
+            throw new InvalidDataException($"Encoded yEnc line exceeds {MaxEncodedLineLength} bytes.");
+
+        var replacement = ArrayPool<byte>.Shared.Rent(required);
+        ArrayPool<byte>.Shared.Return(_decodeBuffer);
+        _decodeBuffer = replacement;
+    }
+
+    private void EnsureLineAssemblyCapacity(int required)
+    {
+        if (_lineAssemblyBuffer!.Length >= required) return;
+        if (required > MaxEncodedLineLength)
+            throw new InvalidDataException($"Encoded yEnc line exceeds {MaxEncodedLineLength} bytes.");
+
+        var replacement = ArrayPool<byte>.Shared.Rent(required);
+        _lineAssemblyBuffer.AsSpan(0, _lineAssemblyLength).CopyTo(replacement);
+        ArrayPool<byte>.Shared.Return(_lineAssemblyBuffer);
+        _lineAssemblyBuffer = replacement;
     }
 
     private static bool StartsWithYBegin(ReadOnlySpan<byte> line) =>

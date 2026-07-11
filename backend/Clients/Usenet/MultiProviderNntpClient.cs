@@ -23,8 +23,8 @@ public class MultiProviderNntpClient(
     MetricsWriter? metricsWriter = null,
     ProviderBytesTracker? bytesTracker = null,
     Func<bool>? cascadeEnabled = null,
-    Func<bool>? prepSpreadEnabled = null
-) : NntpClient
+    Func<bool>? backupHealthChecksEnabled = null
+) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
@@ -60,6 +60,52 @@ public class MultiProviderNntpClient(
 
     private readonly object _selectLock = new();
     private int _prepSpreadCursor;
+
+    public async Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken)
+    {
+        var eligible = providers
+            .Where(x => x.ProviderType == ProviderType.Pooled)
+            .Where(x => !x.IsTripped)
+            .Where(x => !IsOverLimit(x))
+            .ToList();
+        var totalCapacity = eligible.Sum(x => x.MaxConnections);
+        var target = Math.Clamp(targetConnections, 0, totalCapacity);
+        if (target == 0) return;
+
+        var allocations = eligible.ToDictionary(x => x, _ => 0);
+        for (var i = 0; i < target; i++)
+        {
+            var provider = eligible
+                .Where(x => allocations[x] < x.MaxConnections)
+                .OrderBy(x => allocations[x] / (double)x.MaxConnections)
+                .ThenBy(x => x.Priority)
+                .First();
+            allocations[provider]++;
+        }
+
+        await Task.WhenAll(allocations
+            .Where(x => x.Value > 0)
+            .Select(async allocation =>
+            {
+                try
+                {
+                    await allocation.Key.PrewarmAsync(allocation.Value, cancellationToken).ConfigureAwait(false);
+                    Log.Debug(
+                        "Queue prewarm provider={Provider} target={Target} live={Live} idle={Idle}",
+                        allocation.Key.Host, allocation.Value,
+                        allocation.Key.LiveConnections, allocation.Key.IdleConnections);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    Log.Debug(e, "Queue prewarm failed for provider={Provider} target={Target}",
+                        allocation.Key.Host, allocation.Value);
+                }
+            })).ConfigureAwait(false);
+    }
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
@@ -314,7 +360,8 @@ public class MultiProviderNntpClient(
 
     private List<MultiConnectionNntpClient> SelectOrderedProviders(
         CancellationToken cancellationToken,
-        out MultiConnectionNntpClient? reserved)
+        out MultiConnectionNntpClient? reserved,
+        IReadOnlySet<MultiConnectionNntpClient>? excluded = null)
     {
         lock (_selectLock)
         {
@@ -323,15 +370,16 @@ public class MultiProviderNntpClient(
                 .Where(x => x.ProviderType is not (ProviderType.Disabled or ProviderType.HealthChecksOnly))
                 .Where(x => priority != SemaphorePriority.High || !x.PrepOnly)
                 .Where(x => !IsOverLimit(x))
+                .Where(x => excluded?.Contains(x) != true)
                 .ToList();
 
             var healthy = enabled.Where(x => !x.IsTripped).ToList();
             var pool = healthy.Count > 0 ? healthy : enabled;
 
-            if (priority != SemaphorePriority.High && prepSpreadEnabled?.Invoke() == true)
+            if (priority != SemaphorePriority.High)
             {
                 var spreadPool = pool
-                    .Where(x => x.ProviderType == ProviderType.Pooled && x.PrepSpreadEnabled)
+                    .Where(x => x.ProviderType == ProviderType.Pooled)
                     .ToList();
                 if (spreadPool.Count > 0)
                 {
@@ -464,20 +512,20 @@ public class MultiProviderNntpClient(
         return committed / (double)capacity;
     }
 
-    private static bool IsPrimaryStatProvider(MultiConnectionNntpClient provider) =>
-        provider.ProviderType is ProviderType.Pooled
+    private bool IsPrimaryStatProvider(MultiConnectionNntpClient provider) =>
+        provider.ProviderType is (ProviderType.Pooled
             or ProviderType.BackupAndStats
-            or ProviderType.HealthChecksOnly;
+            or ProviderType.HealthChecksOnly)
+        || (backupHealthChecksEnabled?.Invoke() == true
+            && provider.ProviderType == ProviderType.BackupOnly);
 
-    private static IEnumerable<MultiConnectionNntpClient> SelectPrimaryStatTier(
+    private IEnumerable<MultiConnectionNntpClient> SelectPrimaryStatTier(
         IReadOnlyCollection<MultiConnectionNntpClient> pool)
     {
-        var dedicated = pool
-            .Where(x => x.ProviderType == ProviderType.HealthChecksOnly)
-            .ToList();
-        return dedicated.Count > 0
-            ? dedicated
-            : pool.Where(x => x.ProviderType is ProviderType.Pooled or ProviderType.BackupAndStats);
+        // STAT traffic is tiny, so use every health-eligible provider. The bulk
+        // plan weights lanes by measured rate and open capacity; dedicated
+        // health accounts remain protected from BODY/ARTICLE traffic elsewhere.
+        return pool.Where(IsPrimaryStatProvider);
     }
 
     private bool IsOverLimit(MultiConnectionNntpClient client)
@@ -512,6 +560,26 @@ public class MultiProviderNntpClient(
         return primary.ConfiguredHealthPipeliningDepth is int d and > 0
             ? Math.Clamp(d, 1, 64)
             : fallbackDepth;
+    }
+
+    private MultiConnectionNntpClient SelectReplacementPipelinedProvider(
+        MultiConnectionNntpClient failedProvider,
+        HashSet<MultiConnectionNntpClient> failedProviders,
+        CancellationToken cancellationToken,
+        ref MultiConnectionNntpClient? reserved)
+    {
+        failedProviders.Add(failedProvider);
+        var replacements = SelectOrderedProviders(cancellationToken, out var replacementReservation, failedProviders);
+        if (replacements.Count == 0) return failedProvider;
+
+        reserved?.ReleasePending();
+        reserved = replacementReservation;
+        var replacement = replacements[0];
+        Log.Debug(
+            "Rotating pipelined BODY/ARTICLE traffic from failed provider {FailedProvider} to {ReplacementProvider}.",
+            failedProvider.Host,
+            replacement.Host);
+        return replacement;
     }
 
     public override async Task CheckAllSegmentsPipelinedAsync(
@@ -847,15 +915,17 @@ public class MultiProviderNntpClient(
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
-        var effectiveDepth = ResolveBodyDepth(primary, depth);
-        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
+        var failedProviders = new HashSet<MultiConnectionNntpClient>();
 
-        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
+        for (var offset = 0; offset < segmentIds.Count;)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var effectiveDepth = ResolveBodyDepth(primary, depth);
+            var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
             var rescueFrom = chunk.Count;
+            var rotatePrimary = false;
 
             await using (var enumerator = primary
                              .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -866,13 +936,19 @@ public class MultiProviderNntpClient(
                     PipelinedBodyResult result;
                     try
                     {
-                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            rotatePrimary = true;
+                            rescueFrom = nextIndex;
+                            break;
+                        }
                         result = enumerator.Current;
                     }
                     catch (Exception e) when (!e.IsCancellationException())
                     {
                         Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
+                        rotatePrimary = true;
                         rescueFrom = nextIndex;
                         break;
                     }
@@ -889,9 +965,28 @@ public class MultiProviderNntpClient(
                     break;
                 }
 
+                if (nextIndex == chunk.Count && rescueFrom == chunk.Count)
+                {
+                    try
+                    {
+                        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+                            throw new IOException("Pipelined BODY chunk returned too many responses.");
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider} after its final response.",
+                            primary.Host);
+                        rotatePrimary = true;
+                    }
+                }
+
                 if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
                     rescueFrom = nextIndex;
             }
+
+            if (rotatePrimary)
+                primary = SelectReplacementPipelinedProvider(
+                    primary, failedProviders, cancellationToken, ref reserved);
 
             for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
@@ -901,6 +996,8 @@ public class MultiProviderNntpClient(
                     new PipelinedBodyResult { SegmentId = segmentId, Found = false, Stream = null },
                     cancellationToken).ConfigureAwait(false);
             }
+
+            offset += chunk.Count;
         }
     }
 
@@ -913,15 +1010,17 @@ public class MultiProviderNntpClient(
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
         var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
         if (primary == null) yield break;
-        var effectiveDepth = ResolveBodyDepth(primary, depth);
-        var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
+        var failedProviders = new HashSet<MultiConnectionNntpClient>();
 
-        for (var offset = 0; offset < segmentIds.Count; offset += chunkSize)
+        for (var offset = 0; offset < segmentIds.Count;)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var effectiveDepth = ResolveBodyDepth(primary, depth);
+            var chunkSize = ResolvePipelinedChunkSize(effectiveDepth);
             var chunk = Slice(segmentIds, offset, chunkSize);
             var nextIndex = 0;
             var rescueFrom = chunk.Count;
+            var rotatePrimary = false;
 
             await using (var enumerator = primary
                              .DecodedArticlesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -932,13 +1031,19 @@ public class MultiProviderNntpClient(
                     PipelinedArticleResult result;
                     try
                     {
-                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                        if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            rotatePrimary = true;
+                            rescueFrom = nextIndex;
+                            break;
+                        }
                         result = enumerator.Current;
                     }
                     catch (Exception e) when (!e.IsCancellationException())
                     {
                         Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
+                        rotatePrimary = true;
                         rescueFrom = nextIndex;
                         break;
                     }
@@ -955,9 +1060,28 @@ public class MultiProviderNntpClient(
                     break;
                 }
 
+                if (nextIndex == chunk.Count && rescueFrom == chunk.Count)
+                {
+                    try
+                    {
+                        if (await enumerator.MoveNextAsync().ConfigureAwait(false))
+                            throw new IOException("Pipelined ARTICLE chunk returned too many responses.");
+                    }
+                    catch (Exception e) when (!e.IsCancellationException())
+                    {
+                        Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider} after its final response.",
+                            primary.Host);
+                        rotatePrimary = true;
+                    }
+                }
+
                 if (nextIndex < chunk.Count && rescueFrom == chunk.Count)
                     rescueFrom = nextIndex;
             }
+
+            if (rotatePrimary)
+                primary = SelectReplacementPipelinedProvider(
+                    primary, failedProviders, cancellationToken, ref reserved);
 
             for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
@@ -967,6 +1091,8 @@ public class MultiProviderNntpClient(
                     new PipelinedArticleResult { SegmentId = segmentId, Found = false },
                     cancellationToken).ConfigureAwait(false);
             }
+
+            offset += chunk.Count;
         }
     }
 
@@ -1112,7 +1238,7 @@ public class MultiProviderNntpClient(
             _probes[probe.Provider] = probe;
             if (!probe.Success ||
                 probe.Found == 0 ||
-                !IsPrimaryStatProvider(probe.Provider))
+                !Owner.IsPrimaryStatProvider(probe.Provider))
                 return;
 
             lock (_preferred)

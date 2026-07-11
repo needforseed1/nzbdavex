@@ -192,8 +192,14 @@ function ClickCard({ group }: { group: ClickGroup }) {
             {winner && (
                 <div className={styles.winnerLine}>
                     Resolved via <span className={styles.winnerIndexer}>{winner.indexerName}</span>
-                    <span className={styles.winnerDot}>·</span>
-                    <span className={styles.winnerDuration}>{winner.durationMs}ms</span>
+                    <div className={styles.timingBoxes}>
+                        {winner.prepDurationMs != null || winner.healthDurationMs != null ? <>
+                            <TimingBox label="Prep" value={formatDuration(winner.prepDurationMs)} />
+                            <TimingBox label="Health" value={formatDuration(winner.healthDurationMs)} />
+                        </> : (
+                            <TimingBox label="Total" value={formatDuration(winner.durationMs)} />
+                        )}
+                    </div>
                     {winner.size > 0 && <>
                         <span className={styles.winnerDot}>·</span>
                         <span>{formatBytes(winner.size)}</span>
@@ -227,7 +233,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                                     <OutcomeBadge outcome={a.outcome} winner={a.isWinner} />
                                 </td>
                                 <td className={styles.colReason} title={a.failReason ?? undefined}>{a.failReason ?? "—"}</td>
-                                <td className={styles.colDuration}>{a.durationMs}ms</td>
+                                <td className={styles.colDuration}>{formatDuration(a.durationMs)}</td>
                             </tr>
                         ))}
                     </tbody>
@@ -247,7 +253,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                                 <span className={styles.attemptCardMetaDot}>·</span>
                                 <span>{formatBytes(a.size)}</span>
                                 <span className={styles.attemptCardMetaDot}>·</span>
-                                <span>{a.durationMs}ms</span>
+                                <span>{formatDuration(a.durationMs)}</span>
                             </div>
                             {a.failReason && <div className={styles.attemptCardReason}>{a.failReason}</div>}
                         </div>
@@ -255,6 +261,15 @@ function ClickCard({ group }: { group: ClickGroup }) {
                 </div>
             </div>
         </div>
+    );
+}
+
+function TimingBox({ label, value }: { label: string, value: string }) {
+    return (
+        <span className={styles.timingBox}>
+            <span className={styles.timingLabel}>{label}</span>
+            <span className={styles.timingValue}>{value}</span>
+        </span>
     );
 }
 
@@ -350,6 +365,8 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
         if (x.isWinner !== y.isWinner) return false;
         if (x.attemptedAtUnix !== y.attemptedAtUnix) return false;
         if (x.durationMs !== y.durationMs) return false;
+        if (x.prepDurationMs !== y.prepDurationMs) return false;
+        if (x.healthDurationMs !== y.healthDurationMs) return false;
         if (x.size !== y.size) return false;
         if (x.failReason !== y.failReason) return false;
     }
@@ -444,6 +461,11 @@ function stripHost(host: string): string {
     const identifying = labels.find(label => !GENERIC_HOST_PREFIXES.has(label.toLowerCase()));
     if (identifying) return identifying;
     return labels[0].length >= labels[1].length ? labels[0] : labels[1];
+}
+
+function formatDuration(milliseconds: number | null | undefined): string {
+    if (milliseconds == null) return "—";
+    return `${(Math.max(0, milliseconds) / 1000).toFixed(1)}s`;
 }
 
 function formatBytes(bytes: number): string {

@@ -35,10 +35,13 @@ public class QueueItemProcessor(
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
     ConcurrentDictionary<Guid, int> retryAttempts,
+    Action firstSegmentsCompleted,
     CancellationToken ct
 )
 {
     private const int MaxProviderRetryAttempts = 20;
+    private int? _prepDurationMs;
+    private int? _healthDurationMs;
 
     private static TimeSpan GetProviderRetryBackoff(int attempt)
     {
@@ -159,8 +162,16 @@ public class QueueItemProcessor(
         Log.Information(
             "queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files} connections={Connections} queuedMs={QueuedMs}",
             queueItem.Id, queueItem.JobName, nzbFiles.Count, prepConnections, queuedMs);
-        var segments = await FetchFirstSegmentsStep.FetchFirstSegments(
-            nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
+        List<FetchFirstSegmentsStep.NzbFileWithFirstSegment> segments;
+        try
+        {
+            segments = await FetchFirstSegmentsStep.FetchFirstSegments(
+                nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
+        }
+        finally
+        {
+            firstSegmentsCompleted();
+        }
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments done ms={ElapsedMs}",
             queueItem.Id, queueItem.JobName, msFirstSeg);
@@ -234,9 +245,7 @@ public class QueueItemProcessor(
             deferredHealthProgress = new DeferredProgress(progress
                 .Offset(100)
                 .ToPercentage(articlesToCheck.Count));
-            var healthCheckConcurrency = configManager
-                .GetUsenetProviderConfig()
-                .TotalStatCheckConnections;
+            var healthCheckConcurrency = configManager.GetHealthCheckConnections();
             var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
             var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
             Log.Information(
@@ -246,11 +255,12 @@ public class QueueItemProcessor(
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
             healthTimer = Stopwatch.StartNew();
-            healthCheckTask = configManager.IsHealthPipeliningEnabled()
+            var healthWorkTask = configManager.IsHealthPipeliningEnabled()
                 ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
                     healthPipelineLanes, deferredHealthProgress, healthCts.Token)
                 : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
                     deferredHealthProgress, healthCts.Token);
+            healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
         }
 
         List<BaseProcessor.Result?> fileProcessingResultsAll;
@@ -297,6 +307,8 @@ public class QueueItemProcessor(
         }
         var msHealthWait = healthWaitTimer.ElapsedMilliseconds;
         var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
+        _prepDurationMs = ToDurationMs(msFirstSeg + msPar2 + msRar + msProcessors);
+        _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : null;
         if (checkedFullHealth)
         {
             var statRate = msHealth > 0
@@ -489,6 +501,8 @@ public class QueueItemProcessor(
                 : HistoryItem.DownloadStatusOption.Failed,
             TotalSegmentBytes = queueItem.TotalSegmentBytes,
             DownloadTimeSeconds = (int)(DateTime.Now - jobStartTime).TotalSeconds,
+            PrepDurationMs = _prepDurationMs,
+            HealthDurationMs = _healthDurationMs,
             FailMessage = errorMessage,
             DownloadDirId = mountFolder?.Id,
             NzbBlobId = queueItem.Id,
@@ -557,11 +571,31 @@ public class QueueItemProcessor(
             Result = outcome,
             FailReason = error,
             DurationMs = durationMs,
+            PrepDurationMs = _prepDurationMs,
+            HealthDurationMs = _healthDurationMs,
             IsWinner = error == null,
             ProviderHost = providerHost,
             QueueItemId = queueItem.Id,
             ContentGroupKey = queueItem.ContentGroupKey,
         });
+    }
+
+    private static int ToDurationMs(long durationMs) =>
+        (int)Math.Clamp(durationMs, 0, int.MaxValue);
+
+    private static Task StopTimerWhenCompleted(Task task, Stopwatch timer)
+    {
+        return task.ContinueWith(
+                static (completed, state) =>
+                {
+                    ((Stopwatch)state!).Stop();
+                    return completed;
+                },
+                timer,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default)
+            .Unwrap();
     }
 
     private static string? FormatProviders(IReadOnlyDictionary<string, long> usage)

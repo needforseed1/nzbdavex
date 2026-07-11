@@ -224,7 +224,10 @@ public class ArticleCachingNntpClient(
     {
         return _cachedSegments.TryGetValue(segmentId, out var existingEntry)
             ? Task.FromResult(existingEntry.YencHeaders)
-            : base.GetYencHeadersAsync(segmentId, ct);
+            // Header-only size probes must not wait for the queue cache to download
+            // and persist the entire article. The underlying client reads the yEnc
+            // header immediately while its transport safely drains the body.
+            : UnderlyingClient.GetYencHeadersAsync(segmentId, ct);
     }
 
     private async Task CacheDecodedStreamAsync(string segmentId, YencStream stream, CancellationToken cancellationToken)

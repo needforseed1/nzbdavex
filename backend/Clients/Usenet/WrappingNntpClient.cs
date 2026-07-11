@@ -3,9 +3,10 @@ using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
 
-public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
+public class WrappingNntpClient(INntpClient usenetClient) : NntpClient, IQueueConnectionWarmer
 {
     private INntpClient _usenetClient = usenetClient;
+    protected INntpClient UnderlyingClient => _usenetClient;
 
     public override Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken) =>
@@ -88,6 +89,11 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
         CancellationToken cancellationToken) =>
         _usenetClient.CheckAllSegmentsPipelinedAsync(
             segmentIds, depth, fallbackConcurrency, progress, cancellationToken);
+
+    public Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken) =>
+        _usenetClient is IQueueConnectionWarmer warmer
+            ? warmer.PrewarmQueueAsync(targetConnections, cancellationToken)
+            : Task.CompletedTask;
 
     protected void ReplaceUnderlyingClient(INntpClient usenetClient)
     {

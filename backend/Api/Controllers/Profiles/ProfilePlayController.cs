@@ -211,10 +211,13 @@ public class ProfilePlayController(
                     "Failed to fetch NZB from indexer.", 10, HttpContext.RequestAborted).ConfigureAwait(false);
             }
             var single = new PreVerifyResult(entry.Primary, nzbBytes, PlaybackFastVerifier.Verdict.Available, null);
-            var (result, reason, newNzoId) = await CommitAsync(nzbToken, single, deadline, totalCts.Token).ConfigureAwait(false);
+            var (result, reason, newNzoId, prepDurationMs, healthDurationMs) =
+                await CommitAsync(nzbToken, single, deadline, totalCts.Token).ConfigureAwait(false);
             RecordAttempt(clickId, entry.Primary, contentType, requestedTitle, 0,
                 MapCommitReason(reason), CommitReasonToMessage(reason), startsAt, isWinner: reason == CommitReason.Completed,
-                contentGroupKey: contentGroupKey);
+                contentGroupKey: contentGroupKey,
+                prepDurationMs: prepDurationMs,
+                healthDurationMs: healthDurationMs);
             if (reason == CommitReason.Completed) resolvedNzoId.Value = newNzoId;
             if (reason == CommitReason.BudgetTimeout && newNzoId.HasValue)
                 ScheduleOrphanCleanup(newNzoId.Value);
@@ -436,13 +439,16 @@ public class ProfilePlayController(
             {
                 var best = ready.Values[0];
                 ready.RemoveAt(0);
-                var (action, reason, newNzoId) = await CommitAsync(nzbToken, best, deadline, totalCts.Token).ConfigureAwait(false);
+                var (action, reason, newNzoId, prepDurationMs, healthDurationMs) =
+                    await CommitAsync(nzbToken, best, deadline, totalCts.Token).ConfigureAwait(false);
                 RecordAttempt(clickId, best.Candidate, contentType, requestedTitle,
                     rankIndex[best.Candidate.NzbUrl],
                     MapCommitReason(reason), CommitReasonToMessage(reason), startsAt,
                     isWinner: reason == CommitReason.Completed,
                     contentGroupKey: contentGroupKey,
-                    providerHost: best.ResponderHost);
+                    providerHost: best.ResponderHost,
+                    prepDurationMs: prepDurationMs,
+                    healthDurationMs: healthDurationMs);
                 if (action is not null)
                 {
                     // Winner found. Cancel in-flight losers so they stop holding
@@ -647,7 +653,9 @@ public class ProfilePlayController(
         Dictionary<string, DateTimeOffset> startsAt,
         bool isWinner,
         string? contentGroupKey,
-        string? providerHost = null)
+        string? providerHost = null,
+        int? prepDurationMs = null,
+        int? healthDurationMs = null)
     {
         var attemptedAt = startsAt.GetValueOrDefault(c.NzbUrl, DateTimeOffset.UtcNow);
         watchdogLog.Record(new WatchdogEntry
@@ -663,6 +671,8 @@ public class ProfilePlayController(
             Result = outcome,
             FailReason = failReason,
             DurationMs = (int)Math.Max(0, (DateTimeOffset.UtcNow - attemptedAt).TotalMilliseconds),
+            PrepDurationMs = prepDurationMs,
+            HealthDurationMs = healthDurationMs,
             IsWinner = isWinner,
             ProviderHost = providerHost,
             ContentGroupKey = contentGroupKey,
@@ -796,7 +806,12 @@ public class ProfilePlayController(
         }, ct).ConfigureAwait(false);
     }
 
-    private async Task<(IActionResult? Result, CommitReason Reason, Guid? NewlyEnqueuedNzoId)> CommitAsync(
+    private async Task<(
+        IActionResult? Result,
+        CommitReason Reason,
+        Guid? NewlyEnqueuedNzoId,
+        int? PrepDurationMs,
+        int? HealthDurationMs)> CommitAsync(
         string nzbToken,
         PreVerifyResult preVerify,
         DateTimeOffset deadline,
@@ -850,7 +865,8 @@ public class ProfilePlayController(
                 };
                 var addFileController = new AddFileController(HttpContext, dbClient, queueManager, configManager, websocketManager);
                 var addResponse = await addFileController.AddFileAsync(addFileRequest).ConfigureAwait(false);
-                if (addResponse.NzoIds.Count == 0) return (null, CommitReason.EnqueueFailed, null);
+                if (addResponse.NzoIds.Count == 0)
+                    return (null, CommitReason.EnqueueFailed, null, null, null);
                 nzoId = Guid.Parse(addResponse.NzoIds[0]);
                 newlyEnqueuedNzoId = nzoId;
                 // Tag this queue item as profile-flow so the queue processor doesn't
@@ -863,12 +879,12 @@ public class ProfilePlayController(
         }
         catch (OperationCanceledException)
         {
-            return (null, CommitReason.Cancelled, null);
+            return (null, CommitReason.Cancelled, null, null, null);
         }
         catch (Exception e)
         {
             Log.Debug(e, "Enqueue failed for {Url}", c.NzbUrl);
-            return (null, CommitReason.EnqueueFailed, null);
+            return (null, CommitReason.EnqueueFailed, null, null, null);
         }
 
         // If this click joined an existing play-owned queue item, refresh its
@@ -887,7 +903,8 @@ public class ProfilePlayController(
 
         while (DateTimeOffset.UtcNow < deadline)
         {
-            if (ct.IsCancellationRequested) return (null, CommitReason.Cancelled, newlyEnqueuedNzoId);
+            if (ct.IsCancellationRequested)
+                return (null, CommitReason.Cancelled, newlyEnqueuedNzoId, null, null);
 
             HistoryItem? history;
             try
@@ -895,7 +912,10 @@ public class ProfilePlayController(
                 history = await dbClient.Ctx.HistoryItems.AsNoTracking()
                     .FirstOrDefaultAsync(x => x.Id == nzoId, ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { return (null, CommitReason.Cancelled, newlyEnqueuedNzoId); }
+            catch (OperationCanceledException)
+            {
+                return (null, CommitReason.Cancelled, newlyEnqueuedNzoId, null, null);
+            }
 
             if (history is not null)
             {
@@ -903,11 +923,14 @@ public class ProfilePlayController(
                 if (history.DownloadStatus != HistoryItem.DownloadStatusOption.Completed)
                 {
                     Log.Debug("Candidate {Url} processing failed: {Msg}", c.NzbUrl, history.FailMessage);
-                    return (null, CommitReason.QueueFailed, newlyEnqueuedNzoId);
+                    return (null, CommitReason.QueueFailed, newlyEnqueuedNzoId,
+                        history.PrepDurationMs, history.HealthDurationMs);
                 }
 
                 var redirect = await BuildRedirectForHistoryItemAsync(nzoId, cacheEntry, ct).ConfigureAwait(false);
-                if (redirect is null) return (null, CommitReason.QueueFailed, newlyEnqueuedNzoId);
+                if (redirect is null)
+                    return (null, CommitReason.QueueFailed, newlyEnqueuedNzoId,
+                        history.PrepDurationMs, history.HealthDurationMs);
 
                 if (newlyEnqueuedNzoId.HasValue && contentGroupKey is not null && variantResolver.IsEnabled)
                 {
@@ -930,7 +953,8 @@ public class ProfilePlayController(
 
                 Log.Debug("play-timing commit {Indexer} newEnqueue={NewEnqueue} waited={Waited}ms",
                     c.IndexerName, newlyEnqueuedNzoId.HasValue, commitTimer.ElapsedMilliseconds);
-                return (redirect, CommitReason.Completed, newlyEnqueuedNzoId);
+                return (redirect, CommitReason.Completed, newlyEnqueuedNzoId,
+                    history.PrepDurationMs, history.HealthDurationMs);
             }
 
             if (stallFailover)
@@ -946,7 +970,7 @@ public class ProfilePlayController(
                     lastProgressAt = now;
                 }
                 if ((isMine && now - lastProgressAt >= stallWindow) || now - candidateStart >= maxPerCandidate)
-                    return (null, CommitReason.Aborted, newlyEnqueuedNzoId);
+                    return (null, CommitReason.Aborted, newlyEnqueuedNzoId, null, null);
             }
 
             // Refresh while actively polling so cleanup doesn't kill an item we're waiting on.
@@ -954,12 +978,15 @@ public class ProfilePlayController(
                 _playLastSeen[nzoId] = DateTimeOffset.UtcNow;
 
             try { await Task.Delay(PollInterval, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { return (null, CommitReason.Cancelled, newlyEnqueuedNzoId); }
+            catch (OperationCanceledException)
+            {
+                return (null, CommitReason.Cancelled, newlyEnqueuedNzoId, null, null);
+            }
         }
 
         // Budget exhausted — caller is expected to schedule orphan cleanup so the
         // queue item doesn't keep downloading a release the player gave up on.
-        return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId);
+        return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId, null, null);
     }
 
     private async Task<Guid?> FindCompletedReleaseAsync(string fileName, string category, CancellationToken ct)

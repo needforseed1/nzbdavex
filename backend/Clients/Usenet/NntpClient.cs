@@ -289,7 +289,7 @@ public abstract class NntpClient : INntpClient
             var remaining = segmentIds.Skip(verifiedPrefix);
             var fallbackProgress = progress == null
                 ? null
-                : new Progress<int>(x => progress.Report(verifiedPrefix + x));
+                : new InlineProgress<int>(x => progress.Report(verifiedPrefix + x));
             await CheckAllSegmentsAsync(remaining, fallbackConcurrency, fallbackProgress, cancellationToken)
                 .ConfigureAwait(false);
         }

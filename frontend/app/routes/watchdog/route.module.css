@@ -398,8 +398,36 @@
     font-weight: 600;
 }
 
-.winnerDuration {
+.timingBoxes {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-left: 4px;
+}
+
+.timingBox {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 76px;
+    padding: 4px 8px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.timingLabel {
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.timingValue {
+    margin-left: auto;
     color: var(--text-secondary);
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
 }
 
@@ -617,6 +645,15 @@
            viewport on iOS. */
         word-break: break-word;
         overflow-wrap: anywhere;
+    }
+
+    .timingBoxes {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .timingBox {
+        flex: 1 1 0;
     }
 
     .controls {

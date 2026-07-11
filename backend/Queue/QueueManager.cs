@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
@@ -28,6 +30,9 @@ public class QueueManager : IDisposable
 
     private CancellationTokenSource _sleepingQueueToken = new();
     private readonly Lock _sleepingQueueLock = new();
+    private readonly object _queuePrewarmLock = new();
+    private Task _queuePrewarmTask = Task.CompletedTask;
+    private CancellationTokenSource? _queuePrewarmCts;
 
     public QueueManager(
         UsenetStreamingClient usenetClient,
@@ -65,6 +70,63 @@ public class QueueManager : IDisposable
                 _sleepingQueueToken.CancelAfter(cancelAfter.Value);
             else
                 _sleepingQueueToken.Cancel();
+        }
+    }
+
+    public void BeginQueuePrewarm()
+    {
+        lock (_queuePrewarmLock)
+        {
+            if (!_queuePrewarmTask.IsCompleted) return;
+            var target = _configManager.GetMaxQueueConnections();
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(SigtermUtil.GetCancellationToken());
+            cts.CancelAfter(TimeSpan.FromSeconds(15));
+            _queuePrewarmCts = cts;
+            _queuePrewarmTask = PrewarmQueueAsync(target, cts);
+        }
+    }
+
+    public void EndQueuePrewarm()
+    {
+        CancellationTokenSource? cts;
+        lock (_queuePrewarmLock)
+            cts = _queuePrewarmCts;
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private async Task PrewarmQueueAsync(int target, CancellationTokenSource cts)
+    {
+        await Task.Yield();
+        var timer = Stopwatch.StartNew();
+        Log.Information("queue-prewarm stage=start target={Target}", target);
+        try
+        {
+            await _usenetClient.PrewarmQueueAsync(target, cts.Token).ConfigureAwait(false);
+            Log.Information("queue-prewarm stage=done target={Target} ms={ElapsedMs}",
+                target, timer.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            Log.Information("queue-prewarm stage=stopped target={Target} ms={ElapsedMs}",
+                target, timer.ElapsedMilliseconds);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "queue-prewarm stage=failed target={Target} ms={ElapsedMs}",
+                target, timer.ElapsedMilliseconds);
+        }
+        finally
+        {
+            lock (_queuePrewarmLock)
+                if (ReferenceEquals(_queuePrewarmCts, cts))
+                    _queuePrewarmCts = null;
+            cts.Dispose();
         }
     }
 
@@ -177,16 +239,10 @@ public class QueueManager : IDisposable
         CancellationTokenSource cts
     )
     {
-        var progressHook = new Progress<int>();
-        var task = new QueueItemProcessor(
-            queueItem, queueNzbStream, dbClient, usenetClient,
-            _configManager, _websocketManager, _providerUsageTracker,
-            _watchdogLog, _sourceTracker, progressHook, _retryAttempts, cts.Token
-        ).ProcessAsync();
         var inProgressQueueItem = new InProgressQueueItem()
         {
             QueueItem = queueItem,
-            ProcessingTask = task,
+            ProcessingTask = Task.CompletedTask,
             ProgressPercentage = 0,
             CancellationTokenSource = cts
         };
@@ -209,7 +265,7 @@ public class QueueManager : IDisposable
             _websocketManager.SendMessage(WebsocketTopic.QueueItemProgress, $"{queueItem.Id}|{value}");
         }
 
-        progressHook.ProgressChanged += (_, progress) =>
+        var progressHook = new InlineProgress<int>(progress =>
         {
             lock (progressLock)
             {
@@ -221,7 +277,13 @@ public class QueueManager : IDisposable
             else debounce(SendLatestProgress);
             providersDebounce(() => _websocketManager.SendMessage(
                 WebsocketTopic.QueueItemProviders, BuildProvidersMessage(queueItem.Id)));
-        };
+        });
+        inProgressQueueItem.ProcessingTask = new QueueItemProcessor(
+            queueItem, queueNzbStream, dbClient, usenetClient,
+            _configManager, _websocketManager, _providerUsageTracker,
+            _watchdogLog, _sourceTracker, progressHook, _retryAttempts,
+            EndQueuePrewarm, cts.Token
+        ).ProcessAsync();
         return inProgressQueueItem;
     }
 
@@ -280,6 +342,7 @@ public class QueueManager : IDisposable
 
     public void Dispose()
     {
+        EndQueuePrewarm();
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
     }
@@ -288,7 +351,7 @@ public class QueueManager : IDisposable
     {
         public QueueItem QueueItem { get; init; }
         public int ProgressPercentage { get; set; }
-        public Task ProcessingTask { get; init; }
+        public Task ProcessingTask { get; set; }
         public CancellationTokenSource CancellationTokenSource { get; init; }
     }
 }

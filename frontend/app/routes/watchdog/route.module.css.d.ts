@@ -40,7 +40,10 @@ declare const styles: {
   readonly "timestamp": string;
   readonly "winnerLine": string;
   readonly "winnerIndexer": string;
-  readonly "winnerDuration": string;
+  readonly "timingBoxes": string;
+  readonly "timingBox": string;
+  readonly "timingLabel": string;
+  readonly "timingValue": string;
   readonly "winnerDot": string;
   readonly "attemptTableWrap": string;
   readonly "attemptTable": string;

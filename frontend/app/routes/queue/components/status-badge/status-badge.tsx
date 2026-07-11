@@ -9,7 +9,6 @@ export type StatusBadgeProps = {
     error?: string,
 }
 
-
 export function StatusBadge({ className, status, percentage, error }: StatusBadgeProps) {
     const statusLower = status?.toLowerCase();
 

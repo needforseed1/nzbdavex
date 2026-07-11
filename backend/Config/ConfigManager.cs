@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Models;
 using NzbWebDAV.Utils;
 using Serilog;
 
@@ -186,15 +187,15 @@ public class ConfigManager
         return v == null || bool.Parse(v);
     }
 
-    public bool IsCascadeEnabled()
+    public bool IsBackupHealthChecksEnabled()
     {
-        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.cascade.enabled"));
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.health.include-backup.enabled"));
         return v != null && bool.Parse(v);
     }
 
-    public bool IsPrepSpreadEnabled()
+    public bool IsCascadeEnabled()
     {
-        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.prep-spread.enabled"));
+        var v = StringUtil.EmptyToNull(GetConfigValue("usenet.cascade.enabled"));
         return v != null && bool.Parse(v);
     }
 
@@ -216,8 +217,19 @@ public class ConfigManager
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.lanes"));
         if (configured is null || !int.TryParse(configured, out var value)) return 64;
-        var availableConnections = Math.Max(1, GetUsenetProviderConfig().TotalStatCheckConnections);
+        var availableConnections = GetHealthCheckConnections();
         return Math.Clamp(value, 1, availableConnections);
+    }
+
+    public int GetHealthCheckConnections()
+    {
+        var includeBackup = IsBackupHealthChecksEnabled();
+        return Math.Max(1, GetUsenetProviderConfig().Providers
+            .Where(x => x.Type is ProviderType.Pooled
+                or ProviderType.BackupAndStats
+                or ProviderType.HealthChecksOnly
+                || (includeBackup && x.Type == ProviderType.BackupOnly))
+            .Sum(x => x.MaxConnections));
     }
 
     public int GetArticleBufferSize()

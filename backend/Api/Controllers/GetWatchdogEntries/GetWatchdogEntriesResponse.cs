@@ -23,6 +23,8 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         public required WatchdogEntry.Outcome Outcome { get; init; }
         [JsonPropertyName("failReason")] public string? FailReason { get; init; }
         [JsonPropertyName("durationMs")] public required int DurationMs { get; init; }
+        [JsonPropertyName("prepDurationMs")] public int? PrepDurationMs { get; init; }
+        [JsonPropertyName("healthDurationMs")] public int? HealthDurationMs { get; init; }
         [JsonPropertyName("isWinner")] public required bool IsWinner { get; init; }
         [JsonPropertyName("providerHost")] public string? ProviderHost { get; init; }
         [JsonPropertyName("providerNickname")] public string? ProviderNickname { get; init; }

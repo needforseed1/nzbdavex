@@ -205,13 +205,24 @@ type UsenetProviderConfig = {
     Providers: ConnectionDetails[];
 };
 
-const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
-    [ProviderType.Disabled]: "Disabled",
-    [ProviderType.Pooled]: "Pool Connections",
-    [ProviderType.BackupAndStats]: "Backup & Health Checks",
-    [ProviderType.BackupOnly]: "Backup Only",
-    [ProviderType.HealthChecksOnly]: "Health Checks Only",
+type ProviderRole = "primary" | "prep" | "backup-health" | "backup" | "health" | "disabled";
+
+const PROVIDER_ROLE_LABELS: Record<ProviderRole, string> = {
+    primary: "Primary",
+    prep: "Prep only",
+    "backup-health": "Backup + health checks",
+    backup: "Backup",
+    health: "Health checks only",
+    disabled: "Disabled",
 };
+
+function getProviderRole(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">): ProviderRole {
+    if (provider.Type === ProviderType.Disabled) return "disabled";
+    if (provider.Type === ProviderType.HealthChecksOnly) return "health";
+    if (provider.Type === ProviderType.BackupAndStats) return "backup-health";
+    if (provider.Type === ProviderType.BackupOnly) return "backup";
+    return provider.PrepOnly ? "prep" : "primary";
+}
 
 function parseProviderConfig(jsonString: string): UsenetProviderConfig {
     try {
@@ -451,9 +462,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 )}
                                                 {provider.Nickname?.trim() || provider.Host}
                                                 {isDisabled && <span className={styles["provider-disabled-badge"]}>Disabled</span>}
-                                                {provider.PrepOnly && !isDisabled && <span className={styles["provider-prep-badge"]}>Prep only</span>}
-                                                {provider.Type === ProviderType.HealthChecksOnly && <span className={styles["provider-prep-badge"]}>STAT only</span>}
-                                                {provider.Type === ProviderType.Pooled && provider.PrepSpreadEnabled === false && !isDisabled && <span className={styles["provider-prep-badge"]}>No prep spread</span>}
                                             </div>
                                             {provider.Nickname?.trim() && (
                                                 <div className={styles["provider-host-secondary"]}>
@@ -471,7 +479,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                     ref={setActivatorNodeRef}
                                                     className={styles["header-action-button"]}
                                                     style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: "none" }}
-                                                    title="Drag to reorder"
+                                                    data-tooltip="Drag to reorder"
                                                     aria-label="Drag to reorder"
                                                     {...attributes}
                                                     {...listeners}
@@ -486,7 +494,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                             <button
                                                 className={`${styles["header-action-button"]} ${styles["toggle"]} ${isDisabled ? styles["toggle-off"] : styles["toggle-on"]}`}
                                                 onClick={() => handleToggleProvider(index)}
-                                                title={isDisabled ? "Enable Provider" : "Disable Provider"}
+                                                data-tooltip={isDisabled ? "Enable Provider" : "Disable Provider"}
+                                                aria-label={isDisabled ? "Enable Provider" : "Disable Provider"}
                                                 aria-pressed={!isDisabled}
                                             >
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -497,7 +506,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                             <button
                                                 className={styles["header-action-button"]}
                                                 onClick={() => handleEditProvider(index)}
-                                                title="Edit Provider"
+                                                data-tooltip="Edit Provider"
+                                                aria-label="Edit Provider"
                                             >
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                                     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -507,7 +517,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                             <button
                                                 className={`${styles["header-action-button"]} ${styles["delete"]}`}
                                                 onClick={() => handleDeleteProvider(index)}
-                                                title="Delete Provider"
+                                                data-tooltip="Delete Provider"
+                                                aria-label="Delete Provider"
                                             >
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                                     <polyline points="3 6 5 6 21 6" />
@@ -586,7 +597,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 <div className={styles["provider-detail-content"]}>
                                                     <span className={styles["provider-detail-label"]}>Behavior</span>
                                                     <span className={styles["provider-detail-value"]}>
-                                                        {PROVIDER_TYPE_LABELS[provider.Type]}
+                                                        {PROVIDER_ROLE_LABELS[getProviderRole(provider)]}
                                                     </span>
                                                 </div>
                                             </div>
@@ -611,19 +622,24 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 )}
             </div>
 
+            <details className={styles["advanced-panel"]}>
+                <summary>
+                    <span>Advanced performance</span>
+                    <span className={styles["advanced-summary-note"]}>Routing and protocol tuning</span>
+                </summary>
+                <div className={styles["advanced-panel-content"]}>
             <div className={styles.section}>
                 <div className={styles.sectionHeader}>
-                    <div>Cascade (Optional)</div>
+                    <div>Provider routing</div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
-                    <div className={styles["form-checkbox-wrapper"]}>
-                        <input
-                            type="checkbox"
-                            id="cascade-enabled"
-                            className={`${styles["form-checkbox"]} toggle-switch`}
-                            checked={cascadeEnabled}
-                            onChange={(e) => {
-                                const enabling = e.target.checked;
+                    <label htmlFor="provider-routing" className={styles["form-label"]}>Strategy</label>
+                    <select
+                        id="provider-routing"
+                        className={styles["form-select"]}
+                        value={cascadeEnabled ? "ordered" : "balanced"}
+                        onChange={(e) => {
+                                const enabling = e.target.value === "ordered";
                                 const needsSeed = enabling && providerConfig.Providers.every(p => !p.Priority);
                                 const providers = needsSeed
                                     ? providerConfig.Providers.map((p, i) => ({ ...p, Priority: i }))
@@ -633,50 +649,20 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                     "usenet.cascade.enabled": enabling ? "true" : "false",
                                     "usenet.providers": serializeProviderConfig({ ...providerConfig, Providers: providers }),
                                 });
-                            }}
-                        />
-                        <label htmlFor="cascade-enabled" className={styles["form-checkbox-label"]}>
-                            Enable cascade routing
-                        </label>
-                    </div>
+                        }}
+                    >
+                        <option value="balanced">Balanced</option>
+                        <option value="ordered">Ordered failover</option>
+                    </select>
                     <div className={styles["form-hint"]}>
-                        Sets the order your providers are used. Drag the cards to arrange them. While this is off, all
-                        providers are used together.
+                        Balanced uses available providers together. Ordered failover follows the card order.
                     </div>
                 </div>
             </div>
 
             <div className={styles.section}>
                 <div className={styles.sectionHeader}>
-                    <div>Queue / Prep Routing</div>
-                </div>
-                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
-                    <div className={styles["form-checkbox-wrapper"]}>
-                        <input
-                            type="checkbox"
-                            id="prep-spread-enabled"
-                            className={`${styles["form-checkbox"]} toggle-switch`}
-                            checked={config["usenet.prep-spread.enabled"] === "true"}
-                            onChange={(e) => setNewConfig({
-                                ...config,
-                                "usenet.prep-spread.enabled": e.target.checked ? "true" : "false",
-                            })}
-                        />
-                        <label htmlFor="prep-spread-enabled" className={styles["form-checkbox-label"]}>
-                            Spread queue/prep across pooled providers
-                        </label>
-                    </div>
-                    <div className={styles["form-hint"]}>
-                        Queue imports and preflight will fan out across eligible Pool Connections providers by open capacity.
-                        Health Checks Only providers can issue STAT requests but are blocked from HEAD, BODY and ARTICLE traffic.
-                        Playback keeps fastest-provider routing across download-capable providers.
-                    </div>
-                </div>
-            </div>
-
-            <div className={styles.section}>
-                <div className={styles.sectionHeader}>
-                    <div>NNTP Pipelining (Experimental)</div>
+                    <div>Pipelining</div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                     <div className={styles["form-checkbox-wrapper"]}>
@@ -766,6 +752,34 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     />
                     <div className={styles["form-hint"]}>
                         Parallel pipelined STAT connections for article health checks. 64 is the default; raise it to use more provider connections or lower it if a provider throttles checks.
+                    </div>
+                </div>
+            </div>
+                </div>
+            </details>
+
+            <div className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <div>Backup health checks</div>
+                </div>
+                <div className={styles["form-group"]}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
+                            id="include-backup-health-checks"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.health.include-backup.enabled"] === "true"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.health.include-backup.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="include-backup-health-checks" className={styles["form-checkbox-label"]}>
+                            Include Backup providers in health checks
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Lets Backup providers share normal STAT work. Leave this off to reserve block accounts for missing-article recovery only.
                     </div>
                 </div>
             </div>
@@ -876,7 +890,6 @@ function ProviderModal({
     const [pipeliningDepth, setPipeliningDepth] = useState(provider?.PipeliningDepth?.toString() || "");
     const [healthPipeliningDepth, setHealthPipeliningDepth] = useState(provider?.HealthPipeliningDepth?.toString() || "");
     const [prepOnly, setPrepOnly] = useState(provider?.PrepOnly ?? false);
-    const [prepSpreadEnabled, setPrepSpreadEnabled] = useState(provider?.PrepSpreadEnabled ?? true);
     const [type, setType] = useState<ProviderType>(provider?.Type ?? ProviderType.Pooled);
     const [limitValue, setLimitValue] = useState(initialLimit.value);
     const [limitUnit, setLimitUnit] = useState<ByteUnitLabel>(initialLimit.unit);
@@ -891,6 +904,8 @@ function ProviderModal({
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
     const [benchmarkMode, setBenchmarkMode] = useState<BenchmarkMode>("speed");
+    const [playbackPipeliningRecommendation, setPlaybackPipeliningRecommendation] = useState<boolean | null>(null);
+    const [healthPipeliningRecommendation, setHealthPipeliningRecommendation] = useState<boolean | null>(null);
     const benchmarkAbortRef = useRef<AbortController | null>(null);
 
     // Reset form when modal opens or provider changes
@@ -908,13 +923,12 @@ function ProviderModal({
             setPipeliningDepth(provider?.PipeliningDepth?.toString() || "");
             setHealthPipeliningDepth(provider?.HealthPipeliningDepth?.toString() || "");
             setPrepOnly(provider?.PrepOnly ?? false);
-            setPrepSpreadEnabled(provider?.PrepSpreadEnabled ?? true);
             setType(provider?.Type ?? ProviderType.Pooled);
             setLimitValue(lim.value);
             setLimitUnit(lim.unit);
             setInitialUsedValue(used.value);
             setInitialUsedUnit(used.unit);
-            setConnectionTested(false);
+            setConnectionTested(provider !== null);
             setTestError(null);
             setIntensity("quick");
             setIsBenchmarking(false);
@@ -922,6 +936,8 @@ function ProviderModal({
             setBenchmarkResult(null);
             setBenchmarkError(null);
             setBenchmarkMode("speed");
+            setPlaybackPipeliningRecommendation(null);
+            setHealthPipeliningRecommendation(null);
         }
     }, [show, provider]);
 
@@ -931,10 +947,6 @@ function ProviderModal({
         if (!show) benchmarkAbortRef.current?.abort();
     }, [show]);
     useEffect(() => () => benchmarkAbortRef.current?.abort(), []);
-
-    useEffect(() => {
-        if (type === ProviderType.HealthChecksOnly) setBenchmarkMode("health");
-    }, [type]);
 
     // Handle Escape key to close modal
     useEffect(() => {
@@ -1061,8 +1073,7 @@ function ProviderModal({
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
-        // In pipelining-only mode there's no connection recommendation, so this
-        // leaves Max Connections untouched and only applies pipelining.
+
         if (benchmarkResult.recommendedConnections && benchmarkResult.recommendedConnections > 0) {
             setMaxConnections(String(benchmarkResult.recommendedConnections));
         }
@@ -1071,16 +1082,24 @@ function ProviderModal({
         }
         if (benchmarkResult.startup) {
             setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
-            onApplyPlaybackPipelining(benchmarkResult.startup.recommendPlaybackPipelining);
+            setPlaybackPipeliningRecommendation(benchmarkResult.startup.recommendPlaybackPipelining);
         }
         if (benchmarkResult.healthPipelining?.reliable) {
             setHealthPipeliningDepth(String(benchmarkResult.healthPipelining.recommendedDepth));
-            onApplyHealthPipelining(true);
+            setHealthPipeliningRecommendation(true);
         }
-    }, [benchmarkResult, onApplyPlaybackPipelining, onApplyHealthPipelining]);
+
+    }, [benchmarkResult]);
 
     const handleCancelBenchmark = useCallback(() => {
         benchmarkAbortRef.current?.abort();
+    }, []);
+
+    const handleBenchmarkModeChange = useCallback((value: BenchmarkMode) => {
+        setBenchmarkMode(value);
+        setBenchmarkProgress(null);
+        setBenchmarkResult(null);
+        setBenchmarkError(null);
     }, []);
 
     const handleSave = useCallback(() => {
@@ -1100,6 +1119,12 @@ function ProviderModal({
             : (provider?.BytesUsedResetAt ?? 0);
 
         const trimmedNickname = nickname.trim();
+        if (playbackPipeliningRecommendation !== null) {
+            onApplyPlaybackPipelining(playbackPipeliningRecommendation);
+        }
+        if (healthPipeliningRecommendation !== null) {
+            onApplyHealthPipelining(healthPipeliningRecommendation);
+        }
         onSave({
             Type: type,
             Host: host,
@@ -1111,7 +1136,7 @@ function ProviderModal({
             PipeliningDepth: pipeliningDepth.trim() === "" ? null : parseInt(pipeliningDepth, 10),
             HealthPipeliningDepth: healthPipeliningDepth.trim() === "" ? null : parseInt(healthPipeliningDepth, 10),
             PrepOnly: type === ProviderType.HealthChecksOnly ? false : prepOnly,
-            PrepSpreadEnabled: type === ProviderType.HealthChecksOnly ? false : prepSpreadEnabled,
+            PrepSpreadEnabled: type === ProviderType.Pooled,
             Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
@@ -1119,7 +1144,41 @@ function ProviderModal({
             BytesUsedOffset: offsetToPersist,
             BytesUsedResetAt: resetAtToPersist,
         });
-    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, healthPipeliningDepth, prepOnly, prepSpreadEnabled, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit, onSave]);
+    }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, healthPipeliningDepth,
+        prepOnly, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit,
+        playbackPipeliningRecommendation, healthPipeliningRecommendation, onSave,
+        onApplyPlaybackPipelining, onApplyHealthPipelining]);
+
+    const role = getProviderRole({ Type: type, PrepOnly: prepOnly });
+
+    const handleRoleChange = useCallback((nextRole: ProviderRole) => {
+        switch (nextRole) {
+            case "primary":
+                setType(ProviderType.Pooled);
+                setPrepOnly(false);
+                break;
+            case "prep":
+                setType(ProviderType.Pooled);
+                setPrepOnly(true);
+                break;
+            case "backup-health":
+                setType(ProviderType.BackupAndStats);
+                setPrepOnly(false);
+                break;
+            case "backup":
+                setType(ProviderType.BackupOnly);
+                setPrepOnly(false);
+                break;
+            case "health":
+                setType(ProviderType.HealthChecksOnly);
+                setPrepOnly(false);
+                break;
+            case "disabled":
+                setType(ProviderType.Disabled);
+                setPrepOnly(false);
+                break;
+        }
+    }, []);
 
     const handleOverlayClick = useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -1265,8 +1324,30 @@ function ProviderModal({
                         </div>
 
                         <div className={styles["form-group"]}>
+                            <label htmlFor="provider-role" className={styles["form-label"]}>
+                                Role
+                            </label>
+                            <select
+                                id="provider-role"
+                                className={styles["form-select"]}
+                                value={role}
+                                onChange={(e) => handleRoleChange(e.target.value as ProviderRole)}
+                            >
+                                <option value="primary">Primary</option>
+                                <option value="prep">Prep only</option>
+                                <option value="backup-health">Backup + health checks</option>
+                                <option value="backup">Backup</option>
+                                <option value="health">Health checks only</option>
+                                <option value="disabled">Disabled</option>
+                            </select>
+                            <div className={styles["form-hint"]}>
+                                Primary providers handle prep, playback, and health checks. Health-check traffic is shared across all eligible providers by measured speed and available capacity.
+                            </div>
+                        </div>
+
+                        <div className={styles["form-group"]}>
                             <label htmlFor="provider-pipelining-depth" className={styles["form-label"]}>
-                                BODY pipeline depth
+                                Playback pipeline depth
                             </label>
                             <input
                                 type="text"
@@ -1277,11 +1358,9 @@ function ProviderModal({
                                 onChange={(e) => setPipeliningDepth(e.target.value)}
                             />
                             <div className={styles["form-hint"]}>
-                                Requests kept in flight per connection (1–64) when NNTP pipelining is
-                                enabled. Leave blank to use the global default.
+                                Leave blank to use the global playback depth.
                             </div>
                         </div>
-
                         <div className={styles["form-group"]}>
                             <label htmlFor="provider-health-pipelining-depth" className={styles["form-label"]}>
                                 Health pipeline depth
@@ -1295,33 +1374,11 @@ function ProviderModal({
                                 onChange={(e) => setHealthPipeliningDepth(e.target.value)}
                             />
                             <div className={styles["form-hint"]}>
-                                STAT requests kept in flight per connection (1–64) during health checks.
                                 Leave blank to use the global health depth.
                             </div>
                         </div>
 
-                        <div className={styles["form-group"]}>
-                            <label htmlFor="provider-type" className={styles["form-label"]}>
-                                Type
-                            </label>
-                            <select
-                                id="provider-type"
-                                className={styles["form-select"]}
-                                value={type}
-                                onChange={(e) => setType(parseInt(e.target.value, 10) as ProviderType)}
-                            >
-                                <option value={ProviderType.Disabled}>Disabled</option>
-                                <option value={ProviderType.Pooled}>Pool Connections</option>
-                                <option value={ProviderType.BackupOnly}>Backup Only</option>
-                                <option value={ProviderType.HealthChecksOnly}>Health Checks Only</option>
-                            </select>
-                            <div className={styles["form-hint"]}>
-                                Health Checks Only permits STAT requests and blocks all article and header downloads.
-                            </div>
-                        </div>
-
-
-                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <div className={`${styles["form-group"]} ${styles["compact-toggle-group"]}`}>
                             <div className={styles["form-checkbox-wrapper"]}>
                                 <input
                                     type="checkbox"
@@ -1339,45 +1396,7 @@ function ProviderModal({
                             </div>
                         </div>
 
-                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
-                            <div className={styles["form-checkbox-wrapper"]}>
-                                <input
-                                    type="checkbox"
-                                    id="provider-prep-only"
-                                    className={`${styles["form-checkbox"]} toggle-switch`}
-                                    checked={type !== ProviderType.HealthChecksOnly && prepOnly}
-                                    disabled={type === ProviderType.HealthChecksOnly}
-                                    onChange={(e) => setPrepOnly(e.target.checked)}
-                                />
-                                <label htmlFor="provider-prep-only" className={styles["form-checkbox-label"]}>
-                                    Use for prep only
-                                </label>
-                            </div>
-                            <div className={styles["form-hint"]}>
-                                Allows imports, fast checks, preflight and startup prep to use this provider, but excludes it from playback streams.
-                            </div>
-                        </div>
-
-                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
-                            <div className={styles["form-checkbox-wrapper"]}>
-                                <input
-                                    type="checkbox"
-                                    id="provider-prep-spread"
-                                    className={`${styles["form-checkbox"]} toggle-switch`}
-                                    checked={type !== ProviderType.HealthChecksOnly && prepSpreadEnabled}
-                                    disabled={type !== ProviderType.Pooled}
-                                    onChange={(e) => setPrepSpreadEnabled(e.target.checked)}
-                                />
-                                <label htmlFor="provider-prep-spread" className={styles["form-checkbox-label"]}>
-                                    Include in queue/prep spread
-                                </label>
-                            </div>
-                            <div className={styles["form-hint"]}>
-                                When global prep spreading is enabled, this pooled provider can receive first-choice queue/import, preflight and health-check work.
-                            </div>
-                        </div>
-
-                        <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
+                        <div className={styles["form-group"]}>
                             <label className={styles["form-label"]}>
                                 Data Cap (optional)
                             </label>
@@ -1401,7 +1420,7 @@ function ProviderModal({
                                 </select>
                             </div>
                             <div className={styles["form-hint"]}>
-                                For block accounts: total bytes you've purchased. The provider auto-pauses at ~95% of this value to absorb in-flight requests, so set the cap to your full block size. The 5% headroom keeps you from overshooting.
+                                For block accounts. Pauses near 95% so in-flight requests do not exceed the cap.
                             </div>
                         </div>
 
@@ -1434,7 +1453,23 @@ function ProviderModal({
                                 </div>
                             </div>
                         )}
+
                     </div>
+
+                    <BenchmarkPanel
+                        canBenchmark={canBenchmark}
+                        isBenchmarking={isBenchmarking}
+                        intensity={intensity}
+                        setIntensity={setIntensity}
+                        mode={benchmarkMode}
+                        setMode={handleBenchmarkModeChange}
+                        progress={benchmarkProgress}
+                        result={benchmarkResult}
+                        error={benchmarkError}
+                        onRun={handleAutoTune}
+                        onCancel={handleCancelBenchmark}
+                        onApply={handleApplyRecommendation}
+                    />
 
                     {testError && (
                         <div className={`${styles.alert} ${styles["alert-danger"]}`} style={{ marginTop: '16px' }}>
@@ -1447,30 +1482,12 @@ function ProviderModal({
                             Connection test successful!
                         </div>
                     )}
-
-                    <BenchmarkPanel
-                        canBenchmark={canBenchmark}
-                        isBenchmarking={isBenchmarking}
-                        intensity={intensity}
-                        setIntensity={setIntensity}
-                        mode={benchmarkMode}
-                        setMode={setBenchmarkMode}
-                        healthChecksOnly={type === ProviderType.HealthChecksOnly}
-                        progress={benchmarkProgress}
-                        result={benchmarkResult}
-                        error={benchmarkError}
-                        onRun={handleAutoTune}
-                        onCancel={handleCancelBenchmark}
-                        onApply={handleApplyRecommendation}
-                    />
                 </div>
 
                 <div className={styles["modal-footer"]}>
                     <div className={styles["modal-footer-left"]}></div>
                     <div className={styles["modal-footer-right"]}>
-                        <Button variant="secondary" onClick={onClose}>
-                            Cancel
-                        </Button>
+                        <Button variant="secondary" onClick={onClose}>Cancel</Button>
                         {!canSave ? (
                             <Button
                                 variant="primary"
@@ -1498,7 +1515,6 @@ type BenchmarkPanelProps = {
     setIntensity: (value: BenchmarkIntensity) => void;
     mode: BenchmarkMode;
     setMode: (value: BenchmarkMode) => void;
-    healthChecksOnly: boolean;
     progress: BenchmarkProgress | null;
     result: BenchmarkResult | null;
     error: string | null;
@@ -1510,7 +1526,7 @@ type BenchmarkPanelProps = {
 function BenchmarkPanel(props: BenchmarkPanelProps) {
     const {
         canBenchmark, isBenchmarking, intensity, setIntensity,
-        mode, setMode, healthChecksOnly, progress, result, error, onRun, onCancel, onApply,
+        mode, setMode, progress, result, error, onRun, onCancel, onApply,
     } = props;
     const pipeliningOnly = mode === "pipelining";
     const startupOnly = mode === "startup";
@@ -1532,94 +1548,77 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
     const startupReadyGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedReadyMs, startupRecommended.readyMs) : null;
     const pipeBest = pipe && pipe.tested.length > 0 ? Math.max(...pipe.tested.map(t => t.mbPerSec)) : (pipe?.baselineMbPerSec ?? 0);
     const pipeGainPct = pipe && pipe.baselineMbPerSec > 0 ? Math.round((pipeBest / pipe.baselineMbPerSec - 1) * 100) : 0;
-    const canApply = !!result && result.throughputTested && (
-        recommended != null
+    const canApply = !!result && (
+        (result.throughputTested && recommended != null)
         || (result.pipeliningOnly && !!pipe)
         || (result.startupOnly && !!startup)
         || (result.healthOnly && health?.reliable === true)
     );
+    const testOptions: Array<{ value: BenchmarkMode; label: string; description: string }> = [
+        { value: "speed", label: "Connections", description: "Find the fastest stable connection count." },
+        { value: "pipelining", label: "Body pipeline", description: "Measure ARTICLE throughput by pipeline depth." },
+        { value: "startup", label: "Playback startup", description: "Compare first segment and initial buffer time." },
+        { value: "health", label: "Health checks", description: "Find a fast, reliable STAT pipeline depth." },
+    ];
 
     return (
         <div className={styles["bench-panel"]}>
             <div className={styles["bench-head"]}>
                 <div className={styles["bench-heading"]}>
-                    <div className={styles["bench-title"]}>
-                        {healthOnly ? "Health STAT pipeline" : "Auto-tune connections"}
-                    </div>
+                    <div className={styles["bench-title"]}>Provider optimizer</div>
                     <div className={styles["form-hint"]} style={{ marginTop: 0 }}>
-                        {pipeliningOnly
-                            ? "Keeps your Max Connections and just measures the best NNTP pipelining depth at that count."
-                            : startupOnly
-                                ? "Measures first-buffer playback startup with normal parallel fetching vs NNTP pipelining."
-                                : healthOnly
-                                    ? "Repeats the real health-check STAT workload and rejects fast but unreliable pipeline depths."
-                                    : "Runs a real speed & latency test, then recommends the best connection count and pipelining settings."}
+                        Run one focused test at a time, then apply its recommendation to this provider.
                     </div>
-                </div>
-                <div className={styles["bench-controls"]}>
-                    <div className={styles["bench-intensity"]} role="group" aria-label="Test intensity">
-                        <Button
-                            variant={intensity === "quick" ? "primary" : "secondary"}
-                            onClick={() => setIntensity("quick")}
-                            disabled={isBenchmarking}
-                            aria-pressed={intensity === "quick"}
-                        >
-                            Quick
-                        </Button>
-                        <Button
-                            variant={intensity === "thorough" ? "primary" : "secondary"}
-                            onClick={() => setIntensity("thorough")}
-                            disabled={isBenchmarking}
-                            aria-pressed={intensity === "thorough"}
-                        >
-                            Thorough
-                        </Button>
-                    </div>
-                    <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
-                        {isBenchmarking ? "Testing…" : (
-                            healthOnly ? "Test health STAT" : startupOnly ? "Test startup" : pipeliningOnly ? "Test pipelining" : "Run speed test"
-                        )}
-                    </Button>
-                    {isBenchmarking && (
-                        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
-                    )}
                 </div>
             </div>
 
-            <div
-                className={styles["bench-intensity"]}
-                style={{ marginTop: 12 }}
-                role="group"
-                aria-label="Benchmark mode"
-            >
-                {([
-                    ["speed", "Speed"],
-                    ["pipelining", "BODY pipeline"],
-                    ["startup", "Playback startup"],
-                    ["health", "Health STAT"],
-                ] as const).map(([value, label]) => (
-                    <Button
-                        key={value}
-                        variant={mode === value ? "primary" : "secondary"}
-                        onClick={() => setMode(value)}
-                        disabled={isBenchmarking || (healthChecksOnly && value !== "health")}
-                        aria-pressed={mode === value}
+            <div className={styles["benchmark-field-label"]}>Test</div>
+            <div className={styles["benchmark-test-grid"]} role="group" aria-label="Benchmark test">
+                {testOptions.map(option => (
+                    <button
+                        key={option.value}
+                        type="button"
+                        className={`${styles["benchmark-test-option"]} ${mode === option.value ? styles["benchmark-test-option-selected"] : ""}`}
+                        aria-pressed={mode === option.value}
+                        onClick={() => setMode(option.value)}
+                        disabled={isBenchmarking}
                     >
-                        {label}
-                    </Button>
+                        <span className={styles["benchmark-test-name"]}>{option.label}</span>
+                        <span className={styles["benchmark-test-description"]}>{option.description}</span>
+                    </button>
                 ))}
             </div>
 
-            <div className={styles["form-hint"]}>
+            <div className={styles["benchmark-run-row"]}>
+                <div>
+                    <div className={styles["benchmark-field-label"]}>Test length</div>
+                    <div className={styles["benchmark-duration"]} role="group" aria-label="Test length">
+                        <button type="button" aria-pressed={intensity === "quick"}
+                            className={intensity === "quick" ? styles["benchmark-duration-selected"] : ""}
+                            onClick={() => setIntensity("quick")} disabled={isBenchmarking}>Fast</button>
+                        <button type="button" aria-pressed={intensity === "thorough"}
+                            className={intensity === "thorough" ? styles["benchmark-duration-selected"] : ""}
+                            onClick={() => setIntensity("thorough")} disabled={isBenchmarking}>Thorough</button>
+                    </div>
+                </div>
+                <div className={styles["bench-controls"]}>
+                    <Button variant="primary" onClick={onRun} disabled={!canBenchmark || isBenchmarking}>
+                        {isBenchmarking ? "Testing…" : "Run test"}
+                    </Button>
+                    {isBenchmarking && <Button variant="secondary" onClick={onCancel}>Cancel</Button>}
+                </div>
+            </div>
+
+            <div className={styles["benchmark-test-hint"]}>
                 {pipeliningOnly
                     ? "Won't change your connection count — it tests pipelining depth at the Max Connections you've set. Run it idle for the cleanest read."
                     : startupOnly
                         ? "Compares time to the first decoded article and a small startup buffer. This is the best benchmark for first-frame speed."
-                        : healthOnly
-                            ? "Runs repeated mixed present/missing STAT batches at depths 1, 4, 8, 16, 32 and 64. No article bodies are downloaded."
-                            : (intensity === "quick"
-                                ? "Quick downloads roughly 100 MB of real data — light on metered / block accounts."
-                                : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
+                    : healthOnly
+                        ? "Runs repeated mixed present/missing STAT batches at depths 1, 4, 8, 16, 32 and 64. No article bodies are downloaded."
+                        : (intensity === "quick"
+                            ? "Fast downloads roughly 100 MB of real data — light on metered or block accounts."
+                            : "Thorough downloads roughly 400 MB for steadier numbers on fast connections.")}
             </div>
 
             {error && (
@@ -2020,9 +2019,9 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
         || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
         || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]
         || config["usenet.pipelining.health.lanes"] !== newConfig["usenet.pipelining.health.lanes"]
+        || config["usenet.health.include-backup.enabled"] !== newConfig["usenet.health.include-backup.enabled"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
-        || config["usenet.prep-spread.enabled"] !== newConfig["usenet.prep-spread.enabled"]
 }
 
 export function isPositiveInteger(value: string) {

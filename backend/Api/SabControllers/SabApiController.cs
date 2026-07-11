@@ -43,9 +43,12 @@ public class SabApiController(
             "multipart/form-data", StringComparison.OrdinalIgnoreCase) == true;
         var isIntake = queryMode is "addfile" or "addurl" || isMultipartUpload;
         if (isIntake)
+        {
             Log.Information(
                 "queue-intake request stage=received mode={Mode} contentLength={ContentLength}",
                 queryMode ?? "form", HttpContext.Request.ContentLength);
+            queueManager.BeginQueuePrewarm();
+        }
 
         try
         {

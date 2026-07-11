@@ -30,6 +30,7 @@ public class AddFileController(
 
     public async Task<AddFileResponse> AddFileAsync(AddFileRequest request)
     {
+        queueManager.BeginQueuePrewarm();
         var id = Guid.NewGuid();
         var timer = Stopwatch.StartNew();
         Log.Information("queue-intake nzo={NzoId} file={FileName} stage=store start", id, request.FileName);

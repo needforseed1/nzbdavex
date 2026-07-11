@@ -55,6 +55,7 @@ public class MultiConnectionNntpClient(
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int AvailableConnections => connectionPool.AvailableConnections;
+    public int MaxConnections => connectionPool.MaxConnections;
 
     private int _pendingSelections;
     public int PendingSelections => Volatile.Read(ref _pendingSelections);
@@ -62,6 +63,9 @@ public class MultiConnectionNntpClient(
     public void ReleasePending() => Interlocked.Decrement(ref _pendingSelections);
 
     public bool HasSpareConnection => AvailableConnections - PendingSelections > 0;
+
+    public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
+        connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
@@ -334,18 +338,28 @@ public class MultiConnectionNntpClient(
 
     public override IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
-        => RunPipelinedAsync(c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+        => RunPipelinedAsync(
+            c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken),
+            segmentIds.Count,
+            cancellationToken);
 
     public override IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
-        => RunPipelinedAsync(c => c.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+        => RunPipelinedAsync(
+            c => c.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken),
+            segmentIds.Count,
+            cancellationToken);
 
     public override IAsyncEnumerable<PipelinedArticleResult> DecodedArticlesPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
-        => RunPipelinedAsync(c => c.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken), cancellationToken);
+        => RunPipelinedAsync(
+            c => c.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken),
+            segmentIds.Count,
+            cancellationToken);
 
     private async IAsyncEnumerable<T> RunPipelinedAsync<T>(
         Func<INntpClient, IAsyncEnumerable<T>> batchFactory,
+        int expectedCount,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!circuitBreaker.TryBeginAttempt(out var halfOpenProbe))
@@ -356,6 +370,7 @@ public class MultiConnectionNntpClient(
         {
             var connectionLock = await connectionPool.GetConnectionLockAsync(priority, cancellationToken).ConfigureAwait(false);
             var completed = false;
+            var received = 0;
             await using var enumerator = batchFactory(connectionLock.Connection)
                 .GetAsyncEnumerator(cancellationToken);
             try
@@ -367,11 +382,20 @@ public class MultiConnectionNntpClient(
                     {
                         if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
                         {
+                            if (received != expectedCount)
+                                throw new IOException(
+                                    $"Pipelined batch ended after {received} of {expectedCount} responses.");
+
                             completed = true;
+                            circuitBreaker.RecordSuccess(halfOpenProbe);
                             break;
                         }
 
                         current = enumerator.Current;
+                        received++;
+                        if (received > expectedCount)
+                            throw new IOException(
+                                $"Pipelined batch returned more than the expected {expectedCount} responses.");
                     }
                     catch (Exception e) when (!e.IsCancellationException())
                     {
@@ -380,7 +404,6 @@ public class MultiConnectionNntpClient(
                         throw;
                     }
 
-                    circuitBreaker.RecordSuccess(halfOpenProbe);
                     yield return current;
                 }
             }

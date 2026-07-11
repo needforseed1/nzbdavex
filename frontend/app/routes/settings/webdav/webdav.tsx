@@ -42,7 +42,7 @@ export function WebdavSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
             </Form.Group>
             <hr />
             <Form.Group>
-                <Form.Label htmlFor="max-download-connections-input">Max Download Connections</Form.Label>
+                <Form.Label htmlFor="max-download-connections-input">Playback Connections</Form.Label>
                 <Form.Control
                     {...className([styles.input, !isValidMaxDownloadConnections(config["usenet.max-download-connections"]) && styles.error])}
                     type="text"
@@ -52,29 +52,34 @@ export function WebdavSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
                     value={config["usenet.max-download-connections"]}
                     onChange={e => setNewConfig({ ...config, "usenet.max-download-connections": e.target.value })} />
                 <Form.Text id="max-download-connections-help" muted>
-                    The maximum number of connections used for <strong>webdav streaming</strong> (playback).
-                    Set this to the minimum number of connections that fully saturates your streaming bandwidth.
-                    Queue imports use their own budget — see Queue Download Connections below.
+                    Maximum connections used by an active WebDAV stream. Prep uses a separate automatic budget.
                 </Form.Text>
             </Form.Group>
             <hr />
             <Form.Group>
-                <Form.Label htmlFor="max-queue-connections-input">Queue Download Connections</Form.Label>
-                <Form.Control
-                    {...className([styles.input, !isValidMaxQueueConnections(config["usenet.max-queue-connections"]) && styles.error])}
-                    type="text"
-                    id="max-queue-connections-input"
-                    aria-describedby="max-queue-connections-help"
-                    placeholder="Auto (all connections)"
-                    value={config["usenet.max-queue-connections"]}
-                    onChange={e => setNewConfig({ ...config, "usenet.max-queue-connections": e.target.value })} />
+                <Form.Label>Prep Connections</Form.Label>
+                <Form.Check
+                    type="switch"
+                    id="limit-queue-connections"
+                    label="Limit prep connections"
+                    checked={config["usenet.max-queue-connections"] !== ""}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "usenet.max-queue-connections": e.target.checked ? "64" : "",
+                    })} />
+                {config["usenet.max-queue-connections"] !== "" && (
+                    <Form.Control
+                        {...className([styles.input, !isValidMaxQueueConnections(config["usenet.max-queue-connections"]) && styles.error])}
+                        type="text"
+                        inputMode="numeric"
+                        id="max-queue-connections-input"
+                        aria-describedby="max-queue-connections-help"
+                        placeholder="64"
+                        value={config["usenet.max-queue-connections"]}
+                        onChange={e => setNewConfig({ ...config, "usenet.max-queue-connections": e.target.value })} />
+                )}
                 <Form.Text id="max-queue-connections-help" muted>
-                    Connections the queue may use while importing an nzb (fetching names/sizes, parsing par2/rar).
-                    Higher = faster imports. This is independent of streaming, so you can push imports hard without
-                    touching the streaming budget. It's always capped at your provider's connection limit, so the
-                    queue can never open more connections than your plan allows. Leave blank for Auto (use all your
-                    provider connections); lower it if you'd rather keep imports gentle or reserve connections for
-                    simultaneous streaming.
+                    Automatic uses available Primary provider capacity. Set a limit only to reserve capacity for simultaneous playback.
                 </Form.Text>
             </Form.Group>
             <hr />

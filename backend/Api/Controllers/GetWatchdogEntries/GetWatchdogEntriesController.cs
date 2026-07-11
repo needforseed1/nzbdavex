@@ -41,6 +41,8 @@ public partial class GetWatchdogEntriesController(
             Outcome = a.Result,
             FailReason = a.FailReason,
             DurationMs = a.DurationMs,
+            PrepDurationMs = a.PrepDurationMs,
+            HealthDurationMs = a.HealthDurationMs,
             IsWinner = a.IsWinner,
             ProviderHost = a.ProviderHost,
             ProviderNickname = ResolveNickname(a.ProviderHost, nicknamesByHost),

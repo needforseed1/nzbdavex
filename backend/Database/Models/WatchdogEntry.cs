@@ -14,6 +14,8 @@ public class WatchdogEntry
     public Outcome Result { get; set; }
     public string? FailReason { get; set; }
     public int DurationMs { get; set; }
+    public int? PrepDurationMs { get; set; }
+    public int? HealthDurationMs { get; set; }
     public bool IsWinner { get; set; }
     public string? ProviderHost { get; set; }
 

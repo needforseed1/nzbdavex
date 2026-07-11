@@ -67,7 +67,7 @@ public class HealthCheckService : BackgroundService
                 }
 
                 // get concurrency
-                var concurrency = _configManager.GetUsenetProviderConfig().TotalStatCheckConnections;
+                var concurrency = _configManager.GetHealthCheckConnections();
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
                 // get the davItem to health-check
@@ -132,13 +132,20 @@ public class HealthCheckService : BackgroundService
 
 
             // setup progress tracking
-            var progressHook = new Progress<int>();
             var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
-            progressHook.ProgressChanged += (_, progress) =>
+            var progressLock = new object();
+            var latestProgress = 0;
+            var progressHook = new InlineProgress<int>(progress =>
             {
-                var message = $"{davItem.Id}|{progress}";
+                int visibleProgress;
+                lock (progressLock)
+                {
+                    latestProgress = Math.Max(latestProgress, progress);
+                    visibleProgress = latestProgress;
+                }
+                var message = $"{davItem.Id}|{visibleProgress}";
                 debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
-            };
+            });
 
             // perform health check
             var progress = progressHook.ToPercentage(segments.Count);

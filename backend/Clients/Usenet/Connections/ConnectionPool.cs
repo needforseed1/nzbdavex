@@ -26,6 +26,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public int LiveConnections => _live;
     public int IdleConnections => _idleConnections.Count;
     public int ActiveConnections => _live - _idleConnections.Count;
+    public int MaxConnections => _maxConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
     public bool CapacityUnavailable => Volatile.Read(ref _capacityUnavailable) == 1;
 
@@ -52,6 +53,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly Task _sweeperTask; // keeps timer alive
 
     private int _live; // number of connections currently alive
+    private int _inFlightCreations;
     private int _pendingAcquisitions;
     private int _effectiveMaxConnections;
     private Exception? _capacityUnavailableException;
@@ -123,134 +125,171 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             cancellationToken, _sweepCts.Token, _capacityCts.Token);
 
         await _gate.WaitAsync(priority, linked.Token).ConfigureAwait(false);
+        var returnGateOnFailure = true;
 
-        // Pool might have been disposed after wait returned:
-        if (Volatile.Read(ref _disposed) == 1)
+        try
         {
-            ThrowDisposed();
-        }
-
-        T conn;
-        var replaceDiscardedConnection = false;
-        while (true)
-        {
-            // Try to reuse an existing idle connection.
-            while (!replaceDiscardedConnection && TryTakeIdle(out var item))
+            // Pool might have been disposed after wait returned:
+            if (Volatile.Read(ref _disposed) == 1)
             {
-                // A borrowed idle socket is active while it is being validated.
-                // Publish that transition before awaiting provider I/O.
-                TriggerConnectionPoolChangedEvent();
-                var idleExpired = item.IsExpired(IdleTimeout);
-                var preserveWarmFloor = idleExpired
-                                        && _minimumIdleConnections > 0
-                                        && _idleConnections.Count < _minimumIdleConnections;
-                if (idleExpired && !preserveWarmFloor)
-                {
-                    DiscardConnection(item.Connection);
-                    replaceDiscardedConnection = true;
-                    break;
-                }
+                ThrowDisposed();
+            }
 
-                if (_validator != null &&
-                    (forceIdleValidation || preserveWarmFloor || item.IsExpired(_validateAfterIdle)))
+            T conn;
+            var replaceDiscardedConnection = false;
+            while (true)
+            {
+                // Try to reuse an existing idle connection.
+                while (!replaceDiscardedConnection && TryTakeIdle(out var item))
                 {
-                    bool healthy;
-                    try
-                    {
-                        healthy = await _validator(item.Connection, linked.Token).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        DiscardConnection(item.Connection);
-                        ReleaseGateIfOpen();
-                        throw;
-                    }
-
-                    if (!healthy)
+                    // A borrowed idle socket is active while it is being validated.
+                    // Publish that transition before awaiting provider I/O.
+                    TriggerConnectionPoolChangedEvent();
+                    var idleExpired = item.IsExpired(IdleTimeout);
+                    var preserveWarmFloor = idleExpired
+                                            && _minimumIdleConnections > 0
+                                            && _idleConnections.Count < _minimumIdleConnections;
+                    if (idleExpired && !preserveWarmFloor)
                     {
                         DiscardConnection(item.Connection);
                         replaceDiscardedConnection = true;
                         break;
                     }
+
+                    if (_validator != null &&
+                        (forceIdleValidation || preserveWarmFloor || item.IsExpired(_validateAfterIdle)))
+                    {
+                        bool healthy;
+                        try
+                        {
+                            healthy = await _validator(item.Connection, linked.Token).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            DiscardConnection(item.Connection);
+                            throw;
+                        }
+
+                        if (!healthy)
+                        {
+                            DiscardConnection(item.Connection);
+                            replaceDiscardedConnection = true;
+                            break;
+                        }
+                    }
+
+                    TriggerConnectionPoolChangedEvent();
+                    returnGateOnFailure = false;
+                    return BuildLock(item.Connection);
                 }
 
-                TriggerConnectionPoolChangedEvent();
-                return BuildLock(item.Connection);
-            }
-
-            // A returned socket and a free handshake slot are both valid ways
-            // forward. Racing them prevents requests already queued for socket
-            // creation from ignoring newly reusable connections.
-            var ownsCreationSlot = replaceDiscardedConnection;
-            if (replaceDiscardedConnection)
-                await _creationGate.WaitAsync(linked.Token).ConfigureAwait(false);
-            else
-                ownsCreationSlot = await WaitForCreationSlotOrIdleAsync(linked.Token).ConfigureAwait(false);
-            if (!ownsCreationSlot)
-            {
-                replaceDiscardedConnection = false;
-                continue;
-            }
-
-            if (!replaceDiscardedConnection && !_idleConnections.IsEmpty)
-            {
-                _creationGate.Release();
-                continue;
-            }
-
-            if (Volatile.Read(ref _live) >= Volatile.Read(ref _effectiveMaxConnections))
-            {
-                _creationGate.Release();
-                ReleaseGateIfOpen();
-                return await GetConnectionLockCoreAsync(priority, cancellationToken, forceIdleValidation)
-                    .ConfigureAwait(false);
-            }
-
-            // Need a fresh connection.
-            try
-            {
-                try
+                // A returned socket and a free handshake slot are both valid ways
+                // forward. Racing them prevents requests already queued for socket
+                // creation from ignoring newly reusable connections.
+                var ownsCreationSlot = replaceDiscardedConnection;
+                if (replaceDiscardedConnection)
+                    await _creationGate.WaitAsync(linked.Token).ConfigureAwait(false);
+                else
+                    ownsCreationSlot = await WaitForCreationSlotOrIdleAsync(linked.Token).ConfigureAwait(false);
+                if (!ownsCreationSlot)
                 {
-                    conn = await _factory(linked.Token).ConfigureAwait(false);
+                    replaceDiscardedConnection = false;
+                    continue;
                 }
-                finally
+
+                if (!replaceDiscardedConnection && !_idleConnections.IsEmpty)
                 {
                     _creationGate.Release();
+                    continue;
                 }
+
+                if (!TryReserveConnectionCreation())
+                {
+                    _creationGate.Release();
+                    ReleaseGateIfOpen();
+                    returnGateOnFailure = false;
+                    return await GetConnectionLockCoreAsync(priority, cancellationToken, forceIdleValidation)
+                        .ConfigureAwait(false);
+                }
+
+                // Need a fresh connection.
+                var creationReservationHeld = true;
+                try
+                {
+                    try
+                    {
+                        if (replaceDiscardedConnection)
+                        {
+                            conn = await _factory(linked.Token).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            var speculative = await CreateUnlessIdleReturnsAsync(linked.Token).ConfigureAwait(false);
+                            if (!speculative.Created)
+                            {
+                                ReleaseConnectionCreationReservation();
+                                creationReservationHeld = false;
+                                if (speculative.ReusedIdle)
+                                {
+                                    conn = speculative.Connection;
+                                    break;
+                                }
+
+                                replaceDiscardedConnection = false;
+                                continue;
+                            }
+
+                            conn = speculative.Connection;
+                        }
+
+                        RegisterCreatedConnection();
+                        creationReservationHeld = false;
+                    }
+                    finally
+                    {
+                        _creationGate.Release();
+                    }
+                }
+                catch (Exception e)
+                {
+                    if (creationReservationHeld) ReleaseConnectionCreationReservation();
+                    if (_connectionCapacityRejected?.Invoke(e) == true)
+                        ReduceConnectionCapacity(e);
+                    throw;
+                }
+
+                break;
             }
-            catch (Exception e)
+
+            if (Volatile.Read(ref _disposed) == 1)
             {
-                if (_connectionCapacityRejected?.Invoke(e) == true)
-                    ReduceConnectionCapacity(e);
-                ReleaseGateIfOpen(); // free the permit on failure
-                throw;
+                DisposeConnection(conn);
+                Interlocked.Decrement(ref _live);
+                ThrowDisposed();
             }
 
-            break;
-        }
+            if (CapacityUnavailable)
+            {
+                DisposeConnection(conn);
+                Interlocked.Decrement(ref _live);
+                ThrowCapacityUnavailable();
+            }
 
-        if (Volatile.Read(ref _disposed) == 1)
+            RaiseEffectiveCapacityToLive();
+            TriggerConnectionPoolChangedEvent();
+            returnGateOnFailure = false;
+            return BuildLock(conn);
+
+            ConnectionLock<T> BuildLock(T c)
+                => new(c, Return, Destroy);
+
+            static void ThrowDisposed()
+                => throw new ObjectDisposedException(nameof(ConnectionPool<T>));
+        }
+        finally
         {
-            DisposeConnection(conn);
-            ThrowDisposed();
+            if (returnGateOnFailure) ReleaseGateIfOpen();
         }
-
-        if (CapacityUnavailable)
-        {
-            DisposeConnection(conn);
-            ThrowCapacityUnavailable();
-        }
-
-        Interlocked.Increment(ref _live);
-        RaiseEffectiveCapacityToLive();
-        TriggerConnectionPoolChangedEvent();
-        return BuildLock(conn);
-
-        ConnectionLock<T> BuildLock(T c)
-            => new(c, Return, Destroy);
-
-        static void ThrowDisposed()
-            => throw new ObjectDisposedException(nameof(ConnectionPool<T>));
     }
 
     /* ========================== core helpers ====================================== */
@@ -315,7 +354,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         int reducedTo;
         lock (_idleLock)
         {
-            reducedTo = _live;
+            reducedTo = _live + _inFlightCreations;
             if (reducedTo >= _effectiveMaxConnections) return;
             _effectiveMaxConnections = reducedTo;
             if (reducedTo == 0)
@@ -331,6 +370,87 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
         _onConnectionCapacityReduced?.Invoke(reducedTo, exception);
         TriggerConnectionPoolChangedEvent();
+    }
+
+    private bool TryReserveConnectionCreation()
+    {
+        lock (_idleLock)
+        {
+            if (_live + _inFlightCreations >= _effectiveMaxConnections) return false;
+            _inFlightCreations++;
+            return true;
+        }
+    }
+
+    private void RegisterCreatedConnection()
+    {
+        lock (_idleLock)
+        {
+            _inFlightCreations--;
+            Interlocked.Increment(ref _live);
+        }
+    }
+
+    private void ReleaseConnectionCreationReservation()
+    {
+        lock (_idleLock)
+            _inFlightCreations--;
+    }
+
+    private async Task<(bool Created, bool ReusedIdle, T Connection)> CreateUnlessIdleReturnsAsync(
+        CancellationToken cancellationToken)
+    {
+        using var creationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var creationTask = _factory(creationCts.Token).AsTask();
+        var idleTask = _idleSignal.WaitAsync(idleCts.Token);
+        var completed = await Task.WhenAny(creationTask, idleTask).ConfigureAwait(false);
+
+        if (completed == creationTask)
+        {
+            idleCts.Cancel();
+            try
+            {
+                await idleTask.ConfigureAwait(false);
+                SignalIdleAvailable();
+            }
+            catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+            {
+            }
+
+            return (true, false, await creationTask.ConfigureAwait(false));
+        }
+
+        await idleTask.ConfigureAwait(false);
+        if (!IdleConnectionsCanSatisfyPendingAcquisitions())
+        {
+            // Under sustained load the pool still needs to grow. Preserve this
+            // handshake and pass the idle notification to another waiter.
+            SignalIdleAvailable();
+            return (true, false, await creationTask.ConfigureAwait(false));
+        }
+
+        creationCts.Cancel();
+        try
+        {
+            // The handshake may have won the race just after the idle signal.
+            var connection = await creationTask.ConfigureAwait(false);
+            SignalIdleAvailable();
+            return (true, false, connection);
+        }
+        catch (OperationCanceledException) when (
+            creationCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return TryTakeIdle(out var idle)
+                ? (false, true, idle.Connection)
+                : (false, false, default!);
+        }
+    }
+
+    private bool IdleConnectionsCanSatisfyPendingAcquisitions()
+    {
+        lock (_idleLock)
+            return _idleConnections.Count >= Math.Max(1, Volatile.Read(ref _pendingAcquisitions));
     }
 
     private void RaiseEffectiveCapacityToLive()
@@ -439,7 +559,14 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public async Task PrewarmAsync(int count, CancellationToken cancellationToken = default)
     {
-        await AcquireIdleConnectionsAsync(count, false, cancellationToken).ConfigureAwait(false);
+        var target = Math.Clamp(count, 0, _maxConnections);
+        var connectionsNeeded = Math.Max(0, target - LiveConnections - Volatile.Read(ref _inFlightCreations));
+        if (connectionsNeeded == 0) return;
+
+        var creations = Enumerable.Range(0, connectionsNeeded)
+            .Select(_ => CreatePrewarmedConnectionAsync(target, cancellationToken))
+            .ToArray();
+        await Task.WhenAll(creations).ConfigureAwait(false);
     }
 
     public async Task RefreshWarmConnectionsAsync(CancellationToken cancellationToken = default)
@@ -470,6 +597,70 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             foreach (var acquisition in acquisitions)
                 if (acquisition.IsCompletedSuccessfully)
                     acquisition.Result.Dispose();
+        }
+    }
+
+    private async Task CreatePrewarmedConnectionAsync(int target, CancellationToken cancellationToken)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _sweepCts.Token, _capacityCts.Token);
+        await _creationGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        var reservationHeld = false;
+        try
+        {
+            if (!TryReservePrewarmCreation(target)) return;
+            reservationHeld = true;
+
+            T connection;
+            try
+            {
+                connection = await _factory(linked.Token).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                if (_connectionCapacityRejected?.Invoke(e) == true)
+                    ReduceConnectionCapacity(e);
+                throw;
+            }
+
+            if (!TryPublishPrewarmedConnection(connection))
+            {
+                DisposeConnection(connection);
+                return;
+            }
+
+            reservationHeld = false;
+            RaiseEffectiveCapacityToLive();
+            SignalIdleAvailable();
+            TriggerConnectionPoolChangedEvent();
+        }
+        finally
+        {
+            if (reservationHeld) ReleaseConnectionCreationReservation();
+            _creationGate.Release();
+        }
+    }
+
+    private bool TryReservePrewarmCreation(int target)
+    {
+        lock (_idleLock)
+        {
+            var effectiveTarget = Math.Min(target, _effectiveMaxConnections);
+            if (_live + _inFlightCreations >= effectiveTarget) return false;
+            _inFlightCreations++;
+            return true;
+        }
+    }
+
+    private bool TryPublishPrewarmedConnection(T connection)
+    {
+        lock (_idleLock)
+        {
+            if (Volatile.Read(ref _disposed) == 1 || CapacityUnavailable) return false;
+            _inFlightCreations--;
+            Interlocked.Increment(ref _live);
+            _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
+            return true;
         }
     }
 

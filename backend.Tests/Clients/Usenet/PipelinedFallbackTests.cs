@@ -45,6 +45,49 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task FailedBodyBatchRotatesTheNextChunkToAnotherProvider()
+    {
+        var primaryClient = new RecordingPipelineClient([], failBodyAfterResults: 1);
+        var backupClient = new RecordingPipelineClient([]);
+        using var client = CreateClient(primaryClient, backupClient);
+
+        await DisposeBodiesAsync(client.DecodedBodiesPipelinedAsync(
+            ["a", "b", "c", "d"], 2, CancellationToken.None));
+
+        Assert.Equal(["a", "b"], primaryClient.BodyBatches.Single());
+        Assert.Equal(["c", "d"], backupClient.BodyBatches.Single());
+    }
+
+    [Fact]
+    public async Task CompletedBodyBatchReturnsItsConnectionToThePool()
+    {
+        var transport = new RecordingPipelineClient([]);
+        var provider = CreateProvider(transport, ProviderType.Pooled, "complete", 0);
+        using var client = new MultiProviderNntpClient([provider], new ProviderUsageTracker());
+
+        await DisposeBodiesAsync(client.DecodedBodiesPipelinedAsync(
+            ["a", "b"], 2, CancellationToken.None));
+
+        Assert.Equal(1, provider.LiveConnections);
+        Assert.Equal(1, provider.IdleConnections);
+    }
+
+    [Fact]
+    public async Task RepeatedPartialBatchFailuresTripProviderCircuitBreaker()
+    {
+        var transport = new RecordingPipelineClient([true], failAfterResults: true);
+        using var provider = CreateProvider(transport, ProviderType.Pooled, "partial", 0);
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await Assert.ThrowsAsync<IOException>(() => CollectAsync(
+                provider.StatsPipelinedAsync(["a", "b"], 2, CancellationToken.None)));
+        }
+
+        Assert.True(provider.IsTripped);
+    }
+
+    [Fact]
     public async Task ConcurrentHealthLanesSpreadToBackupAndStatsCapacity()
     {
         var coordinator = new LaneCoordinator(2);
@@ -64,12 +107,12 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
-    public async Task DedicatedHealthProvidersKeepPooledProvidersOutOfPrimaryLanes()
+    public async Task DedicatedAndPooledProvidersSharePrimaryHealthLanes()
     {
         var coordinator = new LaneCoordinator(2);
         var firstHealthClient = new CoordinatedPipelineClient(coordinator);
         var secondHealthClient = new CoordinatedPipelineClient(coordinator);
-        var pooledClient = new RecordingPipelineClient([true]);
+        var pooledClient = new CoordinatedPipelineClient(coordinator);
         using var client = new MultiProviderNntpClient([
             CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
             CreateProvider(firstHealthClient, ProviderType.HealthChecksOnly, "health-1", 1),
@@ -80,9 +123,28 @@ public class PipelinedFallbackTests
         await client.CheckAllSegmentsPipelinedAsync(
             ["a", "b"], depth: 1, fallbackConcurrency: 2, progress: null, timeout.Token);
 
-        Assert.Empty(pooledClient.Batches);
+        Assert.Single(pooledClient.Batches);
         Assert.Single(firstHealthClient.Batches);
-        Assert.Single(secondHealthClient.Batches);
+        Assert.Empty(secondHealthClient.Batches);
+    }
+
+    [Fact]
+    public async Task BackupProvidersJoinPrimaryHealthLanesWhenEnabled()
+    {
+        var coordinator = new LaneCoordinator(2);
+        var pooledClient = new CoordinatedPipelineClient(coordinator);
+        var backupClient = new CoordinatedPipelineClient(coordinator);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
+            CreateProvider(backupClient, ProviderType.BackupOnly, "backup", 1),
+        ], new ProviderUsageTracker(), backupHealthChecksEnabled: () => true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        await client.CheckAllSegmentsPipelinedAsync(
+            ["a", "b"], depth: 1, fallbackConcurrency: 2, progress: null, timeout.Token);
+
+        Assert.Single(pooledClient.Batches);
+        Assert.Single(backupClient.Batches);
     }
 
     [Fact]
@@ -91,8 +153,8 @@ public class PipelinedFallbackTests
         var healthClient = new RecordingPipelineClient([false]);
         var pooledClient = new RecordingPipelineClient([true]);
         using var client = new MultiProviderNntpClient([
-            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
-            CreateProvider(healthClient, ProviderType.HealthChecksOnly, "health-only", 1),
+            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 1),
+            CreateProvider(healthClient, ProviderType.HealthChecksOnly, "health-only", 0),
         ], new ProviderUsageTracker());
 
         var results = await CollectAsync(
@@ -234,11 +296,20 @@ public class PipelinedFallbackTests
         return results;
     }
 
+    private static async Task DisposeBodiesAsync(IAsyncEnumerable<PipelinedBodyResult> source)
+    {
+        await foreach (var result in source)
+            if (result.Stream is not null)
+                await result.Stream.DisposeAsync();
+    }
+
     private sealed class RecordingPipelineClient(
         IReadOnlyList<bool> results,
-        bool failAfterResults = false) : NntpClient
+        bool failAfterResults = false,
+        int? failBodyAfterResults = null) : NntpClient
     {
         public List<string[]> Batches { get; } = [];
+        public List<string[]> BodyBatches { get; } = [];
         public List<int> StatDepths { get; } = [];
         public List<int> BodyDepths { get; } = [];
         public int SequentialStatCalls { get; private set; }
@@ -282,12 +353,16 @@ public class PipelinedFallbackTests
             int depth,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            BodyBatches.Add(segmentIds.ToArray());
             BodyDepths.Add(depth);
-            foreach (var segmentId in segmentIds)
+            for (var index = 0; index < segmentIds.Count; index++)
             {
+                if (index == failBodyAfterResults)
+                    throw new IOException("Simulated BODY batch failure.");
+
                 yield return new PipelinedBodyResult
                 {
-                    SegmentId = segmentId,
+                    SegmentId = segmentIds[index],
                     Found = true,
                     Stream = new YencStream(new MemoryStream()),
                 };
