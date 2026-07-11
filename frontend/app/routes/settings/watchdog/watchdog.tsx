@@ -116,14 +116,15 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     disabled={!enabled}
                     value={verifyMode}
                     onChange={e => set("play.verify-mode", e.target.value)}>
-                    <option value="stat">stat — STAT first segment (~0.2s; skips candidates flagged dead, recommended)</option>
-                    <option value="body">body — strict, downloads first article (~1–2s)</option>
-                    <option value="none">none — no pre-check, enqueue right away</option>
+                    <option value="none">none — no pre-check, enqueue right away (default)</option>
+                    <option value="stat">stat — NNTP STAT on a few sampled segments (~0.2s; weeds out dead releases)</option>
+                    <option value="body">body — strict, downloads sampled articles (~1–2s)</option>
                 </Form.Select>
                 <p className={styles.hint}>
                     `none` (the default) skips the pre-check for the fastest start; every candidate is enqueued
-                    right away. `stat` is a cheap NNTP check that weeds out dead releases before the queue
-                    commits, avoiding a re-fetch of their NZB from the indexer on every request.
+                    right away. `stat` is a cheap NNTP check across a few segments sampled from the largest file,
+                    weeding out dead releases before the queue commits — avoiding a re-fetch of their NZB from
+                    the indexer on every request.
                 </p>
             </Form.Group>
 
@@ -146,10 +147,10 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
             <div className={styles.section}>
                 <div className={styles.sectionTitle}>Stall failover</div>
                 <div className={styles.sectionDescription}>
-                    If a candidate reports no progress within the window below, it is set aside and the next
-                    candidate is attempted, instead of waiting for it to complete. A set-aside candidate is
-                    not recorded as failed — it may simply be slow. On by default; requires the failover
-                    watchdog above to be on.
+                    If a candidate reports no progress within the window below, its queue item is removed
+                    and the next candidate is attempted, instead of waiting for it to complete. A set-aside
+                    candidate is not recorded as failed — it may simply be slow, and a later request starts
+                    it fresh. On by default; requires the failover watchdog above to be on.
                 </div>
             </div>
 
@@ -179,7 +180,8 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     onChange={e => set("grab.stall-failover-window-seconds", e.target.value)} />
                 <p className={styles.hint}>
                     A candidate that has started but reported no progress for this many seconds is set aside.
-                    A candidate that keeps reporting progress is never set aside. Default 2.
+                    A candidate that keeps reporting progress is never set aside by this window — but the
+                    per-candidate ceiling below still applies. Default 2.
                 </p>
             </Form.Group>
 
@@ -194,8 +196,10 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     value={config["grab.stall-failover-ceiling-seconds"] ?? "5"}
                     onChange={e => set("grab.stall-failover-ceiling-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    Upper limit on how long a single candidate is given before moving on, regardless of
-                    progress — a backstop for a candidate that is queued but not yet started. Default 5.
+                    Upper limit on how long a single candidate is given before moving on — it applies even
+                    to a candidate that is actively progressing, not just one stuck in the queue. If large
+                    releases need longer than this to prepare, they will be set aside on every attempt:
+                    raise the ceiling if big items keep failing to start. Default 5.
                 </p>
             </Form.Group>
 
@@ -274,6 +278,9 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                 <p className={styles.hint}>
                     When multiple copies exist for the same group, which one to serve.
                     `closest-to-selection` uses what you just picked as the intent signal.
+                    `largest`/`smallest` always serve that copy and never fetch a new
+                    variant while any copy exists — mode tolerance only applies to
+                    `closest-to-selection`.
                 </p>
             </Form.Group>
 

@@ -36,6 +36,19 @@ public class VariantResolver(ConfigManager configManager)
         if (variants.Count == 0) return new VariantDecision(null, false, groupKey);
 
         var clickSize = entry.Primary.Size;
+
+        // largest/smallest replay strategies ignore the clicked size entirely: while any
+        // copy exists, always serve that copy and never fetch a new variant. Only
+        // closest-to-click uses the mode's size-tolerance rules below.
+        if (ReplayStrategy != "closest-to-click")
+        {
+            var row = PickReplay(variants, clickSize);
+            var pick = row is null
+                ? null
+                : new VariantMatch(row, Math.Abs((row.LargestFileSize ?? 0) - clickSize));
+            return new VariantDecision(pick, true, groupKey);
+        }
+
         var match = mode switch
         {
             "smart" => SelectWithinTolerance(variants, clickSize, configManager.GetVariantsTolerancePct()),
@@ -91,16 +104,25 @@ public class VariantResolver(ConfigManager configManager)
         var variants = await LoadVariantsAsync(dbClient.Ctx, contentGroupKey, ct).ConfigureAwait(false);
         if (variants.Count <= cap) return Array.Empty<Guid>();
 
-        var graceCutoff = DateTimeOffset.UtcNow
-            - TimeSpan.FromSeconds(configManager.GetVariantsEvictionActiveGraceSeconds());
+        var grace = TimeSpan.FromSeconds(configManager.GetVariantsEvictionActiveGraceSeconds());
+        var graceCutoff = DateTimeOffset.UtcNow - grace;
+        // HistoryItem.CreatedAt is written with DateTime.Now (local), so the creation
+        // grace check compares in local time. A just-downloaded variant has a null
+        // LastPlayedAt until the fire-and-forget MarkPlayedAsync lands — without the
+        // CreatedAt guard, LRU would rank it oldest and evict the copy we just fetched.
+        var createdCutoff = DateTime.Now - grace;
 
-        bool IsProtected(VariantRow v) => v.LastPlayedAt is { } t && t >= graceCutoff;
+        bool IsProtected(VariantRow v) =>
+            (v.LastPlayedAt is { } t && t >= graceCutoff) || v.CreatedAt >= createdCutoff;
+
+        DateTimeOffset LastUse(VariantRow v) => v.LastPlayedAt
+            ?? new DateTimeOffset(DateTime.SpecifyKind(v.CreatedAt, DateTimeKind.Local));
 
         var ranked = strategy switch
         {
             "largest-first" => variants.OrderByDescending(v => v.LargestFileSize ?? 0).ToList(),
             "smallest-first" => variants.OrderBy(v => v.LargestFileSize ?? 0).ToList(),
-            _ => variants.OrderBy(v => v.LastPlayedAt ?? DateTimeOffset.MinValue).ToList(),
+            _ => variants.OrderBy(LastUse).ToList(),
         };
 
         var surplus = ranked.Count - cap;

@@ -236,14 +236,26 @@ public class ProfilePlayController(
         var queueIndex = 0;
         var attemptsUsed = 0;
         var sawAnyBatch = false;
+        // Candidates pulled into a batch whose pre-verify never started (the hedge kept
+        // them on the bench while the primary won the race but then failed to commit).
+        // They were never actually tried, so they lead the next batch instead of being
+        // dropped — and they don't count against maxAttempts until they really run.
+        var carryOver = new List<NzbResolutionCache.Candidate>();
 
-        while (attemptsUsed < maxAttempts && queueIndex < fallbackQueue.Count)
+        while (attemptsUsed < maxAttempts && (queueIndex < fallbackQueue.Count || carryOver.Count > 0))
         {
             if (totalCts.IsCancellationRequested) break;
             if (DateTimeOffset.UtcNow >= deadline) break;
 
             var batchBudget = Math.Min(maxCandidates, maxAttempts - attemptsUsed);
             var pool = new List<NzbResolutionCache.Candidate>();
+            while (carryOver.Count > 0 && pool.Count < batchBudget)
+            {
+                // Already passed the negative-cache/warden gate when first pulled;
+                // rankIndex still holds their original rank.
+                pool.Add(carryOver[0]);
+                carryOver.RemoveAt(0);
+            }
             while (queueIndex < fallbackQueue.Count && pool.Count < batchBudget)
             {
                 var c = fallbackQueue[queueIndex];
@@ -285,10 +297,13 @@ public class ProfilePlayController(
             if (pool.Count == 0) break;
 
             sawAnyBatch = true;
-            attemptsUsed += pool.Count;
 
             var batch = await RunBatchAsync(pool, rankIndex, nzbToken, contentType, requestedTitle,
                 clickId, startsAt, verifyMode, verifySampleCount, hedgeDelay, deadline, totalCts, contentGroupKey).ConfigureAwait(false);
+
+            // RunBatchAsync always starts at least the primary, so this makes progress.
+            attemptsUsed += batch.StartedCount;
+            carryOver.AddRange(batch.Unstarted);
 
             switch (batch.Outcome)
             {
@@ -350,7 +365,14 @@ public class ProfilePlayController(
 
     private enum BatchOutcome { Winner, AllFailed, Cancelled, BudgetTimeout }
 
-    private async Task<(BatchOutcome Outcome, IActionResult? Action, Guid? WinnerNzoId)> RunBatchAsync(
+    private sealed record BatchResult(
+        BatchOutcome Outcome,
+        IActionResult? Action,
+        Guid? WinnerNzoId,
+        int StartedCount,
+        List<NzbResolutionCache.Candidate> Unstarted);
+
+    private async Task<BatchResult> RunBatchAsync(
         List<NzbResolutionCache.Candidate> pool,
         Dictionary<string, int> rankIndex,
         string nzbToken,
@@ -373,6 +395,15 @@ public class ProfilePlayController(
         // watchdog entry for that candidate instead of dropping it silently.
         var preVerifies = new List<Task<PreVerifyResult>>();
         var taskCandidates = new Dictionary<Task<PreVerifyResult>, NzbResolutionCache.Candidate>();
+
+        // Pool members whose pre-verify never started (hedge never fired). The caller
+        // re-queues them for the next batch and excludes them from the attempt count.
+        List<NzbResolutionCache.Candidate> Unstarted()
+        {
+            var startedUrls = taskCandidates.Values.Select(x => x.NzbUrl).ToHashSet();
+            return pool.Where(x => !startedUrls.Contains(x.NzbUrl)).ToList();
+        }
+
         var primaryTask = PreVerifyAsync(pool[0], verifyMode, verifySampleCount, totalCts.Token);
         preVerifies.Add(primaryTask);
         taskCandidates[primaryTask] = pool[0];
@@ -428,6 +459,19 @@ public class ProfilePlayController(
                             providerHost: AllConfiguredProvidersDisplay());
                         break;
                     case PlaybackFastVerifier.Verdict.Timeout:
+                        if (r.NzbBytes is null)
+                        {
+                            // NZB never arrived (indexer rate limit, HTTP error, fetch
+                            // timeout) — nothing to commit, and nothing learned about the
+                            // release itself, so no negative-cache/warden mark either.
+                            RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
+                                rankIndex[r.Candidate.NzbUrl],
+                                WatchdogEntry.Outcome.EnqueueFailed,
+                                "Indexer NZB fetch failed or timed out — release not marked dead",
+                                startsAt, isWinner: false,
+                                contentGroupKey: contentGroupKey);
+                            break;
+                        }
                         // Don't poison on timeout — provider was just slow.
                         // Try it anyway as a last resort if we run out of candidates.
                         ready[rankIndex[r.Candidate.NzbUrl] + 10000] = r;
@@ -457,7 +501,7 @@ public class ProfilePlayController(
                         rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
                         "Winner found; loser cancelled to free provider connections",
                         contentGroupKey);
-                    return (BatchOutcome.Winner, action, newNzoId);
+                    return new BatchResult(BatchOutcome.Winner, action, newNzoId, taskCandidates.Count, Unstarted());
                 }
                 if (reason == CommitReason.Aborted)
                 {
@@ -473,7 +517,7 @@ public class ProfilePlayController(
                         rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
                         "Client disconnected; loser cancelled",
                         contentGroupKey);
-                    return (BatchOutcome.Cancelled, new EmptyResult(), null);
+                    return new BatchResult(BatchOutcome.Cancelled, new EmptyResult(), null, taskCandidates.Count, Unstarted());
                 }
                 if (reason == CommitReason.BudgetTimeout)
                 {
@@ -486,7 +530,7 @@ public class ProfilePlayController(
                         contentGroupKey);
                     // HandleAsync converts this to a 503 + Retry-After (or a 302 if
                     // another click finished the same group in the meantime).
-                    return (BatchOutcome.BudgetTimeout, null, null);
+                    return new BatchResult(BatchOutcome.BudgetTimeout, null, null, taskCandidates.Count, Unstarted());
                 }
                 continue;
             }
@@ -504,7 +548,7 @@ public class ProfilePlayController(
             rankIndex, startsAt, remaining, taskCandidates, ready, totalCts,
             "Batch exited without a winner; remaining verifies cancelled",
             contentGroupKey);
-        return (BatchOutcome.AllFailed, null, null);
+        return new BatchResult(BatchOutcome.AllFailed, null, null, taskCandidates.Count, Unstarted());
     }
 
     // Signal in-flight pre-verify tasks to abort (freeing indexer/NNTP connections),
@@ -739,7 +783,12 @@ public class ProfilePlayController(
             var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
             var msFetch = pvTimer.ElapsedMilliseconds;
             if (nzbBytes is null)
-                return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
+            {
+                // Indexer-side failure (rate limit, HTTP error, fetch timeout) — says
+                // nothing about the release's health on usenet. Timeout keeps it out of
+                // the negative cache and warden store; Dead would poison it permanently.
+                return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout, null);
+            }
 
             pvTimer.Restart();
             using var verifyStream = new MemoryStream(nzbBytes, writable: false);
@@ -755,7 +804,8 @@ public class ProfilePlayController(
         catch (Exception e) when (!e.IsCancellationException())
         {
             Log.Debug(e, "Pre-verify failed for {Url}", candidate.NzbUrl);
-            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Dead, null);
+            // Unexpected local error, not proof the release is dead — don't poison.
+            return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout, null);
         }
     }
 

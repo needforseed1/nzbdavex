@@ -383,6 +383,14 @@ public class MultiProviderNntpClient(
                     .ToList();
                 if (spreadPool.Count > 0)
                 {
+                    // Do not pin prep requests to a provider that has not established
+                    // a single usable socket while another pooled provider is ready.
+                    // Prewarm runs independently and the provider joins this set as
+                    // soon as its first connection is published.
+                    var readySpreadPool = spreadPool.Where(x => x.LiveConnections > 0).ToList();
+                    if (readySpreadPool.Count > 0)
+                        spreadPool = readySpreadPool;
+
                     var rotation = _prepSpreadCursor++ % spreadPool.Count;
                     var spread = spreadPool
                         .Select((provider, index) => new
@@ -472,7 +480,7 @@ public class MultiProviderNntpClient(
             // from all selecting the same nominally-fast provider before its sockets
             // have finished connecting. BackupOnly providers remain rescue-only.
             var primary = SelectPrimaryStatTier(pool)
-                .OrderBy(PrepSpreadScore)
+                .OrderBy(StatSpreadScore)
                 .ThenBy(EffectivePriority)
                 .ThenBy(EstimatedDeliveryScore)
                 .ThenByDescending(GetRemainingBytes)
@@ -506,6 +514,16 @@ public class MultiProviderNntpClient(
     }
 
     private static double PrepSpreadScore(MultiConnectionNntpClient provider)
+    {
+        // Route against capacity that exists now, not the configured maximum.
+        // Otherwise a provider with slow or stalled handshakes can accumulate a
+        // full share of reservations while healthy providers sit idle.
+        var capacity = Math.Max(1, provider.LiveConnections);
+        var committed = provider.ActiveConnections + provider.PendingSelections;
+        return committed / (double)capacity;
+    }
+
+    private static double StatSpreadScore(MultiConnectionNntpClient provider)
     {
         var capacity = Math.Max(1, provider.ActiveConnections + provider.AvailableConnections);
         var committed = provider.ActiveConnections + provider.PendingSelections;
