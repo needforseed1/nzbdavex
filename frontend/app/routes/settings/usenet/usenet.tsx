@@ -2,6 +2,7 @@ import styles from "./usenet.module.css"
 import { type Dispatch, type SetStateAction, type ReactNode, type CSSProperties, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Button } from "react-bootstrap";
 import { receiveMessage } from "~/utils/websocket-util";
+import { randomUuid } from "~/utils/random";
 import {
     DndContext,
     type DragEndEvent,
@@ -1336,7 +1337,7 @@ function ProviderModal({
         }
         onSave({
             ...(provider ?? {}),
-            Id: provider?.Id || crypto.randomUUID(),
+            Id: provider?.Id || randomUuid(),
             Type: type,
             Host: host,
             Port: parseInt(port, 10),

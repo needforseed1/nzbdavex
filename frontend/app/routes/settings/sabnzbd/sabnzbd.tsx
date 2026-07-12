@@ -2,6 +2,7 @@ import { Button, Form, InputGroup } from "react-bootstrap";
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { TagInput } from "~/components/tag-input/tag-input";
 import { MultiCheckboxInput } from "~/components/multi-checkbox-input/multi-checkbox-input";
+import { randomUuid } from "~/utils/random";
 import styles from "./sabnzbd.module.css"
 
 type SabnzbdSettingsProps = {
@@ -309,7 +310,7 @@ export function isSabnzbdSettingsValid(newConfig: Record<string, string>) {
 }
 
 export function generateNewApiKey(): string {
-    return crypto.randomUUID().toString().replaceAll("-", "");
+    return randomUuid().replaceAll("-", "");
 }
 
 function isValidCategories(categories: string): boolean {

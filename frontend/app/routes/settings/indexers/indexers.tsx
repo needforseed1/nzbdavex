@@ -1,6 +1,7 @@
 import { Button, Form, Spinner } from "react-bootstrap";
 import styles from "./indexers.module.css";
 import { type Dispatch, type SetStateAction, useState, useCallback, useEffect, useMemo } from "react";
+import { randomUuid } from "~/utils/random";
 
 type IndexersSettingsProps = {
     config: Record<string, string>
@@ -790,7 +791,7 @@ function IndexerModal({ show, indexer, otherIndexerNames, onClose, onSave }: Ind
         delete indexerWithoutLegacyUserAgent.UserAgent;
         onSave({
             ...indexerWithoutLegacyUserAgent,
-            Id: indexer?.Id || crypto.randomUUID(),
+            Id: indexer?.Id || randomUuid(),
             Name: name.trim(),
             Url: url.trim(),
             ApiKey: apiKey.trim(),

@@ -2,6 +2,7 @@ import { Button, Form, Card } from "react-bootstrap";
 import styles from "./profiles.module.css";
 import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useMemo, useState } from "react";
 import { MultiCheckboxInput } from "~/components/multi-checkbox-input/multi-checkbox-input";
+import { randomHex } from "~/utils/random";
 
 type ProfilesSettingsProps = {
     config: Record<string, string>
@@ -104,9 +105,7 @@ function parseIndexers(raw: string): IndexerSummary[] {
 }
 
 function makeToken(): string {
-    const bytes = new Uint8Array(12);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    return randomHex(12);
 }
 
 function isAdapterEnabled(profile: Profile, key: AdapterKey): boolean {
