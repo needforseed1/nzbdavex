@@ -13,7 +13,7 @@ public static class SettingsRegistry
       "usenet.providers":"","usenet.max-download-connections":"15","usenet.max-queue-connections":"","usenet.streaming-priority":"80",
       "usenet.article-buffer-size":"40","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
       "usenet.segment-cache.max-gb":"10","usenet.pipelining.playback.enabled":"false","usenet.pipelining.health.enabled":"true",
-      "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64","usenet.health.include-backup.enabled":"false",
+      "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64",
       "usenet.pipelining.depth":"8","usenet.cascade.enabled":"false","webdav.user":"admin","webdav.pass":"",
       "webdav.show-hidden-files":"false","webdav.enforce-readonly":"true","webdav.preview-par2-files":"false",
       "rclone.rc-enabled":"false","rclone.host":"","rclone.user":"","rclone.pass":"","rclone.mount-dir":"/mnt/nzbdav",

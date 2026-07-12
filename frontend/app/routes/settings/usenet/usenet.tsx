@@ -839,32 +839,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 </div>
             </details>
 
-            <div className={styles.section}>
-                <div className={styles.sectionHeader}>
-                    <div>Backup health checks</div>
-                </div>
-                <div className={styles["form-group"]}>
-                    <div className={styles["form-checkbox-wrapper"]}>
-                        <input
-                            type="checkbox"
-                            id="include-backup-health-checks"
-                            className={`${styles["form-checkbox"]} toggle-switch`}
-                            checked={config["usenet.health.include-backup.enabled"] === "true"}
-                            onChange={(e) => setNewConfig({
-                                ...config,
-                                "usenet.health.include-backup.enabled": e.target.checked ? "true" : "false",
-                            })}
-                        />
-                        <label htmlFor="include-backup-health-checks" className={styles["form-checkbox-label"]}>
-                            Include Backup providers in health checks
-                        </label>
-                    </div>
-                    <div className={styles["form-hint"]}>
-                        Lets Backup providers share normal STAT work. Leave this off to reserve block accounts for missing-article recovery only.
-                    </div>
-                </div>
-            </div>
-
             <ProviderModal
                 show={showModal}
                 provider={editingIndex !== null ? providerConfig.Providers[editingIndex] : null}
@@ -2273,7 +2247,6 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
         || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
         || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]
         || config["usenet.pipelining.health.lanes"] !== newConfig["usenet.pipelining.health.lanes"]
-        || config["usenet.health.include-backup.enabled"] !== newConfig["usenet.health.include-backup.enabled"]
         || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
 }

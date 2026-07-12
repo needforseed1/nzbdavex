@@ -129,15 +129,15 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
-    public async Task BackupProvidersJoinPrimaryHealthLanesWhenEnabled()
+    public async Task BackupAndStatsProvidersJoinPrimaryHealthLanes()
     {
         var coordinator = new LaneCoordinator(2);
         var pooledClient = new CoordinatedPipelineClient(coordinator);
         var backupClient = new CoordinatedPipelineClient(coordinator);
         using var client = new MultiProviderNntpClient([
             CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
-            CreateProvider(backupClient, ProviderType.BackupOnly, "backup", 1),
-        ], new ProviderUsageTracker(), backupHealthChecksEnabled: () => true);
+            CreateProvider(backupClient, ProviderType.BackupAndStats, "backup-health", 1),
+        ], new ProviderUsageTracker());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
         await client.CheckAllSegmentsPipelinedAsync(
@@ -145,6 +145,24 @@ public class PipelinedFallbackTests
 
         Assert.Single(pooledClient.Batches);
         Assert.Single(backupClient.Batches);
+    }
+
+    [Fact]
+    public async Task BackupOnlyProvidersDoNotJoinPrimaryHealthLanes()
+    {
+        var pooledClient = new RecordingPipelineClient([true]);
+        var backupClient = new RecordingPipelineClient([true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(pooledClient, ProviderType.Pooled, "pooled", 0),
+            CreateProvider(backupClient, ProviderType.BackupOnly, "backup", 1),
+        ], new ProviderUsageTracker());
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["article"], 8, CancellationToken.None));
+
+        Assert.True(results.Single().Exists);
+        Assert.Single(pooledClient.Batches);
+        Assert.Empty(backupClient.Batches);
     }
 
     [Fact]

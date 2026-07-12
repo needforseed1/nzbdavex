@@ -22,12 +22,13 @@ public class MultiProviderNntpClient(
     ProviderUsageTracker usageTracker,
     MetricsWriter? metricsWriter = null,
     ProviderBytesTracker? bytesTracker = null,
-    Func<bool>? cascadeEnabled = null,
-    Func<bool>? backupHealthChecksEnabled = null
+    Func<bool>? cascadeEnabled = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
+    private const double PartialStatMinimumCoverage = 0.90;
+    private const double PartialStatAdmissionMargin = 0.90;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -533,9 +534,46 @@ public class MultiProviderNntpClient(
     private bool IsPrimaryStatProvider(MultiConnectionNntpClient provider) =>
         provider.ProviderType is (ProviderType.Pooled
             or ProviderType.BackupAndStats
-            or ProviderType.HealthChecksOnly)
-        || (backupHealthChecksEnabled?.Invoke() == true
-            && provider.ProviderType == ProviderType.BackupOnly);
+            or ProviderType.HealthChecksOnly);
+
+    internal static bool IsPartialStatProviderWorthwhile(
+        int found,
+        int received,
+        double statRate,
+        double fallbackRate)
+    {
+        if (found <= 0 || received <= 0 || found >= received || statRate <= 0 || fallbackRate <= 0)
+            return false;
+
+        var coverage = found / (double)received;
+        if (coverage < PartialStatMinimumCoverage) return false;
+
+        var expectedSecondsPerArticle = 1d / statRate + (1d - coverage) / fallbackRate;
+        var fallbackSecondsPerArticle = 1d / fallbackRate;
+        return expectedSecondsPerArticle <= fallbackSecondsPerArticle * PartialStatAdmissionMargin;
+    }
+
+    private HashSet<MultiConnectionNntpClient> SelectPreferredStatProviders(
+        IEnumerable<BulkStatProbe> probes)
+    {
+        var successful = probes
+            .Where(x => x.Success && x.Found > 0 && IsPrimaryStatProvider(x.Provider))
+            .ToList();
+        if (successful.Count == 0) return [];
+
+        var bestCoverage = successful.Max(x => x.Found);
+        var fallbackRate = successful
+            .Where(x => x.Found == bestCoverage)
+            .Select(x => x.Rate)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return successful
+            .Where(x => x.Found == bestCoverage ||
+                        IsPartialStatProviderWorthwhile(x.Found, x.Received, x.Rate, fallbackRate))
+            .Select(x => x.Provider)
+            .ToHashSet();
+    }
 
     private IEnumerable<MultiConnectionNntpClient> SelectPrimaryStatTier(
         IReadOnlyCollection<MultiConnectionNntpClient> pool)
@@ -711,9 +749,7 @@ public class MultiProviderNntpClient(
         if (successful.Count == 0) return BulkStatQualification.None;
 
         var bestCoverage = successful.Count == 0 ? 0 : successful.Max(x => x.Found);
-        var preferred = bestCoverage == 0
-            ? []
-            : successful.Where(x => x.Found == bestCoverage).Select(x => x.Provider).ToHashSet();
+        var preferred = SelectPreferredStatProviders(successful);
         var plan = new BulkStatPlan(this, probes, preferred);
         plan.ObserveLateProbes(pendingProbes, sample.Length, cancellationToken);
 
@@ -1254,20 +1290,11 @@ public class MultiProviderNntpClient(
         private void AddProbe(BulkStatProbe probe)
         {
             _probes[probe.Provider] = probe;
-            if (!probe.Success ||
-                probe.Found == 0 ||
-                !Owner.IsPrimaryStatProvider(probe.Provider))
-                return;
-
             lock (_preferred)
             {
-                var currentBest = _preferred
-                    .Select(provider => _probes.GetValueOrDefault(provider)?.Found ?? 0)
-                    .DefaultIfEmpty(0)
-                    .Max();
-                if (probe.Found < currentBest) return;
-                if (probe.Found > currentBest) _preferred.Clear();
-                _preferred.Add(probe.Provider);
+                var preferred = Owner.SelectPreferredStatProviders(_probes.Values);
+                _preferred.Clear();
+                _preferred.UnionWith(preferred);
             }
         }
 

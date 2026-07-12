@@ -37,7 +37,7 @@ This section records changes in this repository that are not yet present in the 
 * Usenet provider setup now uses clear operational roles and integrates protocol overrides and all provider benchmarks into the normal edit workflow.
 * Queue preparation now always balances across Primary providers; the redundant routing toggle was removed.
 * Bulk health checks use all health-eligible provider capacity, weighted by measured STAT speed and open connections.
-* Backup providers can optionally join normal bulk health checks without becoming eligible for prep or playback.
+* Each provider's role controls health-check participation: **Backup + health checks** joins bulk STAT work, while plain **Backup** remains recovery-only.
 * Provider action tooltips appear promptly instead of waiting for the browser's native tooltip delay.
 * Prep connection limits are optional; Automatic remains the default and recommended behavior.
 

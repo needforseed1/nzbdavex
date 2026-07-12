@@ -36,7 +36,6 @@ Verdicts used below:
 | `usenet.cascade.enabled` | **Working** | Ordered vs balanced routing is wired. Low-priority prep spreading intentionally has separate selection behavior. |
 | `usenet.pipelining.playback.enabled`, `usenet.pipelining.depth` | **Working / validated** | Runtime and per-provider fallback are wired; depth is 1–64. |
 | `usenet.pipelining.health.enabled`, `.health.depth`, `.health.lanes` | **Working / validated** | Health depth is 1–64; lanes are 1–1024 and then bounded by available eligible connections, now stated in the UI. |
-| `usenet.health.include-backup.enabled` | **Working** | Backup-only providers are included in health work when enabled. |
 | `usenet.max-download-connections` | **Working** | Controls the playback-side concurrency budget. Actual provider capacity remains the physical ceiling. |
 | `usenet.max-queue-connections` | **Fixed** | Blank directly means Automatic and follows pooled capacity; there is no redundant enable toggle. An explicit limit is validated against current pooled capacity instead of being silently clamped. |
 | `usenet.streaming-priority` | **Working / validated** | Integer 0–100 controls playback-vs-prep semaphore odds. |

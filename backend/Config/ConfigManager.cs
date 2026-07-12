@@ -241,11 +241,6 @@ public class ConfigManager
         return GetBoolean("usenet.pipelining.health.enabled", true);
     }
 
-    public bool IsBackupHealthChecksEnabled()
-    {
-        return GetBoolean("usenet.health.include-backup.enabled", false);
-    }
-
     public bool IsCascadeEnabled()
     {
         return GetBoolean("usenet.cascade.enabled", false);
@@ -275,12 +270,10 @@ public class ConfigManager
 
     public int GetHealthCheckConnections()
     {
-        var includeBackup = IsBackupHealthChecksEnabled();
         return Math.Max(1, GetUsenetProviderConfig().Providers
             .Where(x => x.Type is ProviderType.Pooled
                 or ProviderType.BackupAndStats
-                or ProviderType.HealthChecksOnly
-                || (includeBackup && x.Type == ProviderType.BackupOnly))
+                or ProviderType.HealthChecksOnly)
             .Sum(x => x.MaxConnections));
     }
 
