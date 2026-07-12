@@ -5,13 +5,12 @@ import { receiveMessage } from "~/utils/websocket-util";
 
 const TaskTopic = { 'uftbmp': 'state' };
 
-type ConvertStrmToSymlinksProps = {
-    savedConfig: Record<string, string>
+type MigrateDatabaseFilesToBlobstoreProps = {
+    onComplete: () => void;
 };
 
-export function MigrateDatabaseFilesToBlobstore({ savedConfig }: ConvertStrmToSymlinksProps) {
+export function MigrateDatabaseFilesToBlobstore({ onComplete }: MigrateDatabaseFilesToBlobstoreProps) {
     // stateful variables
-    const [connected, setConnected] = useState<boolean>(false);
     const [progress, setProgress] = useState<string | null>(null);
 
     // effects
@@ -20,14 +19,17 @@ export function MigrateDatabaseFilesToBlobstore({ savedConfig }: ConvertStrmToSy
         let disposed = false;
         function connect() {
             ws = new WebSocket(window.location.origin.replace(/^http/, 'ws'));
-            ws.onmessage = receiveMessage((_, message) => setProgress(message));
-            ws.onopen = () => { setConnected(true); ws.send(JSON.stringify(TaskTopic)); }
+            ws.onmessage = receiveMessage((_, message) => {
+                setProgress(message);
+                if (message.startsWith("Done!")) onComplete();
+            });
+            ws.onopen = () => { ws.send(JSON.stringify(TaskTopic)); }
             ws.onclose = () => { !disposed && setTimeout(() => connect(), 1000); setProgress(null) };
             ws.onerror = () => { ws.close() };
             return () => { disposed = true; ws.close(); }
         }
         return connect();
-    }, [setProgress, setConnected]);
+    }, [setProgress, onComplete]);
 
     return (
         <div className={styles.task}>

@@ -53,6 +53,7 @@ public class NzbResolutionCache
 
     public class Candidate
     {
+        public string? IndexerId { get; init; }
         public required string IndexerName { get; init; }
         public required string IndexerUserAgent { get; init; }
         public required string NzbUrl { get; init; }

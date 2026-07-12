@@ -21,8 +21,6 @@ public class PreflightOrchestrator(
     WardenStore wardenStore,
     NzbFetchCoalescer nzbFetchCoalescer)
 {
-    private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(8);
-
     public void Start(
         string profileToken,
         string type,
@@ -65,12 +63,23 @@ public class PreflightOrchestrator(
         var maxAttempts = Math.Min(configManager.GetPreflightMaxAttempts(), candidates.Count);
         var maxWait = TimeSpan.FromSeconds(configManager.GetPreflightIndexerMaxWaitSeconds());
         var indexers = configManager.GetIndexerConfig().Indexers
-            .ToDictionary(x => x.Name, x => x);
+            .Where(x => x.Enabled)
+            .SelectMany(x => new[]
+            {
+                new KeyValuePair<string, IndexerConfig.ConnectionDetails>(x.Id, x),
+                new KeyValuePair<string, IndexerConfig.ConnectionDetails>(x.Name, x),
+            })
+            .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Key, x => x.First().Value, StringComparer.OrdinalIgnoreCase);
+        var hideKnownWardenDead = configManager.IsWardenHideDeadEnabled()
+            && candidates.Any(c => !wardenStore.IsDeadAnywhere(
+                WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)));
 
         for (var i = 0; i < maxAttempts; i++)
         {
             if (ct.IsCancellationRequested) return 0;
-            var ok = await PreflightCandidateAsync(mode, candidates[i], indexers, maxWait, ct).ConfigureAwait(false);
+            var ok = await PreflightCandidateAsync(
+                mode, candidates[i], indexers, maxWait, hideKnownWardenDead, ct).ConfigureAwait(false);
             if (ok) return 1;
         }
         return 0;
@@ -81,35 +90,17 @@ public class PreflightOrchestrator(
         NzbResolutionCache.Candidate candidate,
         IReadOnlyDictionary<string, IndexerConfig.ConnectionDetails> indexers,
         TimeSpan maxWait,
+        bool hideKnownWardenDead,
         CancellationToken ct)
     {
         if (ct.IsCancellationRequested) return false;
 
         var fp = WardenFingerprint.Compute(candidate.Size, candidate.Poster, candidate.UsenetDate);
-        if (wardenStore.IsDeadAnywhere(fp)) return false;
+        if (hideKnownWardenDead && wardenStore.IsDeadAnywhere(fp)) return false;
 
-        if (indexers.TryGetValue(candidate.IndexerName, out var indexer))
-        {
-            var hitCheck = await hitTracker
-                .CheckAsync(candidate.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, ct)
-                .ConfigureAwait(false);
-            if (hitCheck is { Allowed: false })
-            {
-                Log.Debug("Preflight skipped for {Indexer}: {Reason}",
-                    candidate.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
-                return false;
-            }
-
-            var reserved = await rateLimiter
-                .TryWaitAsync(candidate.IndexerName, indexer.MaxRequestsPerMinute, maxWait, ct)
-                .ConfigureAwait(false);
-            if (!reserved) return false;
-        }
-
-        var nzbBytes = await FetchNzbBytesAsync(candidate, ct).ConfigureAwait(false);
+        if (!indexers.TryGetValue(candidate.IndexerId ?? candidate.IndexerName, out var indexer)) return false;
+        var nzbBytes = await FetchNzbBytesAsync(candidate, indexer, maxWait, ct).ConfigureAwait(false);
         if (nzbBytes is null || ct.IsCancellationRequested) return false;
-
-        _ = hitTracker.RecordAsync(candidate.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
 
         PlaybackFastVerifier.VerifyOutcome outcome;
         using (var ms = new MemoryStream(nzbBytes, writable: false))
@@ -146,27 +137,46 @@ public class PreflightOrchestrator(
 
     private Task<byte[]?> FetchNzbBytesAsync(
         NzbResolutionCache.Candidate c,
+        IndexerConfig.ConnectionDetails indexer,
+        TimeSpan maxWait,
         CancellationToken ct)
     {
-        return nzbFetchCoalescer.GetOrFetchAsync(c.NzbUrl, async innerCt =>
-        {
-            try
+        return nzbFetchCoalescer.GetOrFetchAsync(
+            c.NzbUrl,
+            innerCt => rateLimiter.TryWaitAsync(
+                indexer.Id, indexer.MaxRequestsPerMinute, maxWait, innerCt),
+            async innerCt =>
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
-                req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
-                var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
-                cts.CancelAfter(FetchTimeout);
-                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode) return null;
-                return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception e) when (!e.IsCancellationException())
-            {
-                Log.Debug("Preflight NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
-                return null;
-            }
-        }, ct);
+                try
+                {
+                    var hitCheck = await hitTracker
+                        .ReserveAsync(indexer.Id, IndexerApiHit.HitType.Download,
+                            indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
+                        .ConfigureAwait(false);
+                    if (hitCheck is { Allowed: false })
+                    {
+                        Log.Debug("Preflight skipped for {Indexer}: {Reason}",
+                            indexer.Name,
+                            IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                        return null;
+                    }
+
+                    using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
+                    req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
+                    var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                    var timeoutSeconds = configManager.GetIndexerConfig().GetEffectiveTimeoutSeconds(indexer);
+                    cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+                    using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                    if (!resp.IsSuccessStatusCode) return null;
+                    return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception e) when (!e.IsCancellationException())
+                {
+                    Log.Debug("Preflight NZB fetch failed for {Url}: {Message}", c.NzbUrl, e.Message);
+                    return null;
+                }
+            }, ct);
     }
 
     private async Task TryPreWarmExistingAsync(NzbResolutionCache.Candidate candidate, CancellationToken ct)

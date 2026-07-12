@@ -1,141 +1,36 @@
 import type { Route } from "./+types/route";
 import styles from "./route.module.css"
-import { Tabs, Tab, Button, Accordion } from "react-bootstrap"
+import { Tabs, Tab, Button, Accordion, Alert } from "react-bootstrap"
 import { backendClient } from "~/clients/backend-client.server";
-import { isUsenetSettingsUpdated, UsenetSettings } from "./usenet/usenet";
+import { isUsenetSettingsUpdated, isUsenetSettingsValid, UsenetSettings } from "./usenet/usenet";
 import { isSabnzbdSettingsUpdated, isSabnzbdSettingsValid, SabnzbdSettings } from "./sabnzbd/sabnzbd";
 import { isWebdavSettingsUpdated, isWebdavSettingsValid, WebdavSettings } from "./webdav/webdav";
 import { isArrsSettingsUpdated, isArrsSettingsValid, ArrsSettings } from "./arrs/arrs";
 import { isIndexersSettingsUpdated, isIndexersSettingsValid, IndexersSettings } from "./indexers/indexers";
 import { isProfilesSettingsUpdated, isProfilesSettingsValid, ProfilesSettings } from "./profiles/profiles";
-import { isMaintenanceSettingsUpdated, Maintenance } from "./maintenance/maintenance";
-import { isRepairsSettingsUpdated, RepairsSettings } from "./repairs/repairs";
-import { isWatchdogSettingsUpdated, WatchdogSettings } from "./watchdog/watchdog";
-import { isPreflightSettingsUpdated, PreflightSettings } from "./preflight/preflight";
-import { isWatchtowerSettingsUpdated, WatchtowerSettings } from "./watchtower/watchtower";
-import { isWardenSettingsUpdated, WardenSettings } from "./warden/warden";
-import { isRcloneSettingsUpdated, RcloneSettings } from "./rclone/rclone";
+import { isMaintenanceSettingsUpdated, isMaintenanceSettingsValid, Maintenance } from "./maintenance/maintenance";
+import { isRepairsSettingsUpdated, isRepairsSettingsValid, RepairsSettings } from "./repairs/repairs";
+import { isWatchdogSettingsUpdated, isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
+import { isPreflightSettingsUpdated, isPreflightSettingsValid, PreflightSettings } from "./preflight/preflight";
+import { isWatchtowerSettingsUpdated, isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
+import { isWardenSettingsUpdated, isWardenSettingsValid, WardenSettings } from "./warden/warden";
+import { isRcloneSettingsUpdated, isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
 import { useCallback, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
 
-const defaultConfig = {
-    "general.base-url": "",
-    "api.key": "",
-    "api.categories": "",
-    "api.manual-category": "uncategorized",
-    "api.ensure-importable-video": "true",
-    "api.ensure-article-existence-categories": "",
-    "api.ignore-history-limit": "true",
-    "api.download-file-blocklist": "*.nfo, *.par2, *.sfv, *sample.mkv",
-    "api.duplicate-nzb-behavior": "increment",
-    "api.import-strategy": "symlinks",
-    "api.completed-downloads-dir": "",
-    "api.user-agent": "",
-    "api.search-user-agent": "",
-    "usenet.providers": "",
-    "usenet.max-download-connections": "15",
-    "usenet.max-queue-connections": "",
-    "usenet.streaming-priority": "80",
-    "usenet.article-buffer-size": "40",
-    "usenet.segment-cache.enabled": "false",
-    "usenet.segment-cache.path": "/config/segment-cache",
-    "usenet.segment-cache.max-gb": "10",
-    "usenet.pipelining.playback.enabled": "false",
-    "usenet.pipelining.health.enabled": "true",
-    "usenet.pipelining.health.depth": "32",
-    "usenet.pipelining.health.lanes": "64",
-    "usenet.health.include-backup.enabled": "false",
-    "usenet.pipelining.depth": "8",
-    "usenet.cascade.enabled": "false",
-    "webdav.user": "admin",
-    "webdav.pass": "",
-    "webdav.show-hidden-files": "false",
-    "webdav.enforce-readonly": "true",
-    "webdav.preview-par2-files": "false",
-    "rclone.rc-enabled": "false",
-    "rclone.host": "",
-    "rclone.user": "",
-    "rclone.pass": "",
-    "rclone.mount-dir": "",
-    "media.library-dir": "",
-    "arr.instances": "{\"RadarrInstances\":[],\"SonarrInstances\":[],\"QueueRules\":[]}",
-    "indexers.instances": "{\"Indexers\":[]}",
-    "profiles.instances": "{\"Profiles\":[]}",
-    "play.watchdog-enabled": "true",
-    "play.total-budget-seconds": "30",
-    "play.hedge-delay-seconds": "3",
-    "play.max-candidates": "3",
-    "play.max-attempts": "10",
-    "play.verify-mode": "none",
-    "play.candidate-negative-cache-minutes": "5",
-    "grab.stall-failover-enabled": "true",
-    "grab.stall-failover-window-seconds": "2",
-    "grab.stall-failover-ceiling-seconds": "5",
-    "search.exclude-patterns": "",
-    "variants.mode": "off",
-    "variants.tolerance-pct": "25",
-    "variants.max-per-group": "3",
-    "variants.replay-strategy": "closest-to-click",
-    "variants.fallback-on-failure": "true",
-    "variants.eviction-strategy": "lru",
-    "variants.eviction-active-grace-seconds": "60",
-    "preflight.mode": "off",
-    "preflight.max-attempts": "20",
-    "preflight.verify-sample-count": "3",
-    "preflight.ttl-seconds": "120",
-    "preflight.indexer-max-wait-seconds": "5",
-    "repair.enable": "false",
-    "db.is-startup-vacuum-enabled": "false",
-    "maintenance.remove-orphaned-schedule-enabled": "false",
-    "maintenance.remove-orphaned-schedule-time": "0",
-    "api.nzb-backup-enabled": "false",
-    "api.nzb-backup-location": "",
-    "watchtower.enabled": "false",
-    "watchtower.profile-token": "",
-    "watchtower.ranking": "watchdog",
-    "watchtower.size-floor-bytes": "524288000",
-    "watchtower.size-ceiling-bytes": "0",
-    "watchtower.shortlist-depth": "2",
-    "watchtower.grab-cap-per-resolve": "3",
-    "watchtower.active-set-cap": "100",
-    "watchtower.daily-resolve-budget": "60",
-    "watchtower.auto-throughput": "false",
-    "watchtower.sync-interval-seconds": "3600",
-    "watchtower.series-scope": "latest-season",
-    "watchtower.season-bundles": "true",
-    "watchtower.series-max-episodes": "50",
-    "watchtower.series-cap-keep": "newest",
-    "watchtower.series-recent-count": "3",
-    "watchtower.season-bundle-fallback": "false",
-    "watchtower.season-bundle-fallback-scope": "latest-season",
-    "watchtower.season-bundle-fallback-recent-count": "2",
-    "watchtower.season-bundle-fallback-max-episodes": "50",
-    "watchtower.min-grabs": "0",
-    "watchtower.verify-sample-count": "3",
-    "watchtower.verify-timeout-seconds": "10",
-    "watchtower.keepfresh-base-seconds": "21600",
-    "watchtower.keepfresh-max-seconds": "604800",
-    "watchtower.unavailable-retry-seconds": "21600",
-    "watchtower.verbose-logging": "false",
-    "warden.hide-dead": "true",
-    "warden.quorum": "2",
-    "warden.backbone-scope": "true",
-}
 
 export async function loader({ request }: Route.LoaderArgs) {
-    // fetch the config items
-    var configItems = await backendClient.getConfig(Object.keys(defaultConfig));
+    const [settingsMetadata, blobMigrationRemaining] = await Promise.all([
+        backendClient.getSettingsMetadata(),
+        backendClient.getBlobMigrationRemaining(),
+    ]);
 
-    // transform to a map
-    const config: Record<string, string> = defaultConfig;
-    for (const item of configItems) {
-        config[item.configName] = item.configValue;
-    }
+    const config = Object.fromEntries(settingsMetadata.map(item => [item.key, item.effectiveValue]));
 
     return {
-        config: config,
-        appVersion: process.env.NZBDAV_VERSION ?? "unknown",
+        config,
+        blobMigrationRemaining,
     }
 }
 
@@ -147,7 +42,7 @@ export default function Settings(props: Route.ComponentProps) {
 
 type BodyProps = {
     config: Record<string, string>,
-    appVersion: string,
+    blobMigrationRemaining: number,
 };
 
 function Body(props: BodyProps) {
@@ -156,6 +51,7 @@ function Body(props: BodyProps) {
     const [newConfig, setNewConfig] = useState(config);
     const [isSaving, setIsSaving] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('usenet');
 
     // derived variables
@@ -172,6 +68,7 @@ function Body(props: BodyProps) {
     const isMaintenanceUpdated = isMaintenanceSettingsUpdated(config, newConfig);
     const isWatchtowerUpdated = isWatchtowerSettingsUpdated(config, newConfig);
     const isWardenUpdated = isWardenSettingsUpdated(config, newConfig);
+    const isBaseUrlUpdated = config["general.base-url"] !== newConfig["general.base-url"];
     const isUpdated = iseUsenetUpdated || isSabnzbdUpdated || isWebdavUpdated || isArrsUpdated || isIndexersUpdated || isProfilesUpdated || isRepairsUpdated || isWatchdogUpdated || isPreflightUpdated || isRcloneUpdated || isMaintenanceUpdated || isWatchtowerUpdated || isWardenUpdated;
     const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isMaintenanceUpdated;
     const navigationBlocker = useNavigationBlocker(isUpdated);
@@ -188,11 +85,24 @@ function Body(props: BodyProps) {
     const saveButtonLabel = isSaving ? "Saving..."
         : !isUpdated && isSaved ? "Saved ✅"
         : !isUpdated && !isSaved ? "There are no changes to save"
-        : isSabnzbdUpdated && !isSabnzbdSettingsValid(newConfig) ? "Invalid SABnzbd settings"
+        : (isSabnzbdUpdated || isBaseUrlUpdated)
+            && !isSabnzbdSettingsValid(newConfig) ? "Invalid SABnzbd settings"
         : isWebdavUpdated && !isWebdavSettingsValid(newConfig) ? "Invalid WebDAV settings"
         : isArrsUpdated && !isArrsSettingsValid(newConfig) ? "Invalid Arrs settings"
         : isIndexersUpdated && !isIndexersSettingsValid(newConfig) ? "Invalid Indexers settings"
-        : isProfilesUpdated && !isProfilesSettingsValid(newConfig) ? "Invalid Search Profiles settings"
+        : (isProfilesUpdated || isIndexersUpdated)
+            && !isProfilesSettingsValid(newConfig) ? "Invalid Search Profiles settings"
+        : iseUsenetUpdated && !isUsenetSettingsValid(newConfig) ? "Invalid Usenet settings"
+        : isWatchdogUpdated && !isWatchdogSettingsValid(newConfig) ? "Invalid Watchdog settings"
+        : isPreflightUpdated && !isPreflightSettingsValid(newConfig) ? "Invalid Preflight settings"
+        : (isWatchtowerUpdated || isProfilesUpdated)
+            && !isWatchtowerSettingsValid(newConfig) ? "Invalid Watchtower settings"
+        : isWardenUpdated && !isWardenSettingsValid(newConfig) ? "Invalid Warden settings"
+        : isRcloneUpdated && !isRcloneSettingsValid(newConfig) ? "Invalid Rclone settings"
+        : (isRepairsUpdated || isArrsUpdated)
+            && !isRepairsSettingsValid(newConfig) ? "Invalid Repairs settings"
+        : (isMaintenanceUpdated || isRepairsUpdated)
+            && !isMaintenanceSettingsValid(newConfig) ? "Invalid Maintenance settings"
         : "Save";
     const saveButtonVariant = saveButtonLabel === "Save" ? "primary"
         : saveButtonLabel === "Saved ✅" ? "success"
@@ -203,25 +113,53 @@ function Body(props: BodyProps) {
     const onClear = useCallback(() => {
         setNewConfig(config);
         setIsSaved(false);
+        setSaveError(null);
     }, [config, setNewConfig]);
 
     const onSave = useCallback(async () => {
+        const configAtSave = config;
+        const newConfigAtSave = newConfig;
+        const changedConfig = getChangedConfig(configAtSave, newConfigAtSave);
+
         setIsSaving(true);
         setIsSaved(false);
-        const response = await fetch("/settings/update", {
-            method: "POST",
-            body: (() => {
-                const form = new FormData();
-                const changedConfig = getChangedConfig(config, newConfig);
-                form.append("config", JSON.stringify(changedConfig));
-                return form;
-            })()
-        });
-        if (response.ok) {
-            setConfig(newConfig);
+        setSaveError(null);
+
+        try {
+            const form = new FormData();
+            form.append("config", JSON.stringify(changedConfig));
+            const response = await fetch("/settings/update", {
+                method: "POST",
+                body: form,
+            });
+            const result = await response.json().catch(() => null) as { status?: boolean, error?: string } | null;
+            if (!response.ok || result?.status !== true) {
+                throw new Error(result?.error || `Failed to save settings (${response.status})`);
+            }
+
+            const savedConfig = {
+                ...newConfigAtSave,
+                "webdav.pass": "",
+                "rclone.pass": "",
+            };
+            setConfig(savedConfig);
+            setNewConfig(current => ({
+                ...current,
+                // Clear a successfully submitted replacement from browser
+                // state, but preserve a newer password typed while saving.
+                "webdav.pass": current["webdav.pass"] === newConfigAtSave["webdav.pass"]
+                    ? ""
+                    : current["webdav.pass"],
+                "rclone.pass": current["rclone.pass"] === newConfigAtSave["rclone.pass"]
+                    ? ""
+                    : current["rclone.pass"],
+            }));
+            setIsSaved(true);
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : "Failed to save settings");
+        } finally {
+            setIsSaving(false);
         }
-        setIsSaving(false);
-        setIsSaved(true);
     }, [config, newConfig, setIsSaving, setIsSaved, setConfig]);
 
     return (
@@ -273,7 +211,7 @@ function Body(props: BodyProps) {
                                 title="SABnzbd"
                                 description="Compatible API for *arr apps — API key, categories, import strategy."
                                 isUpdated={isSabnzbdUpdated}>
-                                <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
+                                <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} />
                             </AdvancedItem>
                             <AdvancedItem
                                 eventKey="arrs"
@@ -301,13 +239,22 @@ function Body(props: BodyProps) {
                                 title="Maintenance"
                                 description="Database vacuum, scheduled cleanup, and one-off migration tasks."
                                 isUpdated={isMaintenanceUpdated}>
-                                <Maintenance savedConfig={config} config={newConfig} setNewConfig={setNewConfig} />
+                                <Maintenance
+                                    savedConfig={config}
+                                    config={newConfig}
+                                    setNewConfig={setNewConfig}
+                                    blobMigrationRemaining={props.blobMigrationRemaining} />
                             </AdvancedItem>
                         </Accordion>
                     </div>
                 </Tab>
             </Tabs>
             <hr />
+            {saveError && (
+                <Alert variant="danger" dismissible onClose={() => setSaveError(null)}>
+                    Settings were not saved: {saveError}. Review the error and try again.
+                </Alert>
+            )}
             {isUpdated && <Button
                 className={styles.button}
                 variant="secondary"
@@ -398,7 +345,7 @@ function getChangedConfig(
     newConfig: Record<string, string>
 ): Record<string, string> {
     let changedConfig: Record<string, string> = {};
-    let configKeys = Object.keys(defaultConfig);
+    const configKeys = new Set([...Object.keys(config), ...Object.keys(newConfig)]);
     for (const configKey of configKeys) {
         if (config[configKey] !== newConfig[configKey]) {
             changedConfig[configKey] = newConfig[configKey];

@@ -43,11 +43,16 @@ public class WardenRemoteSourceService : BackgroundService
         foreach (var source in _store.GetSources())
         {
             if (ct.IsCancellationRequested) return;
-            if (source.Kind != "remote" || string.IsNullOrWhiteSpace(source.Url)) continue;
-            if (now - source.LastChecked < (long)source.RefreshHours * 3600) continue;
+            if (!IsDue(source, now)) continue;
             await RefreshAsync(source, ct).ConfigureAwait(false);
         }
     }
+
+    internal static bool IsDue(WardenSourceInfo source, long now) =>
+        source.Enabled
+        && source.Kind == "remote"
+        && !string.IsNullOrWhiteSpace(source.Url)
+        && now - source.LastChecked >= (long)source.RefreshHours * 3600;
 
     public async Task<string> RefreshAsync(WardenSourceInfo source, CancellationToken ct)
     {

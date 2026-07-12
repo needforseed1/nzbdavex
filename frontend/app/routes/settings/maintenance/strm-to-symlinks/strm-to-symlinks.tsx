@@ -54,7 +54,7 @@ export function ConvertStrmToSymlinks({ savedConfig }: ConvertStrmToSymlinksProp
                     <ul className={styles.list}>
                         <li className={styles["list-item"]}>
                             You must first configure the Library Directory setting before running this task.
-                            Head over to the Repairs tab.
+                            Configure it under Advanced → Repairs.
                         </li>
                     </ul>
                 </Alert>
@@ -67,7 +67,7 @@ export function ConvertStrmToSymlinks({ savedConfig }: ConvertStrmToSymlinksProp
                             Make a backup of your entire Library Dir prior to running this task
                         </li>
                         <li className={styles["list-item"]}>
-                            Strm files will be deleted from `{libraryDir}` and will not be recoverable without a backup.
+                            STRM files will be deleted from `{libraryDir}` and will not be recoverable without a backup.
                         </li>
                     </ul>
                 </Alert>

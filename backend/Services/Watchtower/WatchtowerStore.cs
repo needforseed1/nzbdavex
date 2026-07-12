@@ -29,13 +29,21 @@ public class WatchtowerStore(PreflightCache preflightCache)
 
     private async Task<bool> TryWarmKeyAsync(DavDatabaseContext ctx, string key, CancellationToken ct)
     {
-        var item = await ctx.WantedItems.AsNoTracking()
+        var item = await ctx.WantedItems
             .FirstOrDefaultAsync(w => w.Key == key, ct)
             .ConfigureAwait(false);
-        if (item is null || item.State != WantedItem.StateReady || item.WinnerNzb is null) return false;
+        if (item is null
+            || item.State is not (WantedItem.StateReady or WantedItem.StateCold)
+            || item.WinnerNzb is null) return false;
 
         var winner = WtJson.ReadPointers(item.Shortlist).FirstOrDefault();
         if (winner is null || winner.Verdict != "available") return false;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        item.LastAccessedAtUnix = now;
+        item.UpdatedAtUnix = now;
+        if (item.State == WantedItem.StateCold) item.State = WantedItem.StateReady;
+        await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
 
         preflightCache.SetVerified(winner.NzbUrl, item.WinnerNzb,
             PlaybackFastVerifier.Verdict.Available, item.ResponderHost);

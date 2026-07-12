@@ -31,11 +31,11 @@ const OPTIMISED_DEFAULTS: ResultFilter = {
 };
 
 interface ConnectionDetails {
+    Id: string;
     Name: string;
     Url: string;
     ApiKey: string;
     Enabled: boolean;
-    UserAgent?: string;
     SearchUserAgent?: string;
     RetrieveUserAgent?: string;
     MaxRequestsPerMinute?: number;
@@ -67,27 +67,11 @@ const DEFAULT_TIMEOUT_SECONDS = 30;
 // Mirrors IndexerConfig.DefaultSearchResultLimit in the backend.
 const DEFAULT_SEARCH_RESULT_LIMIT = 100;
 
-type PatternIssue = { line: number, pattern: string, error: string };
-
-function validateExcludePatterns(raw: string): PatternIssue[] {
-    const issues: PatternIssue[] = [];
-    const lines = raw.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trim();
-        if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
-        try {
-            new RegExp(trimmed, "i");
-        } catch (e: any) {
-            issues.push({ line: i + 1, pattern: trimmed, error: e?.message ?? "invalid regex" });
-        }
-    }
-    return issues;
-}
-
 function parseConfig(raw: string): IndexerConfig {
     try {
         const parsed = JSON.parse(raw || "{}");
         return {
+            ...parsed,
             ProxyUrl: parsed.ProxyUrl ?? "",
             TimeoutSeconds: typeof parsed.TimeoutSeconds === "number" ? parsed.TimeoutSeconds : undefined,
             SearchResultLimit: typeof parsed.SearchResultLimit === "number" ? parsed.SearchResultLimit : undefined,
@@ -98,11 +82,28 @@ function parseConfig(raw: string): IndexerConfig {
     }
 }
 
+function isIndexerConfigJsonValid(raw: string | undefined): boolean {
+    try {
+        const parsed = JSON.parse(raw || "");
+        return parsed !== null && typeof parsed === "object"
+            && (parsed.Indexers === undefined || (Array.isArray(parsed.Indexers)
+                && parsed.Indexers.every((indexer: any) =>
+                    typeof indexer?.Name === "string"
+                    && typeof indexer?.Url === "string"
+                    && typeof indexer?.ApiKey === "string")));
+    } catch {
+        return false;
+    }
+}
+
 function serializeConfig(c: IndexerConfig): string {
-    const out: IndexerConfig = { Indexers: c.Indexers };
+    const out: IndexerConfig = { ...c, Indexers: c.Indexers };
     if (c.ProxyUrl && c.ProxyUrl.trim()) out.ProxyUrl = c.ProxyUrl.trim();
+    else delete out.ProxyUrl;
     if (typeof c.TimeoutSeconds === "number" && c.TimeoutSeconds > 0) out.TimeoutSeconds = c.TimeoutSeconds;
+    else delete out.TimeoutSeconds;
     if (typeof c.SearchResultLimit === "number" && c.SearchResultLimit > 0) out.SearchResultLimit = c.SearchResultLimit;
+    else delete out.SearchResultLimit;
     return JSON.stringify(out);
 }
 
@@ -110,7 +111,7 @@ function serializeConfig(c: IndexerConfig): string {
 function isTimeoutValid(raw: string): boolean {
     if (!raw.trim()) return true;
     const n = Number(raw);
-    return Number.isInteger(n) && n > 0 && raw.trim() === n.toString();
+    return Number.isInteger(n) && n > 0 && n <= 3600 && raw.trim() === n.toString();
 }
 
 function isCategoryListValid(raw: string): boolean {
@@ -131,7 +132,18 @@ function isProxyUrlValid(raw: string): boolean {
     }
 }
 
+function isHttpUrlValid(raw: string): boolean {
+    if (!raw.trim()) return false;
+    try {
+        const u = new URL(raw);
+        return (u.protocol === "http:" || u.protocol === "https:") && u.host !== "";
+    } catch {
+        return false;
+    }
+}
+
 export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps) {
+    const configJsonValid = isIndexerConfigJsonValid(config["indexers.instances"]);
     const indexerConfig = useMemo(() => parseConfig(config["indexers.instances"]), [config]);
     const [showModal, setShowModal] = useState(false);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -200,7 +212,6 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
     }, [config, indexerConfig, setNewConfig]);
 
     const excludePatterns = config["search.exclude-patterns"] ?? "";
-    const patternIssues = useMemo(() => validateExcludePatterns(excludePatterns), [excludePatterns]);
     const handleExcludePatternsChange = useCallback((value: string) => {
         setNewConfig({ ...config, "search.exclude-patterns": value });
     }, [config, setNewConfig]);
@@ -223,6 +234,14 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
     const globalSearchLimitRaw = typeof indexerConfig.SearchResultLimit === "number" && indexerConfig.SearchResultLimit > 0
         ? indexerConfig.SearchResultLimit.toString()
         : "";
+
+    if (!configJsonValid) {
+        return <div className={styles.container}>
+            <p className={styles.alertMessage} role="alert">
+                Indexer settings contain invalid JSON. This section is locked to prevent overwriting it; restore a valid <code>indexers.instances</code> value before editing.
+            </p>
+        </div>;
+    }
 
     return (
         <div className={styles.container}>
@@ -315,23 +334,12 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
                             id="indexers-exclude-patterns"
                             rows={6}
                             spellCheck={false}
-                            className={`${styles["form-input"]} ${styles["pattern-input"]} ${patternIssues.length > 0 ? styles.error : ""}`}
+                            className={`${styles["form-input"]} ${styles["pattern-input"]}`}
                             placeholder={"# one regex per line\n# lines starting with # are comments"}
                             value={excludePatterns}
                             onChange={e => handleExcludePatternsChange(e.target.value)} />
-                        {patternIssues.length > 0 && (
-                            <div className={styles["pattern-errors"]}>
-                                {patternIssues.map((iss, i) => (
-                                    <div key={i} className={styles["pattern-error"]}>
-                                        <span className={styles["pattern-error-line"]}>Line {iss.line}</span>
-                                        <code className={styles["pattern-error-pattern"]}>{iss.pattern}</code>
-                                        <span className={styles["pattern-error-message"]}>— {iss.error}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
                         <p className={styles["pattern-hint"]}>
-                            One JavaScript-style regex per line. Search results whose title matches any pattern
+                            One .NET regex per line, validated by the server when settings are saved. Search results whose title matches any pattern
                             are dropped before being returned. Case-insensitive by default — use <code>(?-i:Foo)</code> for
                             case-sensitive. Lines starting with <code>#</code> are comments. Use this to skip
                             releases your setup can't handle, whatever the reason.
@@ -368,6 +376,9 @@ export function IndexersSettings({ config, setNewConfig }: IndexersSettingsProps
             <IndexerModal
                 show={showModal}
                 indexer={editingIndex !== null ? indexerConfig.Indexers[editingIndex] : null}
+                otherIndexerNames={indexerConfig.Indexers
+                    .filter((_, index) => index !== editingIndex)
+                    .map(indexer => indexer.Name)}
                 onClose={handleCloseModal}
                 onSave={handleSave}
             />
@@ -391,8 +402,8 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
     const rateLimit = indexer.MaxRequestsPerMinute && indexer.MaxRequestsPerMinute > 0
         ? `${indexer.MaxRequestsPerMinute} / min`
         : "Unlimited";
-    const searchUserAgent = indexer.SearchUserAgent?.trim() || indexer.UserAgent?.trim() || "Default";
-    const retrieveUserAgent = indexer.RetrieveUserAgent?.trim() || indexer.UserAgent?.trim() || "Default";
+    const searchUserAgent = indexer.SearchUserAgent?.trim() || "Default";
+    const retrieveUserAgent = indexer.RetrieveUserAgent?.trim() || "Default";
     const proxy = indexer.ProxyUrl?.trim() ? indexer.ProxyUrl : "Default";
     const timeout = indexer.TimeoutSeconds && indexer.TimeoutSeconds > 0
         ? `${indexer.TimeoutSeconds}s`
@@ -519,7 +530,7 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
                             </div>
                             <div className={styles["indexer-detail-content"]}>
                                 <span className={styles["indexer-detail-label"]}>Search UA</span>
-                                <span className={styles["indexer-detail-value"]} title={indexer.SearchUserAgent ?? indexer.UserAgent ?? ""}>{searchUserAgent}</span>
+                                <span className={styles["indexer-detail-value"]} title={indexer.SearchUserAgent ?? ""}>{searchUserAgent}</span>
                             </div>
                         </div>
 
@@ -533,7 +544,7 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
                             </div>
                             <div className={styles["indexer-detail-content"]}>
                                 <span className={styles["indexer-detail-label"]}>Retrieve UA</span>
-                                <span className={styles["indexer-detail-value"]} title={indexer.RetrieveUserAgent ?? indexer.UserAgent ?? ""}>{retrieveUserAgent}</span>
+                                <span className={styles["indexer-detail-value"]} title={indexer.RetrieveUserAgent ?? ""}>{retrieveUserAgent}</span>
                             </div>
                         </div>
 
@@ -641,11 +652,12 @@ function IndexerCard({ indexer, onEdit, onToggle, onDelete }: IndexerCardProps) 
 type IndexerModalProps = {
     show: boolean;
     indexer: ConnectionDetails | null;
+    otherIndexerNames: string[];
     onClose: () => void;
     onSave: (indexer: ConnectionDetails) => void;
 };
 
-function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
+function IndexerModal({ show, indexer, otherIndexerNames, onClose, onSave }: IndexerModalProps) {
     const [name, setName] = useState("");
     const [url, setUrl] = useState("");
     const [apiKey, setApiKey] = useState("");
@@ -687,8 +699,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             setName(indexer?.Name || "");
             setUrl(indexer?.Url || "");
             setApiKey(indexer?.ApiKey || "");
-            setSearchUserAgent(indexer?.SearchUserAgent || indexer?.UserAgent || "");
-            setRetrieveUserAgent(indexer?.RetrieveUserAgent || indexer?.UserAgent || "");
+            setSearchUserAgent(indexer?.SearchUserAgent || "");
+            setRetrieveUserAgent(indexer?.RetrieveUserAgent || "");
             setProxyUrl(indexer?.ProxyUrl || "");
             setTimeoutSeconds(
                 indexer?.TimeoutSeconds && indexer.TimeoutSeconds > 0
@@ -772,12 +784,17 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             const parts = raw.split(",").map(p => p.trim()).filter(p => p.length > 0);
             return parts.length === 0 ? undefined : parts.join(",");
         };
+        const indexerWithoutLegacyUserAgent = { ...(indexer ?? {}) } as ConnectionDetails & {
+            UserAgent?: unknown;
+        };
+        delete indexerWithoutLegacyUserAgent.UserAgent;
         onSave({
+            ...indexerWithoutLegacyUserAgent,
+            Id: indexer?.Id || crypto.randomUUID(),
             Name: name.trim(),
             Url: url.trim(),
             ApiKey: apiKey.trim(),
             Enabled: enabled,
-            UserAgent: undefined,
             SearchUserAgent: searchUserAgent.trim() || undefined,
             RetrieveUserAgent: retrieveUserAgent.trim() || undefined,
             ProxyUrl: proxyUrl.trim() || undefined,
@@ -791,7 +808,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
             ExtraMovieCategories: normaliseCategoryList(extraMovieCategories),
             ExtraTvCategories: normaliseCategoryList(extraTvCategories),
             IgnoreCategoryFilter: ignoreCategoryFilter || undefined,
-            Filter: filterIsClean ? undefined : {
+            Filter: filterIsClean && !indexer?.Filter ? undefined : {
+                ...(indexer?.Filter ?? {}),
                 Enabled: filterEnabled,
                 SkipPassworded: filterSkipPassworded,
                 MinGrabs: clampNonNegInt(filterMinGrabs, 0),
@@ -803,19 +821,18 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
     }, [name, url, apiKey, searchUserAgent, retrieveUserAgent, proxyUrl, timeoutSeconds, searchResultLimit, maxRpm, hitLimit, downloadLimit, hitResetTime, enabled, strict,
         extraMovieCategories, extraTvCategories, ignoreCategoryFilter,
         filterEnabled, filterSkipPassworded, filterMinGrabs, filterGrabsGraceHours,
-        filterMaxAgeDaysWithoutGrabs, filterPreferDownloaded, onSave]);
+        filterMaxAgeDaysWithoutGrabs, filterPreferDownloaded, indexer, onSave]);
 
     const handleOverlayClick = useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) onClose();
     }, [onClose]);
 
-    const isUrlValid = (() => {
-        if (!url.trim()) return false;
-        try { new URL(url); return true; } catch { return false; }
-    })();
+    const isNameUnique = !otherIndexerNames.some(existing =>
+        existing.trim().toLowerCase() === name.trim().toLowerCase());
+    const isUrlValid = isHttpUrlValid(url);
     const isRpmValid = (() => {
         const n = Number(maxRpm);
-        return Number.isInteger(n) && n >= 0 && maxRpm.trim() === n.toString();
+        return Number.isInteger(n) && n >= 0 && n <= 10000 && maxRpm.trim() === n.toString();
     })();
     const isProxyValid = isProxyUrlValid(proxyUrl);
     const isTimeoutFieldValid = isTimeoutValid(timeoutSeconds);
@@ -825,7 +842,8 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
         return Number.isInteger(n) && n >= 0 && raw.trim() === n.toString();
     };
     const isHitLimitValid = isNonNegIntOrBlank(hitLimit);
-    const isSearchResultLimitValid = isNonNegIntOrBlank(searchResultLimit);
+    const isSearchResultLimitValid = isNonNegIntOrBlank(searchResultLimit)
+        && (searchResultLimit.trim() === "" || Number(searchResultLimit) <= 5000);
     const isDownloadLimitValid = isNonNegIntOrBlank(downloadLimit);
     const isHitResetValid = (() => {
         if (!hitResetTime.trim()) return true;
@@ -834,7 +852,7 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
     })();
     const isExtraMovieCategoriesValid = isCategoryListValid(extraMovieCategories);
     const isExtraTvCategoriesValid = isCategoryListValid(extraTvCategories);
-    const isFormValid = name.trim() !== "" && isUrlValid && apiKey.trim() !== ""
+    const isFormValid = name.trim() !== "" && isNameUnique && isUrlValid && apiKey.trim() !== ""
         && isRpmValid && isProxyValid && isTimeoutFieldValid
         && isHitLimitValid && isSearchResultLimitValid && isDownloadLimitValid && isHitResetValid
         && isExtraMovieCategoriesValid && isExtraTvCategoriesValid;
@@ -858,11 +876,14 @@ function IndexerModal({ show, indexer, onClose, onSave }: IndexerModalProps) {
                             <input
                                 type="text"
                                 id="indexer-name"
-                                className={styles["form-input"]}
+                                className={`${styles["form-input"]} ${!isNameUnique && name.trim() !== "" ? styles.error : ""}`}
                                 placeholder="e.g. My Indexer"
                                 value={name}
                                 onChange={e => setName(e.target.value)}
                             />
+                            {!isNameUnique && name.trim() !== "" && (
+                                <div className={styles["section-description"]}>Indexer names must be unique.</div>
+                            )}
                         </div>
 
                         <div className={`${styles["form-group"]} ${styles["full-width"]}`}>
@@ -1271,27 +1292,44 @@ export function isIndexersSettingsUpdated(config: Record<string, string>, newCon
 
 export function isIndexersSettingsValid(newConfig: Record<string, string>) {
     try {
+        if (!isIndexerConfigJsonValid(newConfig["indexers.instances"])) return false;
         const c = parseConfig(newConfig["indexers.instances"]);
         if (!isProxyUrlValid(c.ProxyUrl ?? "")) return false;
-        if (c.TimeoutSeconds !== undefined && (!Number.isInteger(c.TimeoutSeconds) || c.TimeoutSeconds <= 0)) return false;
-        if (c.SearchResultLimit !== undefined && (!Number.isInteger(c.SearchResultLimit) || c.SearchResultLimit <= 0)) return false;
+        if (c.TimeoutSeconds !== undefined && (!Number.isInteger(c.TimeoutSeconds) || c.TimeoutSeconds <= 0 || c.TimeoutSeconds > 3600)) return false;
+        if (c.SearchResultLimit !== undefined && (!Number.isInteger(c.SearchResultLimit) || c.SearchResultLimit <= 0 || c.SearchResultLimit > 5000)) return false;
+        const names = new Set<string>();
+        const ids = new Set<string>();
         for (const i of c.Indexers) {
-            if (!i.Name.trim()) return false;
+            if (!isUuid(i.Id) || ids.has(i.Id)) return false;
+            ids.add(i.Id);
+            const normalizedName = i.Name.trim().toLowerCase();
+            if (!normalizedName || names.has(normalizedName)) return false;
+            names.add(normalizedName);
             if (!i.ApiKey.trim()) return false;
-            try { new URL(i.Url); } catch { return false; }
+            if (!isHttpUrlValid(i.Url)) return false;
             if (!isProxyUrlValid(i.ProxyUrl ?? "")) return false;
-            if (i.TimeoutSeconds !== undefined && (!Number.isInteger(i.TimeoutSeconds) || i.TimeoutSeconds <= 0)) return false;
-            if (i.SearchResultLimit !== undefined && (!Number.isInteger(i.SearchResultLimit) || i.SearchResultLimit <= 0)) return false;
+            const rpm = i.MaxRequestsPerMinute ?? 0;
+            if (!Number.isInteger(rpm) || rpm < 0 || rpm > 10000) return false;
+            if (i.TimeoutSeconds !== undefined && (!Number.isInteger(i.TimeoutSeconds) || i.TimeoutSeconds <= 0 || i.TimeoutSeconds > 3600)) return false;
+            if (i.SearchResultLimit !== undefined && (!Number.isInteger(i.SearchResultLimit) || i.SearchResultLimit <= 0 || i.SearchResultLimit > 5000)) return false;
             if (i.HitLimit !== undefined && (!Number.isInteger(i.HitLimit) || i.HitLimit < 0)) return false;
             if (i.DownloadLimit !== undefined && (!Number.isInteger(i.DownloadLimit) || i.DownloadLimit < 0)) return false;
             if (i.HitLimitResetTime !== undefined
                 && (!Number.isInteger(i.HitLimitResetTime) || i.HitLimitResetTime < 0 || i.HitLimitResetTime > 23)) return false;
             if (i.ExtraMovieCategories !== undefined && !isCategoryListValid(i.ExtraMovieCategories)) return false;
             if (i.ExtraTvCategories !== undefined && !isCategoryListValid(i.ExtraTvCategories)) return false;
+            if (i.Filter !== undefined) {
+                for (const value of [i.Filter.MinGrabs ?? 0, i.Filter.GrabsGraceHours ?? 6, i.Filter.MaxAgeDaysWithoutGrabs ?? 0]) {
+                    if (!Number.isInteger(value) || value < 0) return false;
+                }
+            }
         }
-        if (validateExcludePatterns(newConfig["search.exclude-patterns"] ?? "").length > 0) return false;
         return true;
     } catch {
         return false;
     }
+}
+
+function isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

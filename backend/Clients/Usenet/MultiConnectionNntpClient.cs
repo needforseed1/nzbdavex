@@ -35,9 +35,11 @@ public class MultiConnectionNntpClient(
     bool prepOnly,
     bool prepSpreadEnabled,
     int? pipeliningDepth = null,
-    int? healthPipeliningDepth = null
+    int? healthPipeliningDepth = null,
+    string? providerId = null
 ) : NntpClient
 {
+    public string Id { get; } = string.IsNullOrWhiteSpace(providerId) ? host : providerId;
     public ProviderType ProviderType { get; } = type;
     public int Priority { get; } = priority;
     public string Host { get; } = host;

@@ -59,12 +59,10 @@ export function TagInput({
     const handleInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value;
 
-        // Find the first occurrence of comma or space
+        // A comma commits the tag. Spaces are valid inside ignored-file globs
+        // (for example "* sample file.mkv"), so do not treat them as delimiters.
         const commaIndex = newValue.indexOf(",");
-        const spaceIndex = newValue.indexOf(" ");
-        const delimiterIndex = commaIndex === -1 ? spaceIndex
-            : spaceIndex === -1 ? commaIndex
-                : Math.min(commaIndex, spaceIndex);
+        const delimiterIndex = commaIndex;
 
         if (delimiterIndex !== -1) {
             const beforeDelimiter = newValue.slice(0, delimiterIndex).trim();

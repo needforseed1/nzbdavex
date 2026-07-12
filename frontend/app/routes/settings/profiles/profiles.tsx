@@ -13,7 +13,7 @@ type FallbackMode = "Off" | "Title" | "Broad";
 interface Profile {
     Token: string;
     Name: string;
-    IndexerNames: string[];
+    IndexerIds: string[];
     EnabledAdapters?: string[] | null;
     MovieFallback?: FallbackMode;
     TvFallback?: FallbackMode;
@@ -27,6 +27,7 @@ interface ProfileConfig {
 }
 
 interface IndexerSummary {
+    Id: string;
     Name: string;
     Enabled: boolean;
 }
@@ -59,17 +60,44 @@ const ALL_ADAPTER_KEYS: AdapterKey[] = ADAPTERS.map(a => a.key);
 function parseProfileConfig(raw: string): ProfileConfig {
     try {
         const parsed = JSON.parse(raw || "{}");
-        return { Profiles: parsed.Profiles ?? [] };
+        return {
+            ...parsed,
+            Profiles: (parsed.Profiles ?? []).map((profile: any) => ({
+                ...profile,
+                IndexerIds: profile.IndexerIds ?? [],
+            })),
+        };
     } catch {
         return { Profiles: [] };
     }
 }
 
-function parseIndexerNames(raw: string): string[] {
+function isProfileConfigJsonValid(raw: string | undefined): boolean {
+    try {
+        const parsed = JSON.parse(raw || "");
+        return parsed !== null && typeof parsed === "object"
+            && (parsed.Profiles === undefined || (Array.isArray(parsed.Profiles)
+                && parsed.Profiles.every((profile: any) => profile !== null
+                    && typeof profile === "object"
+                    && typeof profile.Token === "string"
+                    && typeof profile.Name === "string"
+                    && (profile.IndexerIds === undefined
+                        || (Array.isArray(profile.IndexerIds)
+                            && profile.IndexerIds.every((id: unknown) => typeof id === "string")))
+                    && (profile.EnabledAdapters === undefined
+                        || profile.EnabledAdapters === null
+                        || (Array.isArray(profile.EnabledAdapters)
+                            && profile.EnabledAdapters.every((adapter: unknown) => typeof adapter === "string"))))));
+    } catch {
+        return false;
+    }
+}
+
+function parseIndexers(raw: string): IndexerSummary[] {
     try {
         const parsed = JSON.parse(raw || "{}");
         const list: IndexerSummary[] = parsed.Indexers ?? [];
-        return list.filter(i => i.Enabled && i.Name?.trim()).map(i => i.Name);
+        return list.filter(i => i.Enabled !== false && i.Id && i.Name?.trim());
     } catch {
         return [];
     }
@@ -83,23 +111,27 @@ function makeToken(): string {
 
 function isAdapterEnabled(profile: Profile, key: AdapterKey): boolean {
     const list = profile.EnabledAdapters;
-    if (list === null || list === undefined || list.length === 0) return true;
+    // Missing/null is the legacy representation for "all". An explicit empty
+    // list means the user intentionally disabled every adapter.
+    if (list === null || list === undefined) return true;
     return list.some(x => x?.toLowerCase() === key);
 }
 
 export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps) {
     const profileConfig = useMemo(() => parseProfileConfig(config["profiles.instances"]), [config]);
-    const availableIndexers = useMemo(() => parseIndexerNames(config["indexers.instances"]), [config]);
+    const profileConfigJsonValid = isProfileConfigJsonValid(config["profiles.instances"]);
+    const availableIndexers = useMemo(() => parseIndexers(config["indexers.instances"]), [config]);
+    const configuredBaseUrl = (config["general.base-url"] ?? "").trim().replace(/\/+$/, "");
 
     const update = useCallback((next: ProfileConfig) => {
-        setNewConfig({ ...config, "profiles.instances": JSON.stringify(next) });
-    }, [config, setNewConfig]);
+        setNewConfig({ ...config, "profiles.instances": JSON.stringify({ ...profileConfig, ...next }) });
+    }, [config, profileConfig, setNewConfig]);
 
     const add = useCallback(() => {
         update({
             Profiles: [
                 ...profileConfig.Profiles,
-                { Token: makeToken(), Name: "", IndexerNames: [], EnabledAdapters: [...ALL_ADAPTER_KEYS], MovieFallback: "Off", TvFallback: "Off", MovieFallbackMinResults: 3, TvFallbackMinResults: 3 }
+                { Token: makeToken(), Name: "", IndexerIds: [], EnabledAdapters: [...ALL_ADAPTER_KEYS], MovieFallback: "Off", TvFallback: "Off", MovieFallbackMinResults: 3, TvFallbackMinResults: 3 }
             ]
         });
     }, [profileConfig, update]);
@@ -116,8 +148,37 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
         });
     }, [profileConfig, update]);
 
+    if (!profileConfigJsonValid) {
+        return <div className={styles.container}>
+            <p className={styles.alertMessage} role="alert">
+                Search Profile settings contain invalid JSON. This section is locked to prevent overwriting it; restore a valid <code>profiles.instances</code> value before editing.
+            </p>
+        </div>;
+    }
+
     return (
         <div className={styles.container}>
+            <div className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <div>Public access</div>
+                </div>
+                <Form.Group>
+                    <Form.Label htmlFor="base-url-input">Public Base URL</Form.Label>
+                    <Form.Control
+                        className={styles.input}
+                        type="url"
+                        id="base-url-input"
+                        aria-describedby="base-url-help"
+                        placeholder="https://nzbdav.example.com"
+                        value={config["general.base-url"] ?? ""}
+                        isInvalid={!isOptionalAbsoluteHttpUrl(config["general.base-url"] ?? "")}
+                        onChange={e => setNewConfig({ ...config, "general.base-url": e.target.value })} />
+                    <Form.Text id="base-url-help" muted>
+                        Used in Search Profile adapter URLs, playback and sharing links, and SAB STRM files.
+                        Leave blank where request-origin inference is available; STRM imports require an explicit URL.
+                    </Form.Text>
+                </Form.Group>
+            </div>
             <div className={styles.section}>
                 <div className={styles.sectionHeader}>
                     <div>Search Profiles</div>
@@ -134,6 +195,7 @@ export function ProfilesSettings({ config, setNewConfig }: ProfilesSettingsProps
                             profile={profile}
                             index={index}
                             availableIndexers={availableIndexers}
+                            configuredBaseUrl={configuredBaseUrl}
                             onChange={change}
                             onRemove={remove}
                         />
@@ -224,14 +286,17 @@ function FallbackControl({ label, mode, threshold, allowBroad, indexerCount, dis
 interface ProfileFormProps {
     profile: Profile;
     index: number;
-    availableIndexers: string[];
+    availableIndexers: IndexerSummary[];
+    configuredBaseUrl: string;
     onChange: (index: number, patch: Partial<Profile>) => void;
     onRemove: (index: number) => void;
 }
 
-function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: ProfileFormProps) {
-    const origin = typeof window === "undefined" ? "" : window.location.origin;
-    const indexersCsv = profile.IndexerNames.join(", ");
+function ProfileForm({ profile, index, availableIndexers, configuredBaseUrl, onChange, onRemove }: ProfileFormProps) {
+    const origin = configuredBaseUrl || (typeof window === "undefined" ? "" : window.location.origin);
+    const indexersCsv = profile.IndexerIds.join(", ");
+    const availableIndexerKeys = new Set(availableIndexers.map(indexer => indexer.Id));
+    const unavailableIndexers = profile.IndexerIds.filter(id => !availableIndexerKeys.has(id));
 
     const enabledKeys = useMemo(() => {
         return ADAPTERS.filter(a => isAdapterEnabled(profile, a.key)).map(a => a.key);
@@ -248,7 +313,7 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
     const tvMode = effMode(profile.TvFallback, profile.QueryFallbackMinResults, true);
     const movieThreshold = effThreshold(profile.MovieFallbackMinResults, profile.QueryFallbackMinResults);
     const tvThreshold = effThreshold(profile.TvFallbackMinResults, profile.QueryFallbackMinResults);
-    const indexerCount = profile.IndexerNames.length > 0 ? profile.IndexerNames.length : availableIndexers.length;
+    const indexerCount = profile.IndexerIds.length > 0 ? profile.IndexerIds.length : availableIndexers.length;
     const noIndexers = availableIndexers.length === 0;
 
     const writeFallback = useCallback((patch: Partial<Profile>) => {
@@ -277,16 +342,23 @@ function ProfileForm({ profile, index, availableIndexers, onChange, onRemove }: 
                 </Form.Group>
                 <Form.Group>
                     <Form.Label>Indexers <span style={{ opacity: 0.6, fontWeight: 'normal' }}>(leave all unchecked to use every enabled indexer)</span></Form.Label>
-                    {availableIndexers.length === 0 ? (
+                    {availableIndexers.length === 0 && profile.IndexerIds.length === 0 ? (
                         <p className={styles.hint}>No indexers configured yet. Add some under the Indexers tab.</p>
                     ) : (
-                        <MultiCheckboxInput
-                            options={availableIndexers}
-                            value={indexersCsv}
-                            onChange={v => onChange(index, {
-                                IndexerNames: v.split(",").map(s => s.trim()).filter(Boolean)
-                            })}
-                        />
+                        <>
+                            <MultiCheckboxInput
+                                options={availableIndexers.map(indexer => ({ value: indexer.Id, label: indexer.Name }))}
+                                value={indexersCsv}
+                                onChange={v => onChange(index, {
+                                    IndexerIds: v.split(",").map(s => s.trim()).filter(Boolean)
+                                })}
+                            />
+                            {unavailableIndexers.length > 0 && (
+                                <p className={styles.hint}>
+                                    Unavailable selections are disabled, deleted, or renamed indexers. Uncheck them to remove the stale selection.
+                                </p>
+                            )}
+                        </>
                     )}
                 </Form.Group>
                 <Form.Group>
@@ -383,20 +455,50 @@ function AdapterRow({ token, origin, adapter, enabled, onToggle }: AdapterRowPro
 }
 
 export function isProfilesSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["profiles.instances"] !== newConfig["profiles.instances"];
+    return config["profiles.instances"] !== newConfig["profiles.instances"]
+        || config["general.base-url"] !== newConfig["general.base-url"];
 }
 
 export function isProfilesSettingsValid(newConfig: Record<string, string>) {
     try {
+        if (!isProfileConfigJsonValid(newConfig["profiles.instances"])) return false;
         const c = parseProfileConfig(newConfig["profiles.instances"]);
+        const availableIndexers = new Set(parseIndexers(newConfig["indexers.instances"]).map(indexer => indexer.Id));
+        const allowedAdapters = new Set(ALL_ADAPTER_KEYS);
         const tokens = new Set<string>();
         for (const p of c.Profiles) {
             if (!p.Token?.trim()) return false;
             if (tokens.has(p.Token)) return false;
             tokens.add(p.Token);
             if (!p.Name?.trim()) return false;
+            if (!Array.isArray(p.IndexerIds)
+                || p.IndexerIds.some(id => !availableIndexers.has(id))) return false;
+            if (p.EnabledAdapters !== null && p.EnabledAdapters !== undefined
+                && (!Array.isArray(p.EnabledAdapters)
+                    || p.EnabledAdapters.some(adapter => !allowedAdapters.has(adapter.toLowerCase() as AdapterKey)))) return false;
+            if (p.MovieFallback !== undefined && !["Off", "Title"].includes(p.MovieFallback)) return false;
+            if (p.TvFallback !== undefined && !["Off", "Title", "Broad"].includes(p.TvFallback)) return false;
+            for (const threshold of [p.MovieFallbackMinResults, p.TvFallbackMinResults, p.QueryFallbackMinResults]) {
+                if (threshold !== undefined
+                    && (!Number.isInteger(threshold) || threshold < 1 || threshold > 5000)) return false;
+            }
+        }
+        const baseUrl = (newConfig["general.base-url"] ?? "").trim();
+        if (baseUrl !== "") {
+            const url = new URL(baseUrl);
+            if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.host) return false;
         }
         return true;
+    } catch {
+        return false;
+    }
+}
+
+function isOptionalAbsoluteHttpUrl(value: string): boolean {
+    if (!value.trim()) return true;
+    try {
+        const url = new URL(value.trim());
+        return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
     } catch {
         return false;
     }

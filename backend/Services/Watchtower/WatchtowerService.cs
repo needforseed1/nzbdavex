@@ -26,7 +26,6 @@ public class WatchtowerService(
 ) : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(15);
     private const int ResolvesPerTick = 3;
     private const int AutoResolveBatch = 25;
     private static readonly TimeSpan AutoStageBudget = TimeSpan.FromSeconds(120);
@@ -119,6 +118,8 @@ public class WatchtowerService(
     private async Task RunCycleAsync(Stopwatch cycleWatch, CancellationToken ct)
     {
         await SyncDueSourcesAsync(ct).ConfigureAwait(false);
+        await EnforceActiveSetCapAsync(ct).ConfigureAwait(false);
+        await ReconcileDisabledSeasonFallbackAsync(ct).ConfigureAwait(false);
         await ExpandDueExpandersAsync(ct).ConfigureAwait(false);
         await ResolveDueItemsAsync(ct).ConfigureAwait(false);
         await KeepFreshDueItemsAsync(ct).ConfigureAwait(false);
@@ -131,9 +132,43 @@ public class WatchtowerService(
             Log.Information("Watchtower: verbose activity logging {State}",
                 configManager.IsWatchtowerVerboseLoggingEnabled() ? "enabled" : "disabled");
 
+        string[] expansionKeys =
+        [
+            "watchtower.series-scope",
+            "watchtower.series-recent-count",
+            "watchtower.series-max-episodes",
+            "watchtower.series-cap-keep",
+            "watchtower.season-bundles",
+            "watchtower.season-bundle-fallback",
+            "watchtower.season-bundle-fallback-scope",
+            "watchtower.season-bundle-fallback-recent-count",
+            "watchtower.season-bundle-fallback-max-episodes",
+        ];
+        if (expansionKeys.Any(e.ChangedConfig.ContainsKey))
+            _ = NudgeAllExpandersAsync();
+
         if (!e.ChangedConfig.ContainsKey("watchtower.enabled")) return;
         if (configManager.IsWatchtowerEnabled()) return;
         lock (_ctsLock) _disabledCts?.Cancel();
+    }
+
+    private static async Task NudgeAllExpandersAsync()
+    {
+        try
+        {
+            var now = Now();
+            await using var ctx = new DavDatabaseContext();
+            await ctx.WantedItems
+                .Where(w => w.State == WantedItem.StateExpander)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(w => w.NextCheckAtUnix, (long?)now)
+                    .SetProperty(w => w.UpdatedAtUnix, now))
+                .ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Watchtower: could not schedule series reconciliation after settings changed");
+        }
     }
 
     private void LogActivity(string template, params object?[] args)
@@ -379,16 +414,13 @@ public class WatchtowerService(
         {
             if (ct.IsCancellationRequested) break;
             var scopes = EffectiveScopes(expander, scopeBySource, globalScope);
-            if (scopes.Count > 0)
+            try
             {
-                try
-                {
-                    await ExpandOneAsync(ctx, expander, scopes, now, ct).ConfigureAwait(false);
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    LogActivity(e, "Watchtower: expand failed for {Key}", expander.Key);
-                }
+                await ExpandOneAsync(ctx, expander, scopes, now, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                LogActivity(e, "Watchtower: expand failed for {Key}", expander.Key);
             }
             expander.NextCheckAtUnix = now + interval;
             expander.UpdatedAtUnix = now;
@@ -412,7 +444,11 @@ public class WatchtowerService(
     private async Task ExpandOneAsync(DavDatabaseContext ctx, WantedItem expander, IReadOnlyList<string> scopes, long now, CancellationToken ct)
     {
         var tag = WtReconcile.ExpanderTag(expander.Key);
-        var desired = await BuildDesiredAsync(ctx, expander, scopes, now, ct).ConfigureAwait(false);
+        // An explicit "off" scope must reconcile to an empty set. Previously
+        // expansion was skipped, leaving all children from the old scope alive.
+        var desired = scopes.Count == 0
+            ? new Dictionary<string, DesiredRow>()
+            : await BuildDesiredAsync(ctx, expander, scopes, now, ct).ConfigureAwait(false);
         if (desired is null) return;
 
         var existing = await LoadRowsByKeysAsync(ctx, desired.Keys, ct).ConfigureAwait(false);
@@ -474,6 +510,32 @@ public class WatchtowerService(
 
         Log.Information("Watchtower: expanded {Key} -> {Count} row(s) (scope {Scope})",
             expander.Key, desired.Count, string.Join("+", scopes));
+    }
+
+    private async Task ReconcileDisabledSeasonFallbackAsync(CancellationToken ct)
+    {
+        if (configManager.IsWatchtowerSeasonBundleFallbackEnabled()) return;
+
+        var now = Now();
+        await using var ctx = new DavDatabaseContext();
+        var parkedCount = await ctx.WantedItems
+            .Where(w => w.Type == "season" && w.State == WantedItem.StateParked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(w => w.State, WantedItem.StateScouting)
+                .SetProperty(w => w.FailReason, (string?)null)
+                .SetProperty(w => w.NextCheckAtUnix, (long?)now)
+                .SetProperty(w => w.UpdatedAtUnix, now), ct)
+            .ConfigureAwait(false);
+        if (parkedCount == 0) return;
+
+        // Reconcile parent expanders promptly so episode rows that existed only
+        // for fallback are removed instead of lingering until the next sync.
+        await ctx.WantedItems
+            .Where(w => w.State == WantedItem.StateExpander)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(w => w.NextCheckAtUnix, (long?)now)
+                .SetProperty(w => w.UpdatedAtUnix, now), ct)
+            .ConfigureAwait(false);
     }
 
     private async Task<Dictionary<string, DesiredRow>?> BuildDesiredAsync(
@@ -721,12 +783,8 @@ public class WatchtowerService(
             await using var ctx = new DavDatabaseContext();
 
             var cap = configManager.GetWatchtowerActiveSetCap();
-            var activeReady = await ctx.WantedItems.CountAsync(w => w.State == WantedItem.StateReady, ct).ConfigureAwait(false);
-            var capRoom = cap - activeReady;
-            if (capRoom <= 0) return;
-
             var batch = auto ? AutoResolveBatch : ResolvesPerTick;
-            var take = Math.Min(batch, Math.Min(capRoom, budgetRoom));
+            var take = Math.Min(cap, Math.Min(batch, budgetRoom));
             if (take <= 0) return;
 
             var dueIds = await ctx.WantedItems
@@ -739,6 +797,8 @@ public class WatchtowerService(
                 .ToListAsync(ct).ConfigureAwait(false);
 
             if (dueIds.Count == 0) return;
+
+            await MakeActiveSetRoomAsync(ctx, cap, dueIds.Count, ct).ConfigureAwait(false);
 
             if (auto && !await searchProfileService.HasResolveHeadroomAsync(profileToken, ct).ConfigureAwait(false))
             {
@@ -775,6 +835,54 @@ public class WatchtowerService(
             }).ConfigureAwait(false);
         }
         while (auto && stageWatch.Elapsed < AutoStageBudget);
+    }
+
+    private async Task EnforceActiveSetCapAsync(CancellationToken ct)
+    {
+        await using var ctx = new DavDatabaseContext();
+        await MakeActiveSetRoomAsync(ctx, configManager.GetWatchtowerActiveSetCap(), 0, ct)
+            .ConfigureAwait(false);
+    }
+
+    internal static async Task<int> MakeActiveSetRoomAsync(
+        DavDatabaseContext ctx,
+        int cap,
+        int incoming,
+        CancellationToken ct)
+    {
+        cap = Math.Max(1, cap);
+        incoming = Math.Clamp(incoming, 0, cap);
+        var ready = await ctx.WantedItems
+            .Where(w => w.State == WantedItem.StateReady)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var victims = SelectLruVictims(ready, cap, incoming);
+        if (victims.Count == 0) return 0;
+        foreach (var victim in victims)
+        {
+            victim.State = WantedItem.StateCold;
+            victim.NextCheckAtUnix = null;
+        }
+        await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        return victims.Count;
+    }
+
+    internal static IReadOnlyList<WantedItem> SelectLruVictims(
+        IEnumerable<WantedItem> readyItems,
+        int cap,
+        int incoming)
+    {
+        cap = Math.Max(1, cap);
+        incoming = Math.Clamp(incoming, 0, cap);
+        var ready = readyItems.Where(w => w.State == WantedItem.StateReady).ToList();
+        var toCool = Math.Max(0, ready.Count + incoming - cap);
+        return ready
+            .OrderBy(w => w.LastAccessedAtUnix
+                          ?? w.LastVerifiedAtUnix
+                          ?? w.LastResolvedAtUnix
+                          ?? w.UpdatedAtUnix)
+            .ThenBy(w => w.Id)
+            .Take(toCool)
+            .ToList();
     }
 
     private static string KeyOf(NzbResolutionCache.Candidate c) =>
@@ -817,6 +925,9 @@ public class WatchtowerService(
             .Where(c => ceiling <= 0 || c.Size <= 0 || c.Size <= ceiling)
             .Where(c => minGrabs <= 0 || (c.Grabs ?? 0) >= minGrabs);
         var filteredList = filtered.ToList();
+        var hideKnownWardenDead = configManager.IsWardenHideDeadEnabled()
+            && filteredList.Any(c => !wardenStore.IsDeadAnywhere(
+                WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)));
         var preferredOrder = preferredOrderStore.GetOrder(profileToken, item.Type, item.ContentId);
         var ranked = preferredOrder is { Count: > 0 }
             ? PreferredOrderStore.ApplyOrder(filteredList, KeyOf, preferredOrder)
@@ -840,7 +951,8 @@ public class WatchtowerService(
         {
             if (shortlist.Count >= depth || grabs >= grabCap || ct.IsCancellationRequested) break;
             if (negativeCache.IsFailed(c.NzbUrl)
-                || wardenStore.IsDeadAnywhere(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)))
+                || (hideKnownWardenDead && wardenStore.IsDeadAnywhere(
+                    WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate))))
             {
                 knownDead++;
                 continue;
@@ -872,6 +984,7 @@ public class WatchtowerService(
             var ptr = new WtPointer
             {
                 NzbUrl = c.NzbUrl,
+                IndexerId = c.IndexerId,
                 IndexerName = c.IndexerName,
                 IndexerUserAgent = c.IndexerUserAgent,
                 ProxyUrl = c.ProxyUrl,
@@ -1112,32 +1225,34 @@ public class WatchtowerService(
         {
             try
             {
-                var indexer = configManager.GetIndexerConfig().Indexers
-                    .FirstOrDefault(x => x.Name == c.IndexerName);
-                if (indexer is not null)
-                {
-                    var hitCheck = await hitTracker
-                        .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
-                        .ConfigureAwait(false);
-                    if (hitCheck is { Allowed: false })
-                    {
-                        Log.Information("Watchtower: NZB download skipped for {Indexer}: {Reason}",
-                            c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
-                        return null;
-                    }
-                }
+                var indexerConfig = configManager.GetIndexerConfig();
+                var indexer = indexerConfig.Indexers.FirstOrDefault(x =>
+                    x.Enabled && (string.Equals(x.Id, c.IndexerId, StringComparison.OrdinalIgnoreCase)
+                                  || (string.IsNullOrWhiteSpace(c.IndexerId)
+                                      && string.Equals(x.Name, c.IndexerName, StringComparison.OrdinalIgnoreCase))));
+                if (indexer is null) return null;
 
                 await _indexerGate.WaitAsync(innerCt).ConfigureAwait(false);
                 try
                 {
-                    if (indexer is not null)
-                        await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
+                    await rateLimiter.WaitAsync(indexer.Id, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
+                    var hitCheck = await hitTracker
+                        .ReserveAsync(indexer.Id, IndexerApiHit.HitType.Download,
+                            indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
+                        .ConfigureAwait(false);
+                    if (hitCheck is { Allowed: false })
+                    {
+                        Log.Information("Watchtower: NZB download skipped for {Indexer}: {Reason}",
+                            indexer.Name,
+                            IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                        return null;
+                    }
 
                     using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
                     req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
                     var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
-                    cts.CancelAfter(NzbFetchTimeout);
+                    cts.CancelAfter(TimeSpan.FromSeconds(indexerConfig.GetEffectiveTimeoutSeconds(indexer)));
                     using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
                     if (!resp.IsSuccessStatusCode)
                     {
@@ -1145,9 +1260,7 @@ public class WatchtowerService(
                             (int)resp.StatusCode, c.IndexerName, c.NzbUrl);
                         return null;
                     }
-                    var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-                    _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
-                    return bytes;
+                    return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1168,6 +1281,7 @@ public class WatchtowerService(
 
     private static NzbResolutionCache.Candidate MakeCandidate(WtPointer p) => new()
     {
+        IndexerId = p.IndexerId,
         IndexerName = p.IndexerName,
         IndexerUserAgent = p.IndexerUserAgent,
         NzbUrl = p.NzbUrl,
@@ -1191,8 +1305,8 @@ public class WatchtowerService(
     {
         var profiles = configManager.GetProfileConfig().Profiles;
         var configured = configManager.GetWatchtowerProfileToken();
-        if (!string.IsNullOrEmpty(configured) && profiles.Any(p => p.Token == configured)) return configured;
-        return profiles.FirstOrDefault()?.Token;
+        if (string.IsNullOrEmpty(configured)) return profiles.FirstOrDefault()?.Token;
+        return profiles.Any(p => p.Token == configured) ? configured : null;
     }
 
     private void RollDailyBudget()

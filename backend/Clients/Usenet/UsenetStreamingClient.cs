@@ -75,12 +75,12 @@ public class UsenetStreamingClient : WrappingNntpClient
     )
     {
         var providerConfig = configManager.GetUsenetProviderConfig();
-        // Seed the tracker from the persisted metrics rollup so the limit gate
-        // is accurate before the first article fetch. Fire-and-forget — the
-        // helper logs and swallows DB errors so a metrics outage can't keep
-        // the streaming client from coming up. Limit enforcement degrades
-        // gracefully to "uncapped until seed completes".
-        _ = ProviderUsageHelper.SeedTrackerAsync(bytesTracker, providerConfig);
+        // Seed the tracker before publishing any provider pools. Otherwise a
+        // block account can briefly fetch as uncapped during startup/reload.
+        // The helper logs and swallows metrics DB errors, so a metrics outage
+        // still cannot prevent the client from starting.
+        ProviderUsageHelper.SeedTrackerAsync(bytesTracker, providerConfig)
+            .GetAwaiter().GetResult();
 
         var connectionPoolStats = new ConnectionPoolStats(providerConfig, websocketManager);
         var providerClients = providerConfig.Providers
@@ -126,7 +126,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             connectionDetails.PrepOnly,
             connectionDetails.PrepSpreadEnabled,
             connectionDetails.PipeliningDepth,
-            connectionDetails.HealthPipeliningDepth
+            connectionDetails.HealthPipeliningDepth,
+            connectionDetails.Id
         );
     }
 

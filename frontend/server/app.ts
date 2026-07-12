@@ -5,6 +5,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { websocketServer } from "./websocket.server";
 import { isAuthenticated } from "~/auth/authentication.server";
 import { authMiddleware } from "~/auth/auth-middleware.server";
+import { BACKEND_URL, FRONTEND_BACKEND_API_KEY } from "~/utils/runtime-config.server";
 
 declare module "react-router" {
   interface AppLoadContext {
@@ -17,7 +18,7 @@ export const initializeWebsocketServer = websocketServer.initialize;
 
 // Proxy all webdav and api requests to the backend
 const forwardToBackend = createProxyMiddleware({
-  target: process.env.BACKEND_URL,
+  target: BACKEND_URL,
   changeOrigin: true,
   on: {
     proxyRes: (proxyRes, req, res) => {
@@ -44,7 +45,7 @@ const setApiKeyForAuthenticatedRequests = async (req: express.Request) => {
   if (!authenticated) return;
 
   // otherwise, set the api key header
-  req.headers["x-api-key"] = process.env.FRONTEND_BACKEND_API_KEY || "";
+  req.headers["x-api-key"] = FRONTEND_BACKEND_API_KEY;
 }
 
 app.use(async (req, res, next) => {

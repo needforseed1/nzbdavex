@@ -22,13 +22,15 @@ public class IndexerHitTracker
     // a background timer or sweeper service.
     private const double PruneProbability = 0.05;
 
-    private static readonly Random Rng = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _reservationGates =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public record HitCheckResult(bool Allowed, int CurrentCount, int Limit, DateTimeOffset ResetAt);
 
     // Per-indexer snapshot of current hit counts in the active reset window. Limits are
     // included as nullable for the unlimited case; ResetAt is the next reset boundary.
     public record UsageSnapshot(
+        string IndexerId,
         string IndexerName,
         int ApiHits,
         int? ApiHitLimit,
@@ -62,17 +64,50 @@ public class IndexerHitTracker
         return new HitCheckResult(count < limit.Value, count, limit.Value, nextResetAt);
     }
 
+    // Atomically checks and records an outbound request within this process.
+    // Recording before the HTTP call matches indexer accounting: a failed or
+    // timed-out request still consumed an API hit. Callers must not RecordAsync
+    // again after a successful response.
+    public async Task<HitCheckResult?> ReserveAsync(
+        string indexerName,
+        IndexerApiHit.HitType type,
+        int? limit,
+        int? resetHourUtc,
+        CancellationToken ct)
+    {
+        if (limit is null || limit <= 0)
+        {
+            await RecordAsync(indexerName, type, ct).ConfigureAwait(false);
+            return null;
+        }
+
+        var key = $"{indexerName}\0{(int)type}";
+        var gate = _reservationGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var check = await CheckAsync(indexerName, type, limit, resetHourUtc, ct).ConfigureAwait(false);
+            if (check is { Allowed: false }) return check;
+            await RecordAsync(indexerName, type, ct).ConfigureAwait(false);
+            return check;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     // Returns one snapshot per requested indexer with both API and download hit counts
     // since the start of the current window. Used by the overview to render usage bars
     // for every configured indexer in a single query.
     public async Task<List<UsageSnapshot>> GetUsageAsync(
-        IReadOnlyList<(string Name, int? HitLimit, int? DownloadLimit, int? ResetHourUtc)> indexers,
+        IReadOnlyList<(string Id, string Name, int? HitLimit, int? DownloadLimit, int? ResetHourUtc)> indexers,
         CancellationToken ct)
     {
         if (indexers.Count == 0) return new List<UsageSnapshot>();
 
         var now = DateTimeOffset.UtcNow;
-        var names = indexers.Select(i => i.Name).ToList();
+        var ids = indexers.Select(i => i.Id).ToList();
 
         // Compute the widest window we need (the earliest windowStart across all indexers)
         // and pull every hit since then in one query, then bucket per-indexer below.
@@ -83,7 +118,7 @@ public class IndexerHitTracker
         await using var ctx = new DavDatabaseContext();
         var hits = await ctx.IndexerApiHits
             .AsNoTracking()
-            .Where(x => names.Contains(x.IndexerName) && x.AccessedAt >= earliestWindowStart)
+            .Where(x => ids.Contains(x.IndexerName) && x.AccessedAt >= earliestWindowStart)
             .Select(x => new { x.IndexerName, x.Type, x.AccessedAt })
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -92,10 +127,11 @@ public class IndexerHitTracker
         foreach (var i in indexers)
         {
             var (windowStart, nextResetAt) = ComputeWindow(now, i.ResetHourUtc);
-            var indexerHits = hits.Where(h => h.IndexerName == i.Name && h.AccessedAt >= windowStart);
+            var indexerHits = hits.Where(h => h.IndexerName == i.Id && h.AccessedAt >= windowStart);
             var apiCount = indexerHits.Count(h => h.Type == IndexerApiHit.HitType.Search);
             var downloadCount = indexerHits.Count(h => h.Type == IndexerApiHit.HitType.Download);
             result.Add(new UsageSnapshot(
+                IndexerId: i.Id,
                 IndexerName: i.Name,
                 ApiHits: apiCount,
                 ApiHitLimit: i.HitLimit > 0 ? i.HitLimit : null,
@@ -122,7 +158,7 @@ public class IndexerHitTracker
             });
             await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
 
-            if (Rng.NextDouble() < PruneProbability)
+            if (Random.Shared.NextDouble() < PruneProbability)
                 _ = Task.Run(() => PruneAsync(CancellationToken.None));
         }
         catch (Exception e)

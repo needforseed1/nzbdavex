@@ -81,6 +81,8 @@ services:
       # Change these IDs to match your Docker user that you got from above
       - PUID=1000
       - PGID=1000
+      # Used by local-time maintenance schedules
+      - TZ=America/New_York
     volumes:
       - ./config:/config
       - /mnt:/mnt
@@ -182,8 +184,7 @@ pass = <PASTE_OBSCURED_PASSWORD_HERE_WITHOUT_ANGLE_BRACKETS>
 
 Add the Rclone sidecar service to your existing `apps/davex/docker-compose.yml`.
 
-Update `PUID`, `PGID`, `TZ`, and volume paths as needed.
-You can get your PUID/PGID by running `id` in your terminal.
+Update `TZ`, volume paths, and the command's `--uid` / `--gid` values as needed.
 
 ```yaml
 davex_rclone:
@@ -191,9 +192,6 @@ davex_rclone:
   container_name: davex_rclone
   restart: unless-stopped
   environment:
-    # Change these IDs to match your Docker user that you got from above
-    - PUID=1000
-    - PGID=1000
     # Set the time zone to match your location
     - TZ=America/New_York
   volumes:
@@ -386,5 +384,3 @@ The manifest advertises the resources the client may request for `movie` and `se
 ```
 
 For series, pass `type=series&id=tt0944947&season=1&episode=1`. Hitting the `playUrl` triggers the same on-demand mount + playback redirect flow used by the Addon adapter.
-
-

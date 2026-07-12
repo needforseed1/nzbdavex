@@ -108,6 +108,7 @@ enum ProviderType {
 }
 
 type ConnectionDetails = {
+    Id: string;
     Type: ProviderType;
     Host: string;
     Port: number;
@@ -138,6 +139,7 @@ type ConnectionDetails = {
 // camelCase matches the JSON wire format — ASP.NET Core MVC defaults to
 // camelCase serialization, so we mirror that here instead of fighting it.
 type ProviderUsage = {
+    id: string;
     index: number;
     host: string;
     nickname?: string | null;
@@ -186,6 +188,14 @@ function valueAndUnitToBytes(value: string, unit: ByteUnitLabel): number | null 
     return Math.round(n * u.multiplier);
 }
 
+function isOptionalByteValueValid(value: string, unit: ByteUnitLabel): boolean {
+    const trimmed = value.trim();
+    if (trimmed === "") return true;
+    const n = Number(trimmed);
+    const multiplier = BYTE_UNITS.find(x => x.label === unit)?.multiplier ?? 1_000_000_000;
+    return Number.isFinite(n) && n > 0 && Number.isSafeInteger(Math.round(n * multiplier));
+}
+
 function formatBytes(bytes: number): string {
     if (!isFinite(bytes) || bytes <= 0) return "0 B";
     const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -229,9 +239,40 @@ function parseProviderConfig(jsonString: string): UsenetProviderConfig {
         if (!jsonString || jsonString.trim() === "") {
             return { Providers: [] };
         }
-        return JSON.parse(jsonString);
+        const parsed = JSON.parse(jsonString);
+        return { ...parsed, Providers: parsed.Providers ?? [] };
     } catch {
         return { Providers: [] };
+    }
+}
+
+function isProviderConfigJsonValid(raw: string | undefined): boolean {
+    if (!raw || raw.trim() === "") return true;
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== "object"
+            || (parsed.Providers !== undefined && !Array.isArray(parsed.Providers))) return false;
+        const ids = new Set<string>();
+        return (parsed.Providers ?? []).every((provider: any) => {
+            const optionalDepthValid = (value: unknown) => value === null || value === undefined
+                || (Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 64);
+            const id = String(provider?.Id ?? "");
+            if (!isUuid(id) || ids.has(id)) return false;
+            ids.add(id);
+            return Number.isInteger(provider?.Type) && provider.Type >= 0 && provider.Type <= 4
+                && String(provider?.Host ?? "").trim() !== ""
+                && Number.isInteger(provider?.Port) && provider.Port >= 1 && provider.Port <= 65_535
+                && String(provider?.User ?? "").trim() !== ""
+                && String(provider?.Pass ?? "").trim() !== ""
+                && Number.isInteger(provider?.MaxConnections)
+                && provider.MaxConnections >= 1 && provider.MaxConnections <= 1024
+                && optionalDepthValid(provider?.PipeliningDepth)
+                && optionalDepthValid(provider?.HealthPipeliningDepth)
+                && (provider?.ByteLimit === null || provider?.ByteLimit === undefined
+                    || (Number.isSafeInteger(provider.ByteLimit) && provider.ByteLimit >= 0));
+        });
+    } catch {
+        return false;
     }
 }
 
@@ -239,8 +280,8 @@ function serializeProviderConfig(config: UsenetProviderConfig): string {
     return JSON.stringify(config);
 }
 
-function providerKey(p: ConnectionDetails): string {
-    return `${p.Host}::${p.Port}::${p.User}`;
+function providerKey(p: ConnectionDetails, index: number): string {
+    return p.Id || `${index}::${p.Host}::${p.Port}::${p.User}`;
 }
 
 type DragBits = {
@@ -267,10 +308,18 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     // state
     const [showModal, setShowModal] = useState(false);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
-    const [connections, setConnections] = useState<{[index: number]: ConnectionCounts}>({});
-    const [usage, setUsage] = useState<{[index: number]: ProviderUsage}>({});
+    const [connections, setConnections] = useState<Record<string, ConnectionCounts>>({});
+    const [usage, setUsage] = useState<Record<string, ProviderUsage>>({});
     const providerConfig = useMemo(() => parseProviderConfig(config["usenet.providers"]), [config]);
+    const providerConfigJsonValid = isProviderConfigJsonValid(config["usenet.providers"]);
     const cascadeEnabled = config["usenet.cascade.enabled"] === "true";
+    const pooledConnections = Math.max(1, providerConfig.Providers
+        .filter(provider => provider.Type === ProviderType.Pooled)
+        .reduce((sum, provider) => sum + provider.MaxConnections, 0));
+    const providersRef = useRef(providerConfig.Providers);
+    const showModalRef = useRef(showModal);
+    providersRef.current = providerConfig.Providers;
+    showModalRef.current = showModal;
 
     // handlers
     const handleAddProvider = useCallback(() => {
@@ -372,15 +421,18 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
 
     const handleConnectionsMessage = useCallback((message: string) => {
         const parts = (message || "0|0|0|0|1|0").split("|");
-        const [index, live, idle, _0, _1, _2] = parts.map((x: any) => Number(x));
-        if (showModal) return;
-        if (index >= providerConfig.Providers.length) return;
-        setConnections(prev => ({...prev, [index]: {
+        const [providerId, liveRaw, idleRaw] = parts;
+        const live = Number(liveRaw);
+        const idle = Number(idleRaw);
+        if (showModalRef.current) return;
+        const provider = providersRef.current.find(item => item.Id === providerId);
+        if (!provider) return;
+        setConnections(prev => ({...prev, [providerId]: {
             active: live - idle,
             live: live,
-            max: providerConfig.Providers[index]?.MaxConnections || 1
+            max: provider.MaxConnections || 1
         }}));
-    }, [setConnections]);
+    }, []);
 
     // effects
     useEffect(() => {
@@ -413,9 +465,15 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 if (!response.ok || disposed) return;
                 const data: { providers?: ProviderUsage[] } = await response.json();
                 if (disposed || !data.providers) return;
-                const next: {[index: number]: ProviderUsage} = {};
-                for (const p of data.providers) next[p.index] = p;
+                const next: Record<string, ProviderUsage> = {};
+                const currentProviders = providersRef.current;
+                for (const p of data.providers) {
+                    if (currentProviders[p.index]?.Id === p.id) next[p.id] = p;
+                }
                 setUsage(next);
+                setConnections(prev => Object.fromEntries(
+                    Object.entries(prev).filter(([id]) => currentProviders.some(provider => provider.Id === id)),
+                ));
             } catch {
                 // network blips are fine — next tick retries.
             }
@@ -425,6 +483,14 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         const id = setInterval(fetchUsage, USAGE_POLL_INTERVAL_MS);
         return () => { disposed = true; clearInterval(id); };
     }, [showModal, providerConfig.Providers.length]);
+
+    if (!providerConfigJsonValid) {
+        return <div className={styles.container}>
+            <p className={styles.alertMessage} role="alert">
+                Usenet provider settings contain invalid JSON. This section is locked to prevent overwriting it; restore a valid <code>usenet.providers</code> value before editing.
+            </p>
+        </div>;
+    }
 
     // view
     return (
@@ -448,7 +514,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         {providerConfig.Providers.map((provider, index) => {
                             const isDisabled = provider.Type === ProviderType.Disabled;
                             return (
-                            <SortableItem key={providerKey(provider)} id={providerKey(provider)} disabled={!cascadeEnabled}>
+                            <SortableItem key={providerKey(provider, index)} id={providerKey(provider, index)} disabled={!cascadeEnabled}>
                             {({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging }) => (
                             <div ref={setNodeRef} style={style} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
                                 <div className={styles["provider-card-inner"]}>
@@ -553,8 +619,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 <div className={styles["provider-detail-content"]}>
                                                     <span className={styles["provider-detail-label"]}>Connections</span>
                                                     <span className={styles["provider-detail-value"]}>
-                                                        {connections[index]
-                                                            ? `${connections[index].live} / ${provider.MaxConnections} max`
+                                                        {connections[provider.Id]
+                                                            ? `${connections[provider.Id].live} / ${provider.MaxConnections} max`
                                                             : `${provider.MaxConnections} max`}
                                                     </span>
                                                 </div>
@@ -606,7 +672,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
 
                                         <UsageRow
                                             provider={provider}
-                                            usage={usage[index]}
+                                            usage={usage[provider.Id]}
                                             onReset={() => handleResetUsage(index)}
                                         />
                                     </div>
@@ -624,11 +690,25 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
 
             <details className={styles["advanced-panel"]}>
                 <summary>
-                    <span>Advanced performance</span>
-                    <span className={styles["advanced-summary-note"]}>Routing and protocol tuning</span>
+                    <span className={styles["advanced-summary-title"]}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" />
+                        </svg>
+                        Advanced Usenet settings
+                    </span>
+                    <span className={styles["advanced-summary-note"]}>
+                        Connection budgets, cache, routing &amp; pipelining
+                    </span>
                 </summary>
                 <div className={styles["advanced-panel-content"]}>
-            <div className={styles.section}>
+            <ConcurrencyAndSchedulingSettings
+                config={config}
+                setNewConfig={setNewConfig}
+                pooledConnections={pooledConnections} />
+
+            <StreamingAndCacheSettings config={config} setNewConfig={setNewConfig} />
+
+            <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
                 <div className={styles.sectionHeader}>
                     <div>Provider routing</div>
                 </div>
@@ -660,7 +740,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 </div>
             </div>
 
-            <div className={styles.section}>
+            <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
                 <div className={styles.sectionHeader}>
                     <div>Pipelining</div>
                 </div>
@@ -712,7 +792,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <input
                         type="text"
                         id="pipelining-depth"
-                        className={`${styles["form-input"]} ${config["usenet.pipelining.depth"] !== undefined && config["usenet.pipelining.depth"] !== "" && !isPositiveInteger(config["usenet.pipelining.depth"]) ? styles.error : ""}`}
+                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, 64) ? styles.error : ""}`}
                         placeholder="8"
                         value={config["usenet.pipelining.depth"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
@@ -729,7 +809,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <input
                         type="text"
                         id="health-pipelining-depth"
-                        className={`${styles["form-input"]} ${config["usenet.pipelining.health.depth"] !== undefined && config["usenet.pipelining.health.depth"] !== "" && !isPositiveInteger(config["usenet.pipelining.health.depth"]) ? styles.error : ""}`}
+                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, 64) ? styles.error : ""}`}
                         placeholder="32"
                         value={config["usenet.pipelining.health.depth"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.depth": e.target.value })}
@@ -745,13 +825,14 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <input
                         type="text"
                         id="health-pipelining-lanes"
-                        className={`${styles["form-input"]} ${config["usenet.pipelining.health.lanes"] !== undefined && config["usenet.pipelining.health.lanes"] !== "" && !isPositiveInteger(config["usenet.pipelining.health.lanes"]) ? styles.error : ""}`}
+                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.health.lanes"] ?? "", 1, 1024) ? styles.error : ""}`}
                         placeholder="64"
                         value={config["usenet.pipelining.health.lanes"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.lanes": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Parallel pipelined STAT connections for article health checks. 64 is the default; raise it to use more provider connections or lower it if a provider throttles checks.
+                        Parallel pipelined STAT connections for article health checks (1–1024). 64 is the default;
+                        the backend also caps this to the available provider connections.
                     </div>
                 </div>
             </div>
@@ -798,6 +879,152 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     );
 }
 
+type PerformanceSettingsProps = {
+    config: Record<string, string>;
+    setNewConfig: Dispatch<SetStateAction<Record<string, string>>>;
+};
+
+function ConcurrencyAndSchedulingSettings({
+    config,
+    setNewConfig,
+    pooledConnections,
+}: PerformanceSettingsProps & { pooledConnections: number }) {
+    return (
+        <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
+            <div className={styles.sectionHeader}>
+                <div>Concurrency &amp; scheduling</div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="max-download-connections-input" className={styles["form-label"]}>
+                    Playback connections
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="max-download-connections-input"
+                    className={`${styles["form-input"]} ${!isValidMaxDownloadConnections(config["usenet.max-download-connections"]) ? styles.error : ""}`}
+                    placeholder="15"
+                    value={config["usenet.max-download-connections"]}
+                    onChange={e => setNewConfig({ ...config, "usenet.max-download-connections": e.target.value })} />
+                <div className={styles["form-hint"]}>
+                    Maximum NNTP connections reserved for active playback. Provider capacity remains the physical ceiling.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="max-queue-connections-input" className={styles["form-label"]}>
+                    Prep connection limit
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="max-queue-connections-input"
+                    className={`${styles["form-input"]} ${!isValidMaxQueueConnections(config["usenet.max-queue-connections"], pooledConnections) ? styles.error : ""}`}
+                    placeholder="Automatic"
+                    value={config["usenet.max-queue-connections"]}
+                    onChange={e => setNewConfig({ ...config, "usenet.max-queue-connections": e.target.value })} />
+                <div className={styles["form-hint"]}>
+                    Leave blank for Automatic, which uses pooled Primary capacity. Enter a lower limit to reserve connections for simultaneous playback.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="streaming-priority-input" className={styles["form-label"]}>
+                    Playback priority versus prep (%)
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="streaming-priority-input"
+                    className={`${styles["form-input"]} ${!isValidStreamingPriority(config["usenet.streaming-priority"]) ? styles.error : ""}`}
+                    placeholder="80"
+                    value={config["usenet.streaming-priority"]}
+                    onChange={e => setNewConfig({ ...config, "usenet.streaming-priority": e.target.value })} />
+                <div className={styles["form-hint"]}>
+                    Controls how strongly playback is favored when it competes with queue preparation for NNTP capacity.
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function StreamingAndCacheSettings({ config, setNewConfig }: PerformanceSettingsProps) {
+    const cacheEnabled = config["usenet.segment-cache.enabled"] === "true";
+    return (
+        <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
+            <div className={styles.sectionHeader}>
+                <div>Streaming &amp; cache</div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="article-buffer-size-input" className={styles["form-label"]}>
+                    Article buffer size
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="article-buffer-size-input"
+                    className={`${styles["form-input"]} ${!isValidArticleBufferSize(config["usenet.article-buffer-size"]) ? styles.error : ""}`}
+                    placeholder="40"
+                    value={config["usenet.article-buffer-size"]}
+                    onChange={e => setNewConfig({ ...config, "usenet.article-buffer-size": e.target.value })} />
+                <div className={styles["form-hint"]}>
+                    Articles buffered ahead per stream. Higher values can smooth reads but use more memory.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <div className={styles["form-checkbox-wrapper"]}>
+                    <input
+                        type="checkbox"
+                        id="segment-cache-enabled-checkbox"
+                        className={`${styles["form-checkbox"]} toggle-switch`}
+                        checked={cacheEnabled}
+                        onChange={e => setNewConfig({
+                            ...config,
+                            "usenet.segment-cache.enabled": e.target.checked ? "true" : "false",
+                        })} />
+                    <label htmlFor="segment-cache-enabled-checkbox" className={styles["form-checkbox-label"]}>
+                        Enable decoded segment cache
+                    </label>
+                </div>
+                <div className={styles["form-hint"]}>
+                    Recommended for Nuvio and similar streaming clients when the cache is on fast local SSD/NVMe: seeks, probes, retries, and reopened streams can reuse decoded segments instead of downloading them again. Changes require a restart.
+                </div>
+            </div>
+            {cacheEnabled && (
+                <>
+                    <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                        <label htmlFor="segment-cache-path-input" className={styles["form-label"]}>
+                            Segment cache path
+                        </label>
+                        <input
+                            type="text"
+                            id="segment-cache-path-input"
+                            className={`${styles["form-input"]} ${!isValidSegmentCachePath(config["usenet.segment-cache.path"]) ? styles.error : ""}`}
+                            placeholder="/config/segment-cache"
+                            value={config["usenet.segment-cache.path"]}
+                            onChange={e => setNewConfig({ ...config, "usenet.segment-cache.path": e.target.value })} />
+                        <div className={styles["form-hint"]}>Use a fast local disk with enough free space.</div>
+                    </div>
+                    <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                        <label htmlFor="segment-cache-max-gb-input" className={styles["form-label"]}>
+                            Maximum cache size (GB)
+                        </label>
+                        <input
+                            type="text"
+                            inputMode="numeric"
+                            id="segment-cache-max-gb-input"
+                            className={`${styles["form-input"]} ${!isPositiveInteger(config["usenet.segment-cache.max-gb"]) ? styles.error : ""}`}
+                            placeholder="10"
+                            value={config["usenet.segment-cache.max-gb"]}
+                            onChange={e => setNewConfig({ ...config, "usenet.segment-cache.max-gb": e.target.value })} />
+                        <div className={styles["form-hint"]}>
+                            Least-recently-used segments are evicted after this limit is reached.
+                        </div>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
 type UsageRowProps = {
     provider: ConnectionDetails;
     usage: ProviderUsage | undefined;
@@ -820,7 +1047,7 @@ function UsageRow({ provider, usage, onReset }: UsageRowProps) {
     if (!showAnything) return null;
 
     return (
-        <div className={styles["usage-row"]}>
+        <div className={`${styles["usage-row"]} ${usage?.overLimit ? styles["usage-row-danger"] : ""}`}>
             <div className={styles["usage-header"]}>
                 <span className={styles["usage-label"]}>
                     {hasLimit ? "Data Cap" : "Data Used"}
@@ -830,6 +1057,19 @@ function UsageRow({ provider, usage, onReset }: UsageRowProps) {
                         ? `${formatBytes(used)} / ${formatBytes(limit as number)}  ·  ${pct.toFixed(1)}%`
                         : formatBytes(used)}
                 </span>
+                {hasLimit && (
+                    <div className={styles["usage-bar-track"]} title={`${pct.toFixed(1)}% used`}>
+                        <div
+                            className={`${styles["usage-bar-fill"]} ${styles[`usage-bar-${tone}`]}`}
+                            style={{ width: `${pct}%` }}
+                        />
+                    </div>
+                )}
+                {usage && usage.daysRemaining !== null && usage.daysRemaining !== undefined && !usage.overLimit && (
+                    <span className={styles["usage-hint"]}>
+                        {formatDaysRemaining(usage.daysRemaining)}
+                    </span>
+                )}
                 <button
                     type="button"
                     className={styles["usage-reset"]}
@@ -839,19 +1079,6 @@ function UsageRow({ provider, usage, onReset }: UsageRowProps) {
                     Reset
                 </button>
             </div>
-            {hasLimit && (
-                <div className={styles["usage-bar-track"]}>
-                    <div
-                        className={`${styles["usage-bar-fill"]} ${styles[`usage-bar-${tone}`]}`}
-                        style={{ width: `${pct}%` }}
-                    />
-                </div>
-            )}
-            {usage && usage.daysRemaining !== null && usage.daysRemaining !== undefined && !usage.overLimit && (
-                <div className={styles["usage-hint"]}>
-                    {formatDaysRemaining(usage.daysRemaining)}
-                </div>
-            )}
             {usage?.overLimit && (
                 <div className={styles["usage-warning"]}>
                     Data cap reached. This provider is paused to keep in-flight fetches from overshooting. Reset the counter or raise the cap to resume.
@@ -907,6 +1134,9 @@ function ProviderModal({
     const [playbackPipeliningRecommendation, setPlaybackPipeliningRecommendation] = useState<boolean | null>(null);
     const [healthPipeliningRecommendation, setHealthPipeliningRecommendation] = useState<boolean | null>(null);
     const benchmarkAbortRef = useRef<AbortController | null>(null);
+    const connectionSignature = JSON.stringify([host, port, useSsl, user, pass]);
+    const connectionSignatureRef = useRef(connectionSignature);
+    connectionSignatureRef.current = connectionSignature;
 
     // Reset form when modal opens or provider changes
     useEffect(() => {
@@ -963,6 +1193,7 @@ function ProviderModal({
     }, [show, onClose]);
 
     const handleTestConnection = useCallback(async () => {
+        const requestedSignature = connectionSignature;
         setIsTestingConnection(true);
         setTestError(null);
 
@@ -982,7 +1213,9 @@ function ProviderModal({
             if (response.ok) {
                 const data = await response.json();
                 if (data.connected) {
-                    setConnectionTested(true);
+                    // Do not let a response for credentials edited while this
+                    // request was running approve the new, untested values.
+                    setConnectionTested(connectionSignatureRef.current === requestedSignature);
                     setTestError(null);
                 } else {
                     setTestError("Connection test failed");
@@ -995,9 +1228,10 @@ function ProviderModal({
         } finally {
             setIsTestingConnection(false);
         }
-    }, [host, port, useSsl, user, pass]);
+    }, [host, port, useSsl, user, pass, connectionSignature]);
 
     const handleAutoTune = useCallback(async () => {
+        const requestedSignature = connectionSignature;
         const pipeliningOnly = benchmarkMode === "pipelining";
         const startupOnly = benchmarkMode === "startup";
         const healthOnly = benchmarkMode === "health";
@@ -1056,7 +1290,8 @@ function ProviderModal({
                 return;
             }
             setBenchmarkResult(data.result as BenchmarkResult);
-            setConnectionTested(true); // a successful benchmark also proves the connection
+            // A benchmark proves only the exact connection details it tested.
+            setConnectionTested(connectionSignatureRef.current === requestedSignature);
         } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') {
                 // Cancelled by the user (Cancel button or closing the modal) — not an error.
@@ -1069,7 +1304,7 @@ function ProviderModal({
             if (benchmarkAbortRef.current === controller) benchmarkAbortRef.current = null;
             ws?.close();
         }
-    }, [host, port, useSsl, user, pass, maxConnections, intensity, benchmarkMode, type]);
+    }, [host, port, useSsl, user, pass, maxConnections, intensity, benchmarkMode, type, connectionSignature]);
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
@@ -1126,6 +1361,8 @@ function ProviderModal({
             onApplyHealthPipelining(healthPipeliningRecommendation);
         }
         onSave({
+            ...(provider ?? {}),
+            Id: provider?.Id || crypto.randomUUID(),
             Type: type,
             Host: host,
             Port: parseInt(port, 10),
@@ -1136,7 +1373,9 @@ function ProviderModal({
             PipeliningDepth: pipeliningDepth.trim() === "" ? null : parseInt(pipeliningDepth, 10),
             HealthPipeliningDepth: healthPipeliningDepth.trim() === "" ? null : parseInt(healthPipeliningDepth, 10),
             PrepOnly: type === ProviderType.HealthChecksOnly ? false : prepOnly,
-            PrepSpreadEnabled: type === ProviderType.Pooled,
+            PrepSpreadEnabled: type === ProviderType.Pooled
+                ? (provider?.Type === ProviderType.Pooled ? provider.PrepSpreadEnabled ?? true : true)
+                : false,
             Priority: provider?.Priority ?? 0,
             Nickname: trimmedNickname === "" ? undefined : trimmedNickname,
             PreviousType: type === ProviderType.Disabled ? provider?.PreviousType : undefined,
@@ -1190,19 +1429,23 @@ function ProviderModal({
         || (isPositiveInteger(pipeliningDepth) && Number(pipeliningDepth) <= 64);
     const isHealthPipeliningDepthValid = healthPipeliningDepth.trim() === ""
         || (isPositiveInteger(healthPipeliningDepth) && Number(healthPipeliningDepth) <= 64);
+    const isByteLimitValid = isOptionalByteValueValid(limitValue, limitUnit);
+    const isInitialUsedValid = isEditing || isOptionalByteValueValid(initialUsedValue, initialUsedUnit);
 
     const isFormValid = host.trim() !== ""
-        && isPositiveInteger(port)
+        && isPositiveInteger(port) && Number(port) <= 65_535
         && user.trim() !== ""
         && pass.trim() !== ""
-        && isPositiveInteger(maxConnections)
+        && isPositiveInteger(maxConnections) && Number(maxConnections) <= 1024
         && isPipeliningDepthValid
-        && isHealthPipeliningDepthValid;
+        && isHealthPipeliningDepthValid
+        && isByteLimitValid
+        && isInitialUsedValid;
 
     // The speed test doesn't need Max Connections (it can recommend one), just
     // a reachable provider.
     const canBenchmark = host.trim() !== ""
-        && isPositiveInteger(port)
+        && isPositiveInteger(port) && Number(port) <= 65_535
         && user.trim() !== ""
         && pass.trim() !== "";
 
@@ -1316,7 +1559,7 @@ function ProviderModal({
                             <input
                                 type="text"
                                 id="provider-max-connections"
-                                className={`${styles["form-input"]} ${!isPositiveInteger(maxConnections) && maxConnections !== "" ? styles.error : ""}`}
+                                className={`${styles["form-input"]} ${(!isPositiveInteger(maxConnections) || Number(maxConnections) > 1024) && maxConnections !== "" ? styles.error : ""}`}
                                 placeholder="20"
                                 value={maxConnections}
                                 onChange={(e) => setMaxConnections(e.target.value)}
@@ -1404,7 +1647,7 @@ function ProviderModal({
                                 <input
                                     type="text"
                                     inputMode="decimal"
-                                    className={styles["form-input"]}
+                                    className={`${styles["form-input"]} ${!isByteLimitValid ? styles.error : ""}`}
                                     placeholder="Leave blank for no cap"
                                     value={limitValue}
                                     onChange={(e) => setLimitValue(e.target.value)}
@@ -1420,7 +1663,9 @@ function ProviderModal({
                                 </select>
                             </div>
                             <div className={styles["form-hint"]}>
-                                For block accounts. Pauses near 95% so in-flight requests do not exceed the cap.
+                                {isByteLimitValid
+                                    ? "For block accounts. Pauses near 95% so in-flight requests do not exceed the cap."
+                                    : "Enter a positive number within the supported range, or leave this blank."}
                             </div>
                         </div>
 
@@ -1433,7 +1678,7 @@ function ProviderModal({
                                     <input
                                         type="text"
                                         inputMode="decimal"
-                                        className={styles["form-input"]}
+                                        className={`${styles["form-input"]} ${!isInitialUsedValid ? styles.error : ""}`}
                                         placeholder="0"
                                         value={initialUsedValue}
                                         onChange={(e) => setInitialUsedValue(e.target.value)}
@@ -1449,7 +1694,9 @@ function ProviderModal({
                                     </select>
                                 </div>
                                 <div className={styles["form-hint"]}>
-                                    Seed the counter when migrating a partially-used block from another client. Leave empty for a fresh block.
+                                    {isInitialUsedValid
+                                        ? "Seed the counter when migrating a partially-used block from another client. Leave empty for a fresh block."
+                                        : "Enter a positive number within the supported range, or leave this blank."}
                                 </div>
                             </div>
                         )}
@@ -2015,6 +2262,13 @@ function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
 
 export function isUsenetSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
     return config["usenet.providers"] !== newConfig["usenet.providers"]
+        || config["usenet.max-download-connections"] !== newConfig["usenet.max-download-connections"]
+        || config["usenet.max-queue-connections"] !== newConfig["usenet.max-queue-connections"]
+        || config["usenet.streaming-priority"] !== newConfig["usenet.streaming-priority"]
+        || config["usenet.article-buffer-size"] !== newConfig["usenet.article-buffer-size"]
+        || config["usenet.segment-cache.enabled"] !== newConfig["usenet.segment-cache.enabled"]
+        || config["usenet.segment-cache.path"] !== newConfig["usenet.segment-cache.path"]
+        || config["usenet.segment-cache.max-gb"] !== newConfig["usenet.segment-cache.max-gb"]
         || config["usenet.pipelining.playback.enabled"] !== newConfig["usenet.pipelining.playback.enabled"]
         || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
         || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]
@@ -2024,7 +2278,73 @@ export function isUsenetSettingsUpdated(config: Record<string, string>, newConfi
         || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
 }
 
+export function isUsenetSettingsValid(config: Record<string, string>) {
+    const segmentCacheValid = config["usenet.segment-cache.enabled"] !== "true"
+        || (isValidSegmentCachePath(config["usenet.segment-cache.path"])
+            && isPositiveInteger(config["usenet.segment-cache.max-gb"]));
+    return isProviderConfigJsonValid(config["usenet.providers"])
+        && isValidMaxDownloadConnections(config["usenet.max-download-connections"])
+        && isValidMaxQueueConnections(
+            config["usenet.max-queue-connections"], getTotalPooledConnections(config))
+        && isValidStreamingPriority(config["usenet.streaming-priority"])
+        && isValidArticleBufferSize(config["usenet.article-buffer-size"])
+        && segmentCacheValid
+        && isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, 64)
+        && isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, 64)
+        && isIntegerInRange(config["usenet.pipelining.health.lanes"] ?? "", 1, 1024);
+}
+
+function isValidSegmentCachePath(value: string): boolean {
+    return value.trim().length > 0;
+}
+
+function isValidMaxDownloadConnections(value: string): boolean {
+    return isPositiveInteger(value);
+}
+
+function isValidMaxQueueConnections(value: string, pooledConnections: number): boolean {
+    return value.trim() === ""
+        || (isPositiveInteger(value) && Number(value) <= pooledConnections);
+}
+
+function getTotalPooledConnections(config: Record<string, string>): number {
+    try {
+        const parsed = JSON.parse(config["usenet.providers"] || "{}");
+        const total = (Array.isArray(parsed.Providers) ? parsed.Providers : [])
+            .filter((provider: any) => provider?.Type === ProviderType.Pooled)
+            .reduce((sum: number, provider: any) =>
+                sum + (Number.isInteger(provider?.MaxConnections) && provider.MaxConnections > 0
+                    ? provider.MaxConnections
+                    : 0), 0);
+        return Math.max(1, total);
+    } catch {
+        return 1;
+    }
+}
+
+function isValidStreamingPriority(value: string): boolean {
+    if (value.trim() === "") return false;
+    const num = Number(value);
+    return Number.isInteger(num) && num >= 0 && num <= 100;
+}
+
+function isValidArticleBufferSize(value: string): boolean {
+    return isPositiveInteger(value);
+}
+
+function isIntegerInRange(value: string, min: number, max: number) {
+    const num = Number(value);
+    return Number.isInteger(num)
+        && num >= min
+        && num <= max
+        && value.trim() === num.toString();
+}
+
 export function isPositiveInteger(value: string) {
     const num = Number(value);
     return Number.isInteger(num) && num > 0 && value.trim() === num.toString();
+}
+
+function isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

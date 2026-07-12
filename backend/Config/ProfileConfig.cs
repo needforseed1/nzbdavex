@@ -8,7 +8,18 @@ public class ProfileConfig
 
     public ProfileConfig Normalized()
     {
-        foreach (var p in Profiles) p.MigrateLegacy();
+        // System.Text.Json can populate nulls despite non-nullable annotations.
+        // Ignore unusable legacy rows and normalize a null indexer list to the
+        // documented empty/all-enabled representation instead of crashing.
+        Profiles ??= [];
+        Profiles.RemoveAll(p => p is null
+            || string.IsNullOrWhiteSpace(p.Token)
+            || string.IsNullOrWhiteSpace(p.Name));
+        foreach (var p in Profiles)
+        {
+            p.IndexerIds ??= [];
+            p.MigrateLegacy();
+        }
         return this;
     }
 
@@ -16,7 +27,7 @@ public class ProfileConfig
     {
         public required string Token { get; set; }
         public required string Name { get; set; }
-        public List<string> IndexerNames { get; set; } = [];
+        public List<string> IndexerIds { get; set; } = [];
         public List<string>? EnabledAdapters { get; set; }
 
         public FallbackMode MovieFallback { get; set; } = FallbackMode.Off;
@@ -25,6 +36,10 @@ public class ProfileConfig
         public int TvFallbackMinResults { get; set; } = 3;
 
         public int? QueryFallbackMinResults { get; set; }
+
+        public bool IsAdapterEnabled(string adapter) =>
+            EnabledAdapters is null
+            || EnabledAdapters.Contains(adapter, StringComparer.OrdinalIgnoreCase);
 
         internal void MigrateLegacy()
         {

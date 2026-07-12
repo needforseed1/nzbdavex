@@ -30,6 +30,7 @@ public class AddFileController(
 
     public async Task<AddFileResponse> AddFileAsync(AddFileRequest request)
     {
+        ValidateCategory(request.Category);
         queueManager.BeginQueuePrewarm();
         var id = Guid.NewGuid();
         var timer = Stopwatch.StartNew();
@@ -129,7 +130,10 @@ public class AddFileController(
             if (!Directory.Exists(backupLocation))
                 Directory.CreateDirectory(backupLocation);
 
-            var destDir = Path.Combine(backupLocation, category);
+            var backupRoot = Path.GetFullPath(backupLocation);
+            var destDir = Path.GetFullPath(Path.Combine(backupRoot, category));
+            if (!IsWithinRoot(backupRoot, destDir))
+                throw new InvalidOperationException("Category escapes the configured NZB backup directory.");
             if (!Directory.Exists(destDir))
                 Directory.CreateDirectory(destDir);
 
@@ -153,6 +157,30 @@ public class AddFileController(
         {
             throw new Exception($"Could not save nzb to `{backupLocation}`", e);
         }
+    }
+
+    internal static void ValidateCategory(string category)
+    {
+        if (string.IsNullOrWhiteSpace(category)
+            || category.Length > 128
+            || category is "." or ".."
+            || category.Contains('/')
+            || category.Contains('\\')
+            || category.Any(char.IsControl))
+        {
+            throw new BadHttpRequestException(
+                "Invalid category. Use one safe name without path separators.");
+        }
+    }
+
+    private static bool IsWithinRoot(string root, string candidate)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var rootPrefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
+        return string.Equals(root, candidate, comparison)
+            || candidate.StartsWith(rootPrefix, comparison);
     }
 
     private static long ComputeTotalSegmentBytes(Stream stream)

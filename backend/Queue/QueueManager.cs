@@ -289,15 +289,10 @@ public class QueueManager : IDisposable
 
     private string BuildProvidersMessage(Guid queueItemId)
     {
-        var snapshot = _providerUsageTracker.Snapshot(queueItemId);
-        var configured = _configManager.GetUsenetProviderConfig().Providers
-            .Select(p => p.Host)
-            .Where(h => !string.IsNullOrEmpty(h))
-            .Distinct();
-        var merged = new Dictionary<string, long>(snapshot);
-        foreach (var host in configured)
-            if (!merged.ContainsKey(host)) merged[host] = 0;
-        var payload = string.Join(",", merged.Select(kv => $"{kv.Key}={kv.Value}"));
+        var providers = _configManager.GetUsenetProviderConfig().Providers;
+        var snapshot = ProviderUsageTracker.ToDisplayHosts(
+            _providerUsageTracker.Snapshot(queueItemId), providers);
+        var payload = string.Join(",", snapshot.Select(kv => $"{kv.Key}={kv.Value}"));
         return $"{queueItemId}|{payload}";
     }
 

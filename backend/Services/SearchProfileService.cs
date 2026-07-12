@@ -34,9 +34,7 @@ public class SearchProfileService(
     public bool IsAdapterEnabled(string profileToken, string adapter)
     {
         var profile = GetProfile(profileToken);
-        if (profile is null) return false;
-        if (profile.EnabledAdapters is null || profile.EnabledAdapters.Count == 0) return true;
-        return profile.EnabledAdapters.Contains(adapter, StringComparer.OrdinalIgnoreCase);
+        return profile?.IsAdapterEnabled(adapter) == true;
     }
 
     public async Task<bool> HasResolveHeadroomAsync(string profileToken, CancellationToken ct)
@@ -46,19 +44,20 @@ public class SearchProfileService(
 
         var indexerConfig = configManager.GetIndexerConfig();
         var allIndexers = indexerConfig.Indexers.Where(x => x.Enabled).ToList();
-        var indexers = profile.IndexerNames.Count == 0
+        var selectedIndexers = profile.IndexerIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var indexers = selectedIndexers.Count == 0
             ? allIndexers
-            : allIndexers.Where(x => profile.IndexerNames.Contains(x.Name)).ToList();
+            : allIndexers.Where(x => selectedIndexers.Contains(x.Id)).ToList();
         if (indexers.Count == 0) return false;
 
         foreach (var x in indexers)
         {
             var search = await hitTracker
-                .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                .CheckAsync(x.Id, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
                 .ConfigureAwait(false);
             if (search is { Allowed: false }) continue;
             var download = await hitTracker
-                .CheckAsync(x.Name, IndexerApiHit.HitType.Download, x.DownloadLimit, x.HitLimitResetTime, ct)
+                .CheckAsync(x.Id, IndexerApiHit.HitType.Download, x.DownloadLimit, x.HitLimitResetTime, ct)
                 .ConfigureAwait(false);
             if (download is { Allowed: false }) continue;
             return true;
@@ -314,9 +313,10 @@ public class SearchProfileService(
 
         var indexerConfig = configManager.GetIndexerConfig();
         var allIndexers = indexerConfig.Indexers.Where(x => x.Enabled).ToList();
-        var indexers = profile.IndexerNames.Count == 0
+        var selectedIndexers = profile.IndexerIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var indexers = selectedIndexers.Count == 0
             ? allIndexers
-            : allIndexers.Where(x => profile.IndexerNames.Contains(x.Name)).ToList();
+            : allIndexers.Where(x => selectedIndexers.Contains(x.Id)).ToList();
         var globalProxy = indexerConfig.ProxyUrl;
 
         if (indexers.Count == 0) return Empty(profileToken, type, id);
@@ -339,34 +339,12 @@ public class SearchProfileService(
             ? await BuildExpectedTitlesAsync(type, queryParams, ct).ConfigureAwait(false)
             : new HashSet<string>(StringComparer.Ordinal);
 
-        List<IndexerHit> ApplyStrictMatching(List<IndexerHit> items)
-        {
-            if (strictIndexers.Count == 0 || items.Count < 2) return items;
-
-            if (strictExpected.Count > 0)
-                return items
-                    .Where(x => !strictIndexers.Contains(x.IndexerName)
-                                || FilenameMatcher.TitleMatches(strictExpected, x.Item.Title))
-                    .ToList();
-
-            var withHead = items
-                .Select(x => new { Entry = x, Head = FilenameMatcher.HeadTokens(x.Item.Title) })
-                .ToList();
-            var consensus = withHead
-                .Where(x => x.Head.Length > 0)
-                .GroupBy(x => string.Join(' ', x.Head))
-                .Select(g => new { g.First().Head, Count = g.Count() })
-                .OrderByDescending(x => x.Count)
-                .FirstOrDefault();
-            if (consensus is not { Count: >= 2 }) return items;
-            return withHead
-                .Where(x => !strictIndexers.Contains(x.Entry.IndexerName)
-                            || FilenameMatcher.TokensEqual(x.Head, consensus.Head))
-                .Select(x => x.Entry)
-                .ToList();
-        }
-
-        deduped = ApplyStrictMatching(deduped);
+        deduped = ApplyStrictMatching(
+            deduped,
+            strictIndexers,
+            strictExpected,
+            x => x.IndexerName,
+            x => x.Item.Title);
 
         var fallbackMode = type == "movie" ? profile.MovieFallback : profile.TvFallback;
         var fallbackThreshold = Math.Max(1, type == "movie"
@@ -428,7 +406,12 @@ public class SearchProfileService(
                                   .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue))
                     .ToList();
 
-                deduped = ApplyStrictMatching(deduped);
+                deduped = ApplyStrictMatching(
+                    deduped,
+                    strictIndexers,
+                    strictExpected,
+                    x => x.IndexerName,
+                    x => x.Item.Title);
             }
         }
 
@@ -456,6 +439,7 @@ public class SearchProfileService(
         var candidates = deduped
             .Select(x => new NzbResolutionCache.Candidate
             {
+                IndexerId = x.IndexerId,
                 IndexerName = x.IndexerName,
                 IndexerUserAgent = x.IndexerUserAgent,
                 NzbUrl = x.Item.NzbUrl,
@@ -531,6 +515,7 @@ public class SearchProfileService(
                 var existing = candidates.FirstOrDefault(c => c.NzbUrl == p.NzbUrl);
                 ordered.Add(existing ?? new NzbResolutionCache.Candidate
                 {
+                    IndexerId = p.IndexerId,
                     IndexerName = p.IndexerName,
                     IndexerUserAgent = p.IndexerUserAgent,
                     NzbUrl = p.NzbUrl,
@@ -582,6 +567,7 @@ public class SearchProfileService(
                 if (candidates.Any(c => c.NzbUrl == p.NzbUrl)) continue;
                 candidates.Add(new NzbResolutionCache.Candidate
                 {
+                    IndexerId = p.IndexerId,
                     IndexerName = p.IndexerName,
                     IndexerUserAgent = p.IndexerUserAgent,
                     NzbUrl = p.NzbUrl,
@@ -613,16 +599,6 @@ public class SearchProfileService(
         {
             try
             {
-                var hitCheck = await hitTracker
-                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
-                    .ConfigureAwait(false);
-                if (hitCheck is { Allowed: false })
-                {
-                    Log.Information("Indexer {Indexer} skipped: {Reason}",
-                        x.Name, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Search));
-                    return Enumerable.Empty<IndexerHit>();
-                }
-
                 var searchUa = IndexerConfig.PerIndexerSearchUserAgent(x) ?? configManager.GetSearchUserAgent();
                 var retrieveUa = IndexerConfig.PerIndexerRetrieveUserAgent(x) ?? configManager.GetUserAgent();
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
@@ -638,24 +614,30 @@ public class SearchProfileService(
                 var maxPages = Math.Min((target + SearchPageSize - 1) / SearchPageSize, MaxSearchPages);
                 for (var page = 0; page < maxPages; page++)
                 {
-                    // Re-check the hit budget before each extra page so paging never overruns a
-                    // configured API-hit limit (the first page was already cleared above).
-                    if (page > 0)
+                    var preliminary = await hitTracker
+                        .CheckAsync(x.Id, IndexerApiHit.HitType.Search,
+                            x.HitLimit, x.HitLimitResetTime, ct)
+                        .ConfigureAwait(false);
+                    if (preliminary is { Allowed: false })
                     {
-                        var pageCheck = await hitTracker
-                            .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
-                            .ConfigureAwait(false);
-                        if (pageCheck is { Allowed: false }) break;
+                        if (page == 0)
+                            Log.Information("Indexer {Indexer} skipped: {Reason}", x.Name,
+                                IndexerHitTracker.FormatSkipReason(preliminary, IndexerApiHit.HitType.Search));
+                        break;
                     }
 
-                    await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
+                    await rateLimiter.WaitAsync(x.Id, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
+                    var reservation = await hitTracker
+                        .ReserveAsync(x.Id, IndexerApiHit.HitType.Search,
+                            x.HitLimit, x.HitLimitResetTime, ct)
+                        .ConfigureAwait(false);
+                    if (reservation is { Allowed: false }) break;
                     var pageQuery = new Dictionary<string, string>(baseQuery, StringComparer.OrdinalIgnoreCase)
                     {
                         ["limit"] = SearchPageSize.ToString(),
                         ["offset"] = (page * SearchPageSize).ToString(),
                     };
                     var pageItems = await client.QueryAsync(pageQuery, ct).ConfigureAwait(false);
-                    _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
 
                     collected.AddRange(pageItems);
                     if (pageItems.Count < SearchPageSize) break; // indexer has no more results
@@ -664,7 +646,7 @@ public class SearchProfileService(
 
                 var limited = collected.Count > target ? collected.GetRange(0, target) : collected;
                 var filtered = IndexerResultFilter.Apply(limited, x.Filter, now);
-                return filtered.Select(i => new IndexerHit(x.Name, retrieveUa, proxy, i));
+                return filtered.Select(i => new IndexerHit(x.Id, x.Name, retrieveUa, proxy, i));
             }
             catch (Exception e)
             {
@@ -693,6 +675,43 @@ public class SearchProfileService(
                               .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue)
                 : dedupedQuery.OrderByDescending(x => x.Item.Size)
                               .ThenByDescending(x => x.Item.Posted ?? DateTimeOffset.MinValue))
+            .ToList();
+    }
+
+    internal static List<T> ApplyStrictMatching<T>(
+        List<T> items,
+        IReadOnlySet<string> strictIndexers,
+        IReadOnlySet<string> strictExpected,
+        Func<T, string> indexerName,
+        Func<T, string> title)
+    {
+        if (strictIndexers.Count == 0) return items;
+
+        // Canonical metadata is authoritative even when the indexer returned only one result.
+        if (strictExpected.Count > 0)
+            return items
+                .Where(x => !strictIndexers.Contains(indexerName(x))
+                            || FilenameMatcher.TitleMatches(strictExpected, title(x)))
+                .ToList();
+
+        // Consensus needs at least two results; without canonical metadata a single title
+        // cannot corroborate itself.
+        if (items.Count < 2) return items;
+
+        var withHead = items
+            .Select(x => new { Entry = x, Head = FilenameMatcher.HeadTokens(title(x)) })
+            .ToList();
+        var consensus = withHead
+            .Where(x => x.Head.Length > 0)
+            .GroupBy(x => string.Join(' ', x.Head))
+            .Select(g => new { g.First().Head, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .FirstOrDefault();
+        if (consensus is not { Count: >= 2 }) return items;
+        return withHead
+            .Where(x => !strictIndexers.Contains(indexerName(x.Entry))
+                        || FilenameMatcher.TokensEqual(x.Head, consensus.Head))
+            .Select(x => x.Entry)
             .ToList();
     }
 
@@ -863,7 +882,7 @@ public class SearchProfileService(
         return string.Join(",", result);
     }
 
-    private record IndexerHit(string IndexerName, string IndexerUserAgent, string? IndexerProxyUrl, NewznabClient.NewznabItem Item);
+    private record IndexerHit(string IndexerId, string IndexerName, string IndexerUserAgent, string? IndexerProxyUrl, NewznabClient.NewznabItem Item);
 
     public class SearchResult
     {

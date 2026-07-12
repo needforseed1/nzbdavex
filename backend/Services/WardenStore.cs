@@ -440,21 +440,41 @@ public partial class WardenStore
         return processed;
     }
 
-    public async Task ExportToAsync(Stream output, IReadOnlyCollection<string> sourceIds, bool dedup, CancellationToken ct)
+    public Task ExportToAsync(
+        Stream output,
+        IReadOnlyCollection<string> sourceIds,
+        bool dedup,
+        CancellationToken ct) =>
+        ExportToAsync(output, sourceIds, dedup, deterministic: false, ct);
+
+    internal Task ExportBackupToAsync(
+        Stream output,
+        IReadOnlyCollection<string> sourceIds,
+        bool dedup,
+        CancellationToken ct) =>
+        ExportToAsync(output, sourceIds, dedup, deterministic: true, ct);
+
+    private async Task ExportToAsync(
+        Stream output,
+        IReadOnlyCollection<string> sourceIds,
+        bool dedup,
+        bool deterministic,
+        CancellationToken ct)
     {
         var ids = (sourceIds.Count == 0 ? new[] { LocalSourceId } : sourceIds.ToArray());
         var placeholders = string.Join(",", ids.Select((_, i) => "$s" + i));
 
         await using var writer = new StreamWriter(output, new UTF8Encoding(false), 1 << 16, leaveOpen: true);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        await writer.WriteLineAsync($"{{\"warden\":1,\"updated\":{now}}}".AsMemory(), ct).ConfigureAwait(false);
+        await writer.WriteLineAsync(BuildExportHeader(deterministic, now).AsMemory(), ct).ConfigureAwait(false);
 
         using var conn = Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = dedup
             ? $"SELECT fp, MAX(dead_at), SUM(n), group_concat(backbones, ',') FROM warden_entries " +
-              $"WHERE source_id IN ({placeholders}) GROUP BY fp"
-            : $"SELECT fp, dead_at, n, backbones FROM warden_entries WHERE source_id IN ({placeholders})";
+              $"WHERE source_id IN ({placeholders}) GROUP BY fp ORDER BY fp COLLATE BINARY"
+            : $"SELECT fp, dead_at, n, backbones FROM warden_entries WHERE source_id IN ({placeholders}) " +
+              "ORDER BY source_id COLLATE BINARY, fp COLLATE BINARY";
         for (var i = 0; i < ids.Length; i++) cmd.Parameters.AddWithValue("$s" + i, ids[i]);
 
         using var reader = cmd.ExecuteReader();
@@ -465,13 +485,16 @@ public partial class WardenStore
             {
                 Fp = reader.GetString(0),
                 DeadAt = reader.GetInt64(1),
-                Count = reader.GetInt32(2),
+                Count = (int)Math.Clamp(reader.GetInt64(2), 1, int.MaxValue),
                 Backbones = SplitBackbones(reader.GetString(3)),
             };
             await writer.WriteLineAsync(JsonSerializer.Serialize(rec, JsonOptions).AsMemory(), ct).ConfigureAwait(false);
         }
         await writer.FlushAsync(ct).ConfigureAwait(false);
     }
+
+    internal static string BuildExportHeader(bool deterministic, long updatedAt) =>
+        $"{{\"warden\":1,\"updated\":{(deterministic ? 0 : updatedAt)}}}";
 
     private string[] CurrentBackbones()
     {
@@ -640,21 +663,23 @@ public partial class WardenStore
         var set = new HashSet<string>(SplitBackbones(existingCsv), StringComparer.Ordinal);
         foreach (var b in add)
             if (!string.IsNullOrWhiteSpace(b)) set.Add(b);
-        return set.Count == 0 ? "unknown" : string.Join(",", set);
+        return set.Count == 0 ? "unknown" : string.Join(",", set.OrderBy(x => x, StringComparer.Ordinal));
     }
 
     private static string JoinBackbones(string[]? backbones)
     {
         if (backbones is null || backbones.Length == 0) return "unknown";
         var set = new HashSet<string>(backbones.Where(x => !string.IsNullOrWhiteSpace(x)), StringComparer.Ordinal);
-        return set.Count == 0 ? "unknown" : string.Join(",", set);
+        return set.Count == 0 ? "unknown" : string.Join(",", set.OrderBy(x => x, StringComparer.Ordinal));
     }
 
-    private static string[] SplitBackbones(string csv) =>
+    internal static string[] SplitBackbones(string csv) =>
         string.IsNullOrEmpty(csv)
             ? Array.Empty<string>()
             : csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Distinct(StringComparer.Ordinal).ToArray();
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
 
     private static bool BackboneInScope(string entryCsv, HashSet<string> mine)
     {

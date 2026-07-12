@@ -41,8 +41,36 @@ public class PrepProviderRoutingTests
         Assert.Equal(8, readyTransport.BodyCalls);
     }
 
+    [Fact]
+    public async Task PrepSpreadFlagKeepsProviderOutOfFirstChoicePool()
+    {
+        var reservedTransport = new BodyClient();
+        await using var reservedPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(reservedTransport));
+        await reservedPool.PrewarmAsync(1);
+        using var reserved = CreateProvider(
+            reservedPool, "reserved", priority: 0, prepSpreadEnabled: false);
+
+        var spreadTransport = new BodyClient();
+        await using var spreadPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(spreadTransport));
+        await spreadPool.PrewarmAsync(1);
+        using var spread = CreateProvider(
+            spreadPool, "spread", priority: 1, prepSpreadEnabled: true);
+        using var client = new MultiProviderNntpClient([reserved, spread], new ProviderUsageTracker());
+
+        var response = await client.DecodedBodyAsync("segment", CancellationToken.None);
+        await response.Stream.DisposeAsync();
+
+        Assert.Equal(0, reservedTransport.BodyCalls);
+        Assert.Equal(1, spreadTransport.BodyCalls);
+    }
+
     private static MultiConnectionNntpClient CreateProvider(
-        ConnectionPool<INntpClient> pool, string host, int priority) =>
+        ConnectionPool<INntpClient> pool,
+        string host,
+        int priority,
+        bool prepSpreadEnabled = true) =>
         new(
             pool,
             ProviderType.Pooled,
@@ -52,7 +80,7 @@ public class PrepProviderRoutingTests
             bytesUsedOffset: 0,
             priority,
             prepOnly: false,
-            prepSpreadEnabled: true);
+            prepSpreadEnabled);
 
     private sealed class BodyClient : NntpClient
     {

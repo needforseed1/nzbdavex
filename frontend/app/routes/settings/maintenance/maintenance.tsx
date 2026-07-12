@@ -3,15 +3,27 @@ import styles from "./maintenance.module.css"
 import { RemoveUnlinkedFiles } from "./remove-unlinked-files/remove-unlinked-files";
 import { ConvertStrmToSymlinks } from "./strm-to-symlinks/strm-to-symlinks";
 import { MigrateDatabaseFilesToBlobstore } from "./migrate-database-files-to-blobstore/migrate-database-files-to-blobstore";
-import type { Dispatch, SetStateAction } from "react";
+import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 
 type MaintenanceProps = {
     savedConfig: Record<string, string>,
     config: Record<string, string>,
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>,
+    blobMigrationRemaining: number,
 };
 
-export function Maintenance({ savedConfig, config, setNewConfig }: MaintenanceProps) {
+export function Maintenance({
+    savedConfig,
+    config,
+    setNewConfig,
+    blobMigrationRemaining,
+}: MaintenanceProps) {
+    const scheduleEnabled = isScheduledOrphanTaskEnabled(config);
+    const hasLibraryDirectory = (config["media.library-dir"] ?? "").trim() !== "";
+    const scheduleTimeValid = getScheduledMinutes(config) !== null;
+    const [showBlobMigration, setShowBlobMigration] = useState(blobMigrationRemaining > 0);
+    const hideBlobMigration = useCallback(() => setShowBlobMigration(false), []);
+
     return (
         <div>
             <div className={styles.settingsContainer}>
@@ -36,8 +48,19 @@ export function Maintenance({ savedConfig, config, setNewConfig }: MaintenancePr
                         id="remove-orphaned-schedule-enabled-checkbox"
                         aria-describedby="remove-orphaned-schedule-help"
                         label={'Schedule "Remove Orphaned Files" Task Daily'}
-                        checked={isScheduledOrphanTaskEnabled(config)}
-                        onChange={e => setNewConfig({ ...config, "maintenance.remove-orphaned-schedule-enabled": "" + e.target.checked })} />
+                        checked={scheduleEnabled}
+                        disabled={!scheduleEnabled && !hasLibraryDirectory}
+                        isInvalid={scheduleEnabled && (!hasLibraryDirectory || !scheduleTimeValid)}
+                        onChange={e => {
+                            if (e.target.checked && !hasLibraryDirectory) return;
+                            setNewConfig({
+                                ...config,
+                                "maintenance.remove-orphaned-schedule-enabled": "" + e.target.checked,
+                                ...(e.target.checked && !scheduleTimeValid
+                                    ? { "maintenance.remove-orphaned-schedule-time": "0" }
+                                    : {}),
+                            });
+                        }} />
                     <div className={styles.scheduleRow}>
                         <Form.Select
                             disabled={!isScheduledOrphanTaskEnabled(config)}
@@ -86,8 +109,12 @@ export function Maintenance({ savedConfig, config, setNewConfig }: MaintenancePr
                         </Form.Select>
                     </div>
                     <Form.Text id="remove-orphaned-schedule-help" muted>
-                        When enabled, the "Remove Orphaned Files" task will run every day at the specified time.
-                        You may need to set the TZ env variable to ensure the correct timezone.
+                        {!hasLibraryDirectory
+                            ? "Configure a Library Directory under Repairs before enabling this schedule."
+                            : !scheduleTimeValid && scheduleEnabled
+                                ? "The stored schedule time is invalid. Choose a time between midnight and 23:59."
+                                : <>When enabled, the "Remove Orphaned Files" task will run every day at the specified time.
+                                    You may need to set the TZ env variable to ensure the correct timezone.</>}
                     </Form.Text>
                 </Form.Group>
             </div>
@@ -104,20 +131,22 @@ export function Maintenance({ savedConfig, config, setNewConfig }: MaintenancePr
                     </Accordion.Item>
                     <Accordion.Item className={styles.accordionItem} eventKey="strm-to-symlinks">
                         <Accordion.Header className={styles.accordionHeader}>
-                            Convert Strm Files to Symlnks
+                            Convert STRM Files to Symlinks
                         </Accordion.Header>
                         <Accordion.Body className={styles.accordionBody}>
                             <ConvertStrmToSymlinks savedConfig={savedConfig} />
                         </Accordion.Body>
                     </Accordion.Item>
-                    <Accordion.Item className={styles.accordionItem} eventKey="migrate-database-files-to-blobstore">
-                        <Accordion.Header className={styles.accordionHeader}>
-                            Migrate Large Database Blobs to Blobstore
-                        </Accordion.Header>
-                        <Accordion.Body className={styles.accordionBody}>
-                            <MigrateDatabaseFilesToBlobstore savedConfig={savedConfig} />
-                        </Accordion.Body>
-                    </Accordion.Item>
+                    {showBlobMigration && (
+                        <Accordion.Item className={styles.accordionItem} eventKey="migrate-database-files-to-blobstore">
+                            <Accordion.Header className={styles.accordionHeader}>
+                                Migrate Large Database Blobs to Blobstore ({blobMigrationRemaining} remaining)
+                            </Accordion.Header>
+                            <Accordion.Body className={styles.accordionBody}>
+                                <MigrateDatabaseFilesToBlobstore onComplete={hideBlobMigration} />
+                            </Accordion.Body>
+                        </Accordion.Item>
+                    )}
                 </Accordion>
             </div>
         </div>
@@ -130,18 +159,31 @@ export function isMaintenanceSettingsUpdated(config: Record<string, string>, new
         || config["maintenance.remove-orphaned-schedule-time"] !== newConfig["maintenance.remove-orphaned-schedule-time"];
 }
 
+export function isMaintenanceSettingsValid(config: Record<string, string>) {
+    return !isScheduledOrphanTaskEnabled(config)
+        || ((config["media.library-dir"] ?? "").trim() !== ""
+            && getScheduledMinutes(config) !== null);
+}
+
 function isScheduledOrphanTaskEnabled(config: Record<string, string>) {
     return config["maintenance.remove-orphaned-schedule-enabled"] === "true";
 }
 
 function getScheduledTime(config: Record<string, string>): { hour: number, minute: number, period: "am" | "pm" } {
-    const totalMinutes = parseInt(config["maintenance.remove-orphaned-schedule-time"] || "0");
+    const totalMinutes = getScheduledMinutes(config) ?? 0;
     const hour24 = Math.floor(totalMinutes / 60);
     return {
         hour: hour24 % 12 || 12, // 0→12 (midnight), 1→1, ..., 12→12 (noon), 13→1, ...
         minute: totalMinutes % 60,
         period: Math.floor(totalMinutes / 60) >= 12 ? "pm" : "am"
     };
+}
+
+function getScheduledMinutes(config: Record<string, string>): number | null {
+    const raw = (config["maintenance.remove-orphaned-schedule-time"] ?? "").trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const value = Number(raw);
+    return Number.isInteger(value) && value >= 0 && value <= 1439 ? value : null;
 }
 
 function buildScheduledTime(hour: number, minute: number, period: "am" | "pm"): string {

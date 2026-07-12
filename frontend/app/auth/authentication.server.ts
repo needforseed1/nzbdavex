@@ -3,7 +3,21 @@ import crypto from "crypto"
 import { backendClient } from "~/clients/backend-client.server";
 import type { IncomingMessage } from "http";
 
-export const IS_FRONTEND_AUTH_DISABLED = process.env.DISABLE_FRONTEND_AUTH === 'true';
+const isTrue = (value: string | undefined) =>
+  ["y", "yes", "true"].includes(value?.trim().toLowerCase() ?? "");
+
+export const IS_FRONTEND_AUTH_DISABLED = isTrue(process.env.DISABLE_FRONTEND_AUTH);
+if (IS_FRONTEND_AUTH_DISABLED) {
+  console.warn("WARNING: frontend authentication is DISABLED; use only behind trusted external authentication or on a private network.");
+}
+
+const configuredSessionKey = process.env.SESSION_KEY;
+const sessionKey = configuredSessionKey?.trim()
+  ? configuredSessionKey
+  : crypto.randomBytes(64).toString('hex');
+if (!configuredSessionKey?.trim() && process.env.NODE_ENV === "production") {
+  console.warn("WARNING: SESSION_KEY is not set; login cookies will become invalid when this frontend process restarts.");
+}
 
 type User = {
   username: string;
@@ -16,8 +30,8 @@ const sessionStorage = createCookieSessionStorage({
     httpOnly: true,
     path: "/",
     sameSite: "strict",
-    secrets: [process?.env?.SESSION_KEY || crypto.randomBytes(64).toString('hex')],
-    secure: ["true", "yes"].includes(process?.env?.SECURE_COOKIES || ""),
+    secrets: [sessionKey],
+    secure: isTrue(process.env.SECURE_COOKIES),
     maxAge: oneYear,
   },
 });

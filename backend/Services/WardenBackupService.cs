@@ -83,7 +83,7 @@ public partial class WardenBackupService : BackgroundService
                 : new List<string> { WardenStore.LocalSourceId };
             using var ms = new MemoryStream();
             await using (var gz = new GZipStream(ms, CompressionLevel.Optimal, leaveOpen: true))
-                await _store.ExportToAsync(gz, ids, dedup: true, ct).ConfigureAwait(false);
+                await _store.ExportBackupToAsync(gz, ids, dedup: true, ct).ConfigureAwait(false);
             bytes = ms.ToArray();
             count = s.Scope == "merged" ? _store.Count : _store.LocalCount;
         }

@@ -5,7 +5,10 @@ namespace NzbWebDAV.Services;
 
 public class NzbFetchCoalescer(ConfigManager configManager)
 {
-    private static readonly TimeSpan HardFetchCap = TimeSpan.FromSeconds(90);
+    // Individual fetchers apply the configured per-indexer timeout (up to one
+    // hour). Keep only a slightly wider last-resort cap here so coalescing does
+    // not silently truncate an otherwise valid timeout setting.
+    private static readonly TimeSpan HardFetchCap = TimeSpan.FromMinutes(65);
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
     private readonly ConcurrentDictionary<string, Lazy<Task<byte[]?>>> _inFlight = new();
@@ -21,6 +24,24 @@ public class NzbFetchCoalescer(ConfigManager configManager)
 
         var lazy = _inFlight.GetOrAdd(url, u => new Lazy<Task<byte[]?>>(() => RunSharedAsync(u, fetch)));
         return await lazy.Value.WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    // Path-specific admission must happen before this caller becomes the owner
+    // of the URL-global shared fetch. A rejected short wait (for example,
+    // Preflight's bounded RPM wait) therefore cannot publish a shared null that
+    // makes an unrelated playback/proxy caller fail. Existing cached/in-flight
+    // work is joined without consuming another admission slot.
+    public async Task<byte[]?> GetOrFetchAsync(
+        string url,
+        Func<CancellationToken, Task<bool>> admit,
+        Func<CancellationToken, Task<byte[]?>> fetch,
+        CancellationToken ct)
+    {
+        if (TryGetCached(url, out var cached)) return cached;
+        if (_inFlight.TryGetValue(url, out var existing))
+            return await existing.Value.WaitAsync(ct).ConfigureAwait(false);
+        if (!await admit(ct).ConfigureAwait(false)) return null;
+        return await GetOrFetchAsync(url, fetch, ct).ConfigureAwait(false);
     }
 
     private async Task<byte[]?> RunSharedAsync(string url, Func<CancellationToken, Task<byte[]?>> fetch)

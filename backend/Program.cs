@@ -101,7 +101,14 @@ class Program
 
         // initialize webapp
         var builder = WebApplication.CreateBuilder(args);
-        var maxRequestBodySize = EnvironmentUtil.GetLongVariable("MAX_REQUEST_BODY_SIZE") ?? 100 * 1024 * 1024;
+        const long defaultMaxRequestBodySize = 100 * 1024 * 1024;
+        var rawMaxRequestBodySize = EnvironmentUtil.GetEnvironmentVariable("MAX_REQUEST_BODY_SIZE");
+        var maxRequestBodySize = rawMaxRequestBodySize is null
+            ? defaultMaxRequestBodySize
+            : long.TryParse(rawMaxRequestBodySize, out var configuredBodySize) && configuredBodySize > 0
+                ? configuredBodySize
+                : throw new InvalidOperationException(
+                    "MAX_REQUEST_BODY_SIZE must be a positive integer number of bytes.");
         builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxRequestBodySize);
         builder.Host.UseSerilog();
         builder.Services.AddControllers();

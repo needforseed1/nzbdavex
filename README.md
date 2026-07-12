@@ -39,7 +39,7 @@ docker run --rm -it \
 Image tags:
 
 - `:stable` — newest stable release (recommended)
-- `:1.2`, `:1.2.0` — pin to a release line or an exact version
+- `:1.3`, `:1.3.0` — pin to a release line or an exact version
 - `:edge` — latest commit on `main` (for testing; may be unstable)
 - `:latest` — alias for `:stable`
 

@@ -16,7 +16,9 @@ public static class WebApplicationAuthExtensions
     public static bool IsWebdavAuthDisabled()
     {
         var isWebdavAuthDisabled = EnvironmentUtil.IsVariableTrue(DisableWebdavAuthEnvVar);
-        if (isWebdavAuthDisabled) LogOnlyOnce(() => Log.Information(DisabledWebdavAuthLog));
+        if (isWebdavAuthDisabled) LogOnlyOnce(() => Log.Warning(
+            "{Message}. Use only behind trusted external authentication or on a private network.",
+            DisabledWebdavAuthLog));
         return isWebdavAuthDisabled;
     }
 

@@ -15,7 +15,10 @@ public static class ProxyHttpClientPool
 
     public static HttpClient GetClient(string? proxyUrl)
     {
-        var key = Normalize(proxyUrl) ?? "";
+        var normalized = Normalize(proxyUrl);
+        if (!string.IsNullOrWhiteSpace(proxyUrl) && normalized is null)
+            throw new ArgumentException("Proxy URL must be an absolute HTTP(S) URL.", nameof(proxyUrl));
+        var key = normalized ?? "";
         return Clients.GetOrAdd(key, k =>
         {
             var handler = new SocketsHttpHandler

@@ -7,6 +7,12 @@ type PreflightSettingsProps = {
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
 };
 
+function isIntegerInRange(raw: string, min: number, max: number): boolean {
+    if (!/^-?\d+$/.test(raw.trim())) return false;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= min && value <= max;
+}
+
 export function PreflightSettings({ config, setNewConfig }: PreflightSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const mode = config["preflight.mode"] ?? "off";
@@ -124,4 +130,14 @@ export function isPreflightSettingsUpdated(config: Record<string, string>, newCo
         || config["preflight.verify-sample-count"] !== newConfig["preflight.verify-sample-count"]
         || config["preflight.ttl-seconds"] !== newConfig["preflight.ttl-seconds"]
         || config["preflight.indexer-max-wait-seconds"] !== newConfig["preflight.indexer-max-wait-seconds"];
+}
+
+export function isPreflightSettingsValid(config: Record<string, string>) {
+    const value = (key: string, fallback: string) => config[key] ?? fallback;
+    if (!["off", "light", "standard", "full"].includes(value("preflight.mode", "off"))) return false;
+
+    return isIntegerInRange(value("preflight.max-attempts", "20"), 1, 50)
+        && isIntegerInRange(value("preflight.verify-sample-count", "3"), 1, 10)
+        && isIntegerInRange(value("preflight.ttl-seconds", "120"), 10, 1800)
+        && isIntegerInRange(value("preflight.indexer-max-wait-seconds", "5"), 0, 120);
 }

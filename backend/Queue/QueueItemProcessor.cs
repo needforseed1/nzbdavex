@@ -547,8 +547,10 @@ public class QueueItemProcessor(
         dbClient.Ctx.ClearChangeTracker();
         var mountFolder = databaseOperations != null ? await databaseOperations.Invoke().ConfigureAwait(false) : null;
         var historyItem = CreateHistoryItem(mountFolder, startTime, error);
-        var providerUsage = providerUsageTracker.Snapshot(queueItem.Id);
-        var nicknamesByHost = configManager.GetUsenetProviderConfig().Providers
+        var configuredProviders = configManager.GetUsenetProviderConfig().Providers;
+        var providerUsage = ProviderUsageTracker.ToDisplayHosts(
+            providerUsageTracker.Snapshot(queueItem.Id), configuredProviders);
+        var nicknamesByHost = configuredProviders
             .Where(p => !string.IsNullOrWhiteSpace(p.Nickname))
             .GroupBy(p => p.Host, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Nickname, StringComparer.OrdinalIgnoreCase);

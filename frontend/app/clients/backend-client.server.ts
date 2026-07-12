@@ -1,12 +1,14 @@
+import { BACKEND_URL, FRONTEND_BACKEND_API_KEY } from "~/utils/runtime-config.server";
+
 class BackendClient {
     public async isOnboarding(): Promise<boolean> {
-        const url = process.env.BACKEND_URL + "/api/is-onboarding";
+        const url = BACKEND_URL + "/api/is-onboarding";
 
         const response = await fetch(url, {
             method: "GET",
             headers: {
                 "Content-Type": "application/json",
-                "x-api-key": process.env.FRONTEND_BACKEND_API_KEY || ""
+                "x-api-key": FRONTEND_BACKEND_API_KEY
             }
         });
 
@@ -19,12 +21,12 @@ class BackendClient {
     }
 
     public async createAccount(username: string, password: string): Promise<boolean> {
-        const url = process.env.BACKEND_URL + "/api/create-account";
+        const url = BACKEND_URL + "/api/create-account";
 
         const response = await fetch(url, {
             method: "POST",
             headers: {
-                "x-api-key": process.env.FRONTEND_BACKEND_API_KEY || ""
+                "x-api-key": FRONTEND_BACKEND_API_KEY
             },
             body: (() => {
                 const form = new FormData();
@@ -44,9 +46,9 @@ class BackendClient {
     }
 
     public async authenticate(username: string, password: string): Promise<boolean> {
-        const url = process.env.BACKEND_URL + "/api/authenticate";
+        const url = BACKEND_URL + "/api/authenticate";
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -68,9 +70,9 @@ class BackendClient {
     }
 
     public async getQueue(limit: number, start: number = 0): Promise<QueueResponse> {
-        const url = process.env.BACKEND_URL + `/api?mode=queue&start=${start}&limit=${limit}`;
+        const url = BACKEND_URL + `/api?mode=queue&start=${start}&limit=${limit}`;
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to get queue: ${(await response.json()).error}`);
@@ -81,9 +83,9 @@ class BackendClient {
     }
 
     public async getHistory(limit: number, start: number = 0): Promise<HistoryResponse> {
-        const url = process.env.BACKEND_URL + `/api?mode=history&start=${start}&pageSize=${limit}`;
+        const url = BACKEND_URL + `/api?mode=history&start=${start}&pageSize=${limit}`;
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to get history: ${(await response.json()).error}`);
@@ -96,9 +98,9 @@ class BackendClient {
     public async addNzb(nzbFile: File): Promise<string> {
         var config = await this.getConfig(["api.manual-category"]);
         var category = config.find(item => item.configName === "api.manual-category")?.configValue || "uncategorized";
-        const url = process.env.BACKEND_URL + `/api?mode=addfile&cat=${category}&priority=0&pp=0`;
+        const url = BACKEND_URL + `/api?mode=addfile&cat=${category}&priority=0&pp=0`;
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -120,8 +122,8 @@ class BackendClient {
     }
 
     public async searchIndexers(q: string, limit: number = 100): Promise<SearchIndexersResponse> {
-        const url = process.env.BACKEND_URL + "/api/search-indexers";
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + "/api/search-indexers";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -149,8 +151,8 @@ class BackendClient {
             name: nzbUrl,
             nzbname: nzbName,
         });
-        const url = process.env.BACKEND_URL + `/api?${params.toString()}`;
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + `/api?${params.toString()}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to add nzb url: ${(await response.json()).error}`);
@@ -163,9 +165,9 @@ class BackendClient {
     }
 
     public async listWebdavDirectory(directory: string): Promise<DirectoryItem[]> {
-        const url = process.env.BACKEND_URL + "/api/list-webdav-directory";
+        const url = BACKEND_URL + "/api/list-webdav-directory";
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -184,9 +186,9 @@ class BackendClient {
     }
 
     public async getConfig(keys: string[]): Promise<ConfigItem[]> {
-        const url = process.env.BACKEND_URL + "/api/get-config";
+        const url = BACKEND_URL + "/api/get-config";
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -206,10 +208,19 @@ class BackendClient {
         return data.configItems || [];
     }
 
-    public async updateConfig(configItems: ConfigItem[]): Promise<boolean> {
-        const url = process.env.BACKEND_URL + "/api/update-config";
+    public async getSettingsMetadata(): Promise<SettingMetadata[]> {
+        const response = await fetch(BACKEND_URL + "/api/get-settings-metadata", {
+            headers: { "x-api-key": FRONTEND_BACKEND_API_KEY },
+        });
+        if (!response.ok) throw new Error(`Failed to get settings metadata: ${response.status}`);
+        const data = await response.json();
+        return data.settings || [];
+    }
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+    public async updateConfig(configItems: ConfigItem[]): Promise<boolean> {
+        const url = BACKEND_URL + "/api/update-config";
+
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "POST",
             headers: { "x-api-key": apiKey },
@@ -229,14 +240,27 @@ class BackendClient {
         return data.status;
     }
 
+    public async getBlobMigrationRemaining(): Promise<number> {
+        const url = BACKEND_URL + "/api/get-blob-migration-status";
+        const response = await fetch(url, {
+            method: "GET",
+            headers: { "x-api-key": FRONTEND_BACKEND_API_KEY },
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to get blob migration status: ${(await response.json()).error}`);
+        }
+        const data = await response.json();
+        return Number.isInteger(data.remaining) && data.remaining > 0 ? data.remaining : 0;
+    }
+
     public async getHealthCheckQueue(pageSize?: number): Promise<HealthCheckQueueResponse> {
-        let url = process.env.BACKEND_URL + "/api/get-health-check-queue";
+        let url = BACKEND_URL + "/api/get-health-check-queue";
 
         if (pageSize !== undefined) {
             url += `?pageSize=${pageSize}`;
         }
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "GET",
             headers: { "x-api-key": apiKey }
@@ -250,8 +274,8 @@ class BackendClient {
     }
 
     public async getWatchdogEntries(limit: number = 200): Promise<WatchdogEntry[]> {
-        const url = process.env.BACKEND_URL + `/api/get-watchdog-entries?limit=${limit}`;
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + `/api/get-watchdog-entries?limit=${limit}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to get watchdog entries: ${(await response.json()).error}`);
@@ -261,8 +285,8 @@ class BackendClient {
     }
 
     public async clearWatchdogEntries(): Promise<number> {
-        const url = process.env.BACKEND_URL + `/api/clear-watchdog-entries`;
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + `/api/clear-watchdog-entries`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to clear watchdog entries: ${(await response.json()).error}`);
@@ -272,13 +296,13 @@ class BackendClient {
     }
 
     public async getHealthCheckHistory(pageSize?: number): Promise<HealthCheckHistoryResponse> {
-        let url = process.env.BACKEND_URL + "/api/get-health-check-history";
+        let url = BACKEND_URL + "/api/get-health-check-history";
 
         if (pageSize !== undefined) {
             url += `?pageSize=${pageSize}`;
         }
 
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "GET",
             headers: { "x-api-key": apiKey }
@@ -292,8 +316,8 @@ class BackendClient {
     }
 
     public async getOverviewStats(window: OverviewWindow = "24h"): Promise<OverviewStatsResponse> {
-        const url = `${process.env.BACKEND_URL}/api/get-overview-stats?window=${window}`;
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = `${BACKEND_URL}/api/get-overview-stats?window=${window}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, {
             method: "GET",
             headers: { "x-api-key": apiKey }
@@ -312,8 +336,8 @@ class BackendClient {
         if (params.source) qs.set("source", params.source);
         if (params.search) qs.set("search", params.search);
         if (params.beforeSequence !== undefined) qs.set("beforeSequence", String(params.beforeSequence));
-        const url = `${process.env.BACKEND_URL}/api/get-logs${qs.toString() ? `?${qs.toString()}` : ""}`;
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = `${BACKEND_URL}/api/get-logs${qs.toString() ? `?${qs.toString()}` : ""}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to get logs: ${(await response.json()).error}`);
@@ -331,8 +355,8 @@ class BackendClient {
         if (params.expander) qs.set("expander", params.expander);
         if (params.statsOnly) qs.set("statsOnly", "1");
         const query = qs.toString();
-        const url = process.env.BACKEND_URL + "/api/get-watchtower" + (query ? `?${query}` : "");
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + "/api/get-watchtower" + (query ? `?${query}` : "");
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
             throw new Error(`Failed to get watchtower: ${(await response.json()).error}`);
@@ -341,8 +365,8 @@ class BackendClient {
     }
 
     public async watchtowerMutate(fields: Record<string, string>): Promise<boolean> {
-        const url = process.env.BACKEND_URL + "/api/watchtower-mutate";
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + "/api/watchtower-mutate";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const form = new FormData();
         for (const [k, v] of Object.entries(fields)) form.append(k, v);
         const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey }, body: form });
@@ -354,8 +378,8 @@ class BackendClient {
     }
 
     public async discoverStremioCatalogs(manifestUrl: string): Promise<DiscoverCatalogsResponse> {
-        const url = process.env.BACKEND_URL + "/api/watchtower-discover-catalogs";
-        const apiKey = process.env.FRONTEND_BACKEND_API_KEY || "";
+        const url = BACKEND_URL + "/api/watchtower-discover-catalogs";
+        const apiKey = FRONTEND_BACKEND_API_KEY;
         const form = new FormData();
         form.append("url", manifestUrl);
         const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey }, body: form });
@@ -453,6 +477,19 @@ export type DirectoryItem = {
 export type ConfigItem = {
     configName: string,
     configValue: string,
+}
+
+export type SettingMetadata = {
+    key: string,
+    effectiveValue: string,
+    source: "stored" | "environment" | "default",
+    defaultValue: string,
+    type: "string" | "boolean" | "integer" | "choice" | "json",
+    secret: boolean,
+    restartRequired: boolean,
+    min?: number | null,
+    max?: number | null,
+    choices?: string[] | null,
 }
 
 export type WatchtowerQuery = {

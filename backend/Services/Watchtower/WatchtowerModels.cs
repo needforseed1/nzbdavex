@@ -5,6 +5,7 @@ namespace NzbWebDAV.Services;
 public class WtPointer
 {
     public string NzbUrl { get; set; } = null!;
+    public string? IndexerId { get; set; }
     public string IndexerName { get; set; } = null!;
     public string IndexerUserAgent { get; set; } = "NzbDav";
     public string? ProxyUrl { get; set; }

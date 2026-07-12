@@ -8,6 +8,20 @@ type WatchdogSettingsProps = {
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
 };
 
+function isIntegerInRange(raw: string, min: number, max: number): boolean {
+    if (!/^-?\d+$/.test(raw.trim())) return false;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= min && value <= max;
+}
+
+function isOneOf(value: string, choices: readonly string[]): boolean {
+    return choices.includes(value);
+}
+
+function isBoolean(value: string): boolean {
+    return value === "true" || value === "false";
+}
+
 export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps) {
     const set = (key: string, value: string) => setNewConfig({ ...config, [key]: value });
     const verifyMode = config["play.verify-mode"] ?? "none";
@@ -125,6 +139,22 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     right away. `stat` is a cheap NNTP check across a few segments sampled from the largest file,
                     weeding out dead releases before the queue commits — avoiding a re-fetch of their NZB from
                     the indexer on every request.
+                </p>
+            </Form.Group>
+
+            <Form.Group className={styles.section}>
+                <Form.Label>Verify sample count</Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min={1}
+                    max={10}
+                    disabled={!enabled || verifyMode === "none"}
+                    value={config["play.verify-sample-count"] ?? "3"}
+                    onChange={e => set("play.verify-sample-count", e.target.value)} />
+                <p className={styles.hint}>
+                    Number of segments sampled in `stat` or `body` mode. More samples catch
+                    more incomplete releases but add provider work before enqueueing. Default 3.
                 </p>
             </Form.Group>
 
@@ -318,7 +348,7 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
             </Form.Group>
 
             <Form.Group className={styles.section}>
-                <Form.Label>Active-use grace (seconds)</Form.Label>
+                <Form.Label>Recent-use grace (seconds)</Form.Label>
                 <Form.Control
                     className={styles.input}
                     type="number"
@@ -328,8 +358,9 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
                     value={config["variants.eviction-active-grace-seconds"] ?? "60"}
                     onChange={e => set("variants.eviction-active-grace-seconds", e.target.value)} />
                 <p className={styles.hint}>
-                    Eviction skips any copy used within the last N seconds. Safety net so we
-                    never remove an item that's still being accessed. Default 60.
+                    Eviction skips a copy created or played within the last N seconds. This reduces
+                    the chance of evicting a newly opened copy, but it does not track an open stream
+                    continuously. Default 60.
                 </p>
             </Form.Group>
         </div>
@@ -343,6 +374,7 @@ export function isWatchdogSettingsUpdated(config: Record<string, string>, newCon
         || config["play.max-candidates"] !== newConfig["play.max-candidates"]
         || config["play.max-attempts"] !== newConfig["play.max-attempts"]
         || config["play.verify-mode"] !== newConfig["play.verify-mode"]
+        || config["play.verify-sample-count"] !== newConfig["play.verify-sample-count"]
         || config["play.candidate-negative-cache-minutes"] !== newConfig["play.candidate-negative-cache-minutes"]
         || config["grab.stall-failover-enabled"] !== newConfig["grab.stall-failover-enabled"]
         || config["grab.stall-failover-window-seconds"] !== newConfig["grab.stall-failover-window-seconds"]
@@ -354,4 +386,45 @@ export function isWatchdogSettingsUpdated(config: Record<string, string>, newCon
         || config["variants.fallback-on-failure"] !== newConfig["variants.fallback-on-failure"]
         || config["variants.eviction-strategy"] !== newConfig["variants.eviction-strategy"]
         || config["variants.eviction-active-grace-seconds"] !== newConfig["variants.eviction-active-grace-seconds"];
+}
+
+export function isWatchdogSettingsValid(config: Record<string, string>) {
+    const value = (key: string, fallback: string) => config[key] ?? fallback;
+
+    if (!["play.watchdog-enabled", "grab.stall-failover-enabled", "variants.fallback-on-failure"]
+        .every(key => isBoolean(value(key, "true")))) {
+        return false;
+    }
+
+    if (!isOneOf(value("play.verify-mode", "none"), ["none", "stat", "body"])
+        || !isOneOf(value("variants.mode", "off"), ["off", "smart", "collect-all"])
+        || !isOneOf(value("variants.replay-strategy", "closest-to-click"),
+            ["closest-to-click", "largest", "smallest"])
+        || !isOneOf(value("variants.eviction-strategy", "lru"),
+            ["lru", "largest-first", "smallest-first", "never"])) {
+        return false;
+    }
+
+    const ranges: Array<[string, string, number, number]> = [
+        ["play.total-budget-seconds", "30", 3, 180],
+        ["play.hedge-delay-seconds", "3", 1, 30],
+        ["play.max-candidates", "3", 1, 10],
+        ["play.max-attempts", "10", 1, 200],
+        ["play.candidate-negative-cache-minutes", "5", 1, 1440],
+        ["grab.stall-failover-window-seconds", "2", 2, 60],
+        ["grab.stall-failover-ceiling-seconds", "5", 5, 120],
+        ["variants.tolerance-pct", "25", 0, 100],
+        ["variants.max-per-group", "3", 0, 50],
+        ["variants.eviction-active-grace-seconds", "60", 0, 300],
+    ];
+    if (!ranges.every(([key, fallback, min, max]) => isIntegerInRange(value(key, fallback), min, max))) {
+        return false;
+    }
+
+    const verifySampleCount = config["play.verify-sample-count"];
+    if (verifySampleCount !== undefined && !isIntegerInRange(verifySampleCount, 1, 10)) return false;
+
+    const stallWindow = Number(value("grab.stall-failover-window-seconds", "2"));
+    const stallCeiling = Number(value("grab.stall-failover-ceiling-seconds", "5"));
+    return stallCeiling >= stallWindow;
 }

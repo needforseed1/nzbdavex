@@ -44,7 +44,6 @@ public class ProfilePlayController(
     PreferredOrderStore preferredOrderStore
 ) : ControllerBase
 {
-    private static readonly TimeSpan NzbFetchTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     // Tracks the last time a Play click touched a watchdog-created queue item.
@@ -231,6 +230,9 @@ public class ProfilePlayController(
         // total attempts (maxAttempts) are exhausted, or we run out of cached candidates.
         var preferredOrder = preferredOrderStore.GetOrder(entry.ProfileToken, entry.Type, entry.Id);
         var fallbackQueue = BuildFallbackQueue(entry, preferredOrder);
+        var hideKnownWardenDead = configManager.IsWardenHideDeadEnabled()
+            && fallbackQueue.Any(c => !wardenStore.IsDeadAnywhere(
+                WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)));
         var rankIndex = new Dictionary<string, int>();
         var displayRank = 0;
         var queueIndex = 0;
@@ -261,7 +263,8 @@ public class ProfilePlayController(
                 var c = fallbackQueue[queueIndex];
                 queueIndex++;
                 if (negativeCache.IsFailed(c.NzbUrl)
-                    || wardenStore.IsDeadAnywhere(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)))
+                    || (hideKnownWardenDead && wardenStore.IsDeadAnywhere(
+                        WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate))))
                 {
                     // Surface this in the watchdog so users see every tried candidate,
                     // including those preflight (or a prior click) already poisoned —
@@ -821,32 +824,32 @@ public class ProfilePlayController(
                 // Throttle NZB downloads to respect each indexer's configured rate limit
                 // (MaxRequestsPerMinute). Candidates from a saturated indexer wait their turn while
                 // candidates from other indexers in the same batch proceed in parallel.
-                var indexer = configManager.GetIndexerConfig().Indexers
-                    .FirstOrDefault(x => x.Name == c.IndexerName);
-                if (indexer is not null)
-                {
-                    var hitCheck = await hitTracker
-                        .CheckAsync(c.IndexerName, IndexerApiHit.HitType.Download, indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
-                        .ConfigureAwait(false);
-                    if (hitCheck is { Allowed: false })
-                    {
-                        Log.Information("NZB download skipped for {Indexer}: {Reason}",
-                            c.IndexerName, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
-                        return null;
-                    }
-                    await rateLimiter.WaitAsync(c.IndexerName, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
-                }
+                var indexerConfig = configManager.GetIndexerConfig();
+                var indexer = indexerConfig.Indexers.FirstOrDefault(x =>
+                    x.Enabled && (string.Equals(x.Id, c.IndexerId, StringComparison.OrdinalIgnoreCase)
+                                  || (string.IsNullOrWhiteSpace(c.IndexerId)
+                                      && string.Equals(x.Name, c.IndexerName, StringComparison.OrdinalIgnoreCase))));
+                if (indexer is null) return null;
 
+                await rateLimiter.WaitAsync(indexer.Id, indexer.MaxRequestsPerMinute, innerCt).ConfigureAwait(false);
+                var hitCheck = await hitTracker
+                    .ReserveAsync(indexer.Id, IndexerApiHit.HitType.Download,
+                        indexer.DownloadLimit, indexer.HitLimitResetTime, innerCt)
+                    .ConfigureAwait(false);
+                if (hitCheck is { Allowed: false })
+                {
+                    Log.Information("NZB download skipped for {Indexer}: {Reason}",
+                        indexer.Name, IndexerHitTracker.FormatSkipReason(hitCheck, IndexerApiHit.HitType.Download));
+                    return null;
+                }
                 using var req = new HttpRequestMessage(HttpMethod.Get, c.NzbUrl);
                 req.Headers.TryAddWithoutValidation("User-Agent", c.IndexerUserAgent);
                 var client = ProxyHttpClientPool.GetClient(c.ProxyUrl);
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
-                cts.CancelAfter(NzbFetchTimeout);
+                cts.CancelAfter(TimeSpan.FromSeconds(indexerConfig.GetEffectiveTimeoutSeconds(indexer)));
                 using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
                 if (!resp.IsSuccessStatusCode) return null;
-                var bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-                _ = hitTracker.RecordAsync(c.IndexerName, IndexerApiHit.HitType.Download, CancellationToken.None);
-                return bytes;
+                return await resp.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {

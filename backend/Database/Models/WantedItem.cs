@@ -27,6 +27,7 @@ public class WantedItem
     public long UpdatedAtUnix { get; set; }
     public long? LastResolvedAtUnix { get; set; }
     public long? LastVerifiedAtUnix { get; set; }
+    public long? LastAccessedAtUnix { get; set; }
 
     public long? NextCheckAtUnix { get; set; }
 
@@ -35,6 +36,7 @@ public class WantedItem
     public const string StateUnavailable = "unavailable";
     public const string StateParked = "parked";
     public const string StateExpander = "expander";
+    public const string StateCold = "cold";
 
     public static bool IsBareSeries(string type, string contentId)
         => type == "series" && contentId.Split(':').Length < 3;

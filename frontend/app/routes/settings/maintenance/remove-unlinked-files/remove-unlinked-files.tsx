@@ -73,7 +73,7 @@ export function RemoveUnlinkedFiles({ savedConfig }: RemoveUnlinkedFilesProps) {
                     <ul className={styles.list}>
                         <li className={styles["list-item"]}>
                             You must first configure the Library Directory setting before running this task.
-                            Head over to the Repairs tab.
+                            Configure it under Advanced → Repairs.
                         </li>
                     </ul>
                 </Alert>

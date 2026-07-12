@@ -46,9 +46,13 @@ public class GetOverviewStatsController(
             : nowMs - windowMs;
 
         var nicknamesByHost = configManager.GetUsenetProviderConfig().Providers
-            .Where(p => !string.IsNullOrWhiteSpace(p.Nickname))
-            .GroupBy(p => p.Host, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Nickname, StringComparer.OrdinalIgnoreCase);
+            .SelectMany(p => new[]
+            {
+                new KeyValuePair<string, string?>(p.Id, p.Nickname ?? p.Host),
+                new KeyValuePair<string, string?>(p.Host, p.Nickname),
+            })
+            .GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
 
         await using var metrics = new MetricsDbContext();
         var useRollups =
@@ -179,12 +183,12 @@ public class GetOverviewStatsController(
     {
         var configured = configManager.GetIndexerConfig().Indexers
             .Where(x => x.Enabled)
-            .Select(x => (x.Name, x.HitLimit, x.DownloadLimit, ResetHourUtc: x.HitLimitResetTime))
+            .Select(x => (x.Id, x.Name, x.HitLimit, x.DownloadLimit, ResetHourUtc: x.HitLimitResetTime))
             .ToList();
         if (configured.Count == 0) return new List<GetOverviewStatsResponse.IndexerApiUsageRow>();
 
         var snapshots = await hitTracker.GetUsageAsync(configured, HttpContext.RequestAborted).ConfigureAwait(false);
-        var resetHourByName = configured.ToDictionary(x => x.Name, x => x.ResetHourUtc);
+        var resetHourById = configured.ToDictionary(x => x.Id, x => x.ResetHourUtc);
 
         return snapshots
             .Select(s => new GetOverviewStatsResponse.IndexerApiUsageRow
@@ -195,7 +199,7 @@ public class GetOverviewStatsController(
                 DownloadHits = s.DownloadHits,
                 DownloadHitLimit = s.DownloadHitLimit,
                 ResetAtMs = s.ResetAt.ToUnixTimeMilliseconds(),
-                ResetHourUtc = resetHourByName.GetValueOrDefault(s.IndexerName),
+                ResetHourUtc = resetHourById.GetValueOrDefault(s.IndexerId),
             })
             // Surface indexers with the most usage first, then by name for stability.
             .OrderByDescending(r => r.ApiHits + r.DownloadHits)

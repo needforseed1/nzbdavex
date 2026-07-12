@@ -15,17 +15,18 @@ public class GetProviderUsageController(
     {
         var providerConfig = configManager.GetUsenetProviderConfig();
         var recentHoursByHost = await ProviderUsageHelper
-            .ReadRecentHoursAsync(providerConfig.Providers.Select(p => p.Host))
+            .ReadRecentHoursAsync(providerConfig.Providers)
             .ConfigureAwait(false);
 
         var items = providerConfig.Providers
             .Select((provider, index) =>
             {
                 var used = ProviderUsageHelper.ComputeUsage(bytesTracker, provider);
-                recentHoursByHost.TryGetValue(provider.Host, out var recentHours);
+                recentHoursByHost.TryGetValue(provider.Id, out var recentHours);
                 var (bytesPerDay, daysRemaining) = ProviderUsageHelper.ComputeBurnRate(provider, used, recentHours);
                 return new GetProviderUsageResponse.ProviderUsageItem
                 {
+                    Id = provider.Id,
                     Index = index,
                     Host = provider.Host,
                     Nickname = provider.Nickname,

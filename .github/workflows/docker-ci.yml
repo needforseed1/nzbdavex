@@ -63,6 +63,22 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Determine Application Version
+        id: app_version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base_version="$(tr -d '[:space:]' < version.txt)"
+            version="${base_version}-edge.g${GITHUB_SHA:0:7}"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid SemVer application version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Build Architecture Layer
         id: build
         uses: docker/build-push-action@v7
@@ -71,6 +87,8 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          build-args: |
+            NZBDAV_VERSION=${{ steps.app_version.outputs.version }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.suffix }}
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}

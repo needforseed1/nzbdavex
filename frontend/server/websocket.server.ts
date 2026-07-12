@@ -1,6 +1,7 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { isAuthenticated } from "../app/auth/authentication.server";
 import type { IncomingMessage } from 'http';
+import { BACKEND_URL, FRONTEND_BACKEND_API_KEY } from "~/utils/runtime-config.server";
 
 function initializeWebsocketServer(wss: WebSocketServer) {
     // keep track of socket subscriptions
@@ -75,7 +76,7 @@ export function initializeWebsocketClient(subscriptions: Map<string, Set<WebSock
                 reconnectTimeout = null;
             }
 
-            socket.send(Buffer.from(process.env.FRONTEND_BACKEND_API_KEY!, "utf-8"), { binary: false });
+            socket.send(Buffer.from(FRONTEND_BACKEND_API_KEY, "utf-8"), { binary: false });
         };
 
         socket.onmessage = (event: WebSocket.MessageEvent) => {
@@ -111,7 +112,7 @@ export function initializeWebsocketClient(subscriptions: Map<string, Set<WebSock
 }
 
 function getBackendWebsocketUrl() {
-    const host = process.env.BACKEND_URL!;
+    const host = BACKEND_URL;
     return `${host.replace(/\/$/, '')}/ws`.replace(/^http/, 'ws');
 }
 

@@ -124,8 +124,9 @@ public class ConnectionPoolStats
             for (var providerIndex = 0; providerIndex < _providerConfig.Providers.Count; providerIndex++)
             {
                 if (!IsVisiblePoolType(_providerConfig.Providers[providerIndex].Type)) continue;
+                var providerId = _providerConfig.Providers[providerIndex].Id;
                 var message =
-                    $"{providerIndex}|{live[providerIndex]}|{idle[providerIndex]}|{totalLive}|{_max}|{totalIdle}";
+                    $"{providerId}|{live[providerIndex]}|{idle[providerIndex]}|{totalLive}|{_max}|{totalIdle}";
                 await _websocketManager.SendMessage(WebsocketTopic.UsenetConnections, message)
                     .ConfigureAwait(false);
             }

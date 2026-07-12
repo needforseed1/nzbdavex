@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Database;
+using NzbWebDAV.Database.Models;
 
 namespace NzbWebDAV.Api.Controllers.GetConfig;
 
@@ -10,12 +11,22 @@ public class GetConfigController(DavDatabaseClient dbClient) : BaseApiController
 {
     private async Task<GetConfigResponse> GetConfig(GetConfigRequest request)
     {
-        var configItems = await dbClient.Ctx.ConfigItems
+        var storedItems = await dbClient.Ctx.ConfigItems
             .Where(x => request.ConfigKeys.Contains(x.ConfigName))
+            .AsNoTracking()
             .ToListAsync(HttpContext.RequestAborted).ConfigureAwait(false);
 
-        var response = new GetConfigResponse { ConfigItems = configItems };
+        var response = new GetConfigResponse { ConfigItems = MaskSensitiveValues(storedItems) };
         return response;
+    }
+
+    internal static List<ConfigItem> MaskSensitiveValues(IEnumerable<ConfigItem> configItems)
+    {
+        return configItems.Select(item => new ConfigItem
+        {
+            ConfigName = item.ConfigName,
+            ConfigValue = item.ConfigName is "webdav.pass" or "rclone.pass" ? "" : item.ConfigValue,
+        }).ToList();
     }
 
     protected override async Task<IActionResult> HandleRequest()

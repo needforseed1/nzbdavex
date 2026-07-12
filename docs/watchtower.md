@@ -52,8 +52,8 @@ Adding a new source kind is one `switch` case in `ListSourceEnumerator`; the eng
   `NewznabRateLimiter`. The same discipline that keeps Sonarr/Radarr safe on the same indexers.
 - **Safe defaults, opt-in escalation.** Off until enabled; conservative budget, cap, and
   resolve-only. The knobs only *raise* limits.
-- **Active warm-set cap** bounds standing load no matter how large the lists get: beyond the
-  cap, items are listed but parked.
+- **Active warm-set cap** bounds standing load with LRU warm/cold rotation. Verified cold items
+  retain their winner and return to the warm set immediately when accessed.
 
 ## Configuration (`watchtower.*`, Settings then Watchtower)
 
@@ -69,7 +69,7 @@ Adding a new source kind is one `switch` case in `ListSourceEnumerator`; the eng
 | `grab-cap-per-resolve` | `3` | Max NZB fetches per pass (scarce bucket). |
 | `verify-sample-count` | `3` | STAT sample segments. |
 | `verify-timeout-seconds` | `10` | Per-segment STAT timeout; releases the connection if a provider stops responding. |
-| `active-set-cap` | `100` | Items kept actively ready. |
+| `active-set-cap` | `100` | Maximum actively Ready items; least-recently-accessed entries cool when room is needed. |
 | `daily-resolve-budget` | `60` | Soft new-resolves/day (0 = unlimited). |
 | `sync-interval-seconds` | `3600` | Remote list refresh cadence. |
 | `keepfresh-base/max-seconds` | `21600` / `604800` | Re-verify backoff window. |

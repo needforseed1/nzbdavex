@@ -39,9 +39,16 @@ public class RcloneClient
         configManager.OnConfigChanged += (_, configEventArgs) =>
         {
             var changedConfig = configEventArgs.ChangedConfig;
-            if (changedConfig.TryGetValue("rclone.host", out var host)) Host = host;
-            if (changedConfig.TryGetValue("rclone.user", out var user)) User = user;
-            if (changedConfig.TryGetValue("rclone.pass", out var pass)) Pass = pass;
+            if (changedConfig.ContainsKey("rclone.host")
+                || changedConfig.ContainsKey("rclone.user")
+                || changedConfig.ContainsKey("rclone.pass"))
+            {
+                // Use the same normalization and blank handling as startup. Raw
+                // form values can contain surrounding whitespace/trailing slashes.
+                Host = configManager.GetRcloneHost();
+                User = configManager.GetRcloneUser();
+                Pass = configManager.GetRclonePass();
+            }
             if (changedConfig.ContainsKey("rclone.rc-enabled"))
                 IsRemoteControlEnabled = configManager.IsRcloneRemoteControlEnabled();
         };
@@ -146,6 +153,8 @@ public class RcloneClient
     /// </summary>
     public static async Task<RcloneResponse> TestConnection(string host, string? user, string? pass)
     {
+        host = host.Trim().TrimEnd('/');
+        user = string.IsNullOrWhiteSpace(user) ? null : user.Trim();
         var result = await Post<CoreVersionResponse>(host, user, pass, "core/version", null);
         if (result.Success && string.IsNullOrEmpty(result.Version))
             return new RcloneResponse { Success = false, Error = "Connected but received empty version" };

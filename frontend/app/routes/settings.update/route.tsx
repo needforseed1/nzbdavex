@@ -15,6 +15,12 @@ export async function action({ request }: Route.ActionArgs) {
     }
 
     // update the config items
-    await backendClient.updateConfig(configItems);
-    return { config: config }
+    const status = await backendClient.updateConfig(configItems);
+    if (!status) {
+        return Response.json(
+            { status: false, error: "The backend did not accept the settings update." },
+            { status: 502 },
+        );
+    }
+    return Response.json({ status: true })
 }

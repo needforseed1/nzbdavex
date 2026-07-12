@@ -6,7 +6,10 @@ import { WebSocketServer } from "ws";
 // Short-circuit the type-checking of the built output.
 const BUILD_PATH = "../build/server/index.js";
 const DEVELOPMENT = process.env.NODE_ENV === "development";
-const PORT = Number.parseInt(process.env.PORT || "3000");
+const PORT = Number(process.env.PORT || "3000");
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+    throw new Error(`PORT must be an integer between 1 and 65535; got ${process.env.PORT}`);
+}
 // Initialize the express app
 const app = express();
 app.use(compression({

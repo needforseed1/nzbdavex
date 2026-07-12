@@ -3,6 +3,8 @@ import { type Dispatch, type SetStateAction } from "react";
 import styles from "./watchtower.module.css";
 
 const GB = 1024 * 1024 * 1024;
+const MAX_INT = 2147483647n;
+const MAX_LONG = 9223372036854775807n;
 
 type ProfileOption = { token: string; name: string };
 
@@ -15,6 +17,28 @@ function parseProfiles(raw?: string): ProfileOption[] {
     } catch {
         return [];
     }
+}
+
+function parseInteger(raw: string): bigint | null {
+    if (!/^-?\d+$/.test(raw.trim())) return null;
+    try {
+        return BigInt(raw.trim());
+    } catch {
+        return null;
+    }
+}
+
+function isIntegerInRange(raw: string, min: bigint, max: bigint): boolean {
+    const value = parseInteger(raw);
+    return value !== null && value >= min && value <= max;
+}
+
+function isOneOf(value: string, choices: readonly string[]): boolean {
+    return choices.includes(value);
+}
+
+function isBoolean(value: string): boolean {
+    return value === "true" || value === "false";
 }
 
 type WatchtowerSettingsProps = {
@@ -293,8 +317,9 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                     value={config["watchtower.active-set-cap"] ?? "100"}
                     onChange={e => set("watchtower.active-set-cap", e.target.value)} />
                 <p className={styles.hint}>
-                    How many items the engine keeps actively ready. Beyond this, items are listed but
-                    parked until they bubble up. This is what bounds load no matter how big your lists get. Default 100.
+                    Maximum verified items kept warm. Watchtower cools the least recently accessed item
+                    when a slot is needed; opening a cooled item promotes it immediately using its retained
+                    verified winner. Lowering the value applies the LRU cap on the next cycle. Default 100.
                 </p>
             </Form.Group>
 
@@ -323,7 +348,7 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                 <p className={styles.hint}>
                     {autoThroughput
                         ? <>Ignored while <b>Auto throughput</b> is on — your indexer limits set the pace.</>
-                        : "Soft cap on new resolves per day (0 = unlimited; your per-indexer caps always apply). Drips the backlog instead of hammering indexers. Default 60."}
+                        : "Soft in-memory cap on new resolves per UTC day (0 = unlimited; your per-indexer caps always apply). It resets when the app restarts. Default 60."}
                 </p>
             </Form.Group>
 
@@ -376,8 +401,9 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
                 <div className={styles.sectionTitle}>Re-check &amp; retry timing</div>
                 <div className={styles.sectionDescription}>
                     How often the engine re-verifies items over time. Re-checks are Usenet-only — they
-                    confirm a release is still downloadable and do not query your indexers or spend the
-                    daily resolve budget.
+                    confirm a release is still downloadable and do not run a new search or spend the
+                    daily resolve budget. If a winner dies, testing a stored backup pointer may require
+                    one NZB download from its indexer, which still obeys that indexer's download cap.
                 </div>
             </div>
 
@@ -481,4 +507,63 @@ export function isWatchtowerSettingsUpdated(config: Record<string, string>, newC
         "watchtower.unavailable-retry-seconds",
         "watchtower.verbose-logging",
     ].some(k => config[k] !== newConfig[k]);
+}
+
+export function isWatchtowerSettingsValid(config: Record<string, string>) {
+    const value = (key: string, fallback: string) => config[key] ?? fallback;
+
+    if (!["watchtower.enabled", "watchtower.auto-throughput", "watchtower.season-bundles",
+        "watchtower.season-bundle-fallback", "watchtower.verbose-logging"]
+        .every(key => isBoolean(value(key, key === "watchtower.season-bundles" ? "true" : "false")))) {
+        return false;
+    }
+
+    if (!isOneOf(value("watchtower.ranking", "watchdog"), ["watchdog", "largest"])
+        || !isOneOf(value("watchtower.series-scope", "latest-season"),
+            ["latest-season", "first-season", "all-aired", "recent", "off"])
+        || !isOneOf(value("watchtower.series-cap-keep", "newest"), ["newest", "oldest"])
+        || !isOneOf(value("watchtower.season-bundle-fallback-scope", "latest-season"),
+            ["latest-season", "recent", "all"])) {
+        return false;
+    }
+
+    const ranges: Array<[string, string, bigint, bigint]> = [
+        ["watchtower.size-floor-bytes", "536870912", 0n, MAX_LONG],
+        ["watchtower.size-ceiling-bytes", "0", 0n, MAX_LONG],
+        ["watchtower.min-grabs", "0", 0n, MAX_INT],
+        ["watchtower.active-set-cap", "100", 1n, 100000n],
+        ["watchtower.daily-resolve-budget", "60", 0n, MAX_INT],
+        ["watchtower.shortlist-depth", "2", 1n, 5n],
+        ["watchtower.grab-cap-per-resolve", "3", 1n, 10n],
+        ["watchtower.verify-sample-count", "3", 1n, 20n],
+        ["watchtower.verify-timeout-seconds", "10", 2n, 120n],
+        ["watchtower.keepfresh-base-seconds", "21600", 300n, 604800n],
+        ["watchtower.keepfresh-max-seconds", "604800", 600n, 2592000n],
+        ["watchtower.unavailable-retry-seconds", "21600", 600n, 604800n],
+        ["watchtower.sync-interval-seconds", "3600", 60n, 86400n],
+        ["watchtower.series-max-episodes", "50", 0n, 1000n],
+        ["watchtower.series-recent-count", "3", 1n, 100n],
+        ["watchtower.season-bundle-fallback-recent-count", "2", 1n, 100n],
+        ["watchtower.season-bundle-fallback-max-episodes", "50", 1n, 1000n],
+    ];
+    if (!ranges.every(([key, fallback, min, max]) => isIntegerInRange(value(key, fallback), min, max))) {
+        return false;
+    }
+
+    const floor = parseInteger(value("watchtower.size-floor-bytes", "536870912"))!;
+    const ceiling = parseInteger(value("watchtower.size-ceiling-bytes", "0"))!;
+    if (ceiling > 0n && floor > ceiling) return false;
+
+    const keepFreshBase = parseInteger(value("watchtower.keepfresh-base-seconds", "21600"))!;
+    const keepFreshMax = parseInteger(value("watchtower.keepfresh-max-seconds", "604800"))!;
+    if (keepFreshBase > keepFreshMax) return false;
+
+    if (value("watchtower.enabled", "false") === "true") {
+        const profiles = parseProfiles(config["profiles.instances"]);
+        const profileToken = value("watchtower.profile-token", "");
+        if (profiles.length === 0) return false;
+        if (profileToken !== "" && !profiles.some(profile => profile.token === profileToken)) return false;
+    }
+
+    return true;
 }

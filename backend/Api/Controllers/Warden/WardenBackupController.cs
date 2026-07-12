@@ -27,10 +27,12 @@ public class WardenBackupController(WardenStore warden) : BaseApiController
     {
         var form = HttpContext.Request.Form;
         var repo = form["repo"].ToString().Trim();
-        if (!string.IsNullOrEmpty(repo) && !RepoRx.IsMatch(repo))
+        var enabled = form["enabled"].ToString() == "true";
+        // Always permit an invalid legacy configuration to be disabled. Repo
+        // syntax matters only when the scheduled backup can actually run.
+        if (enabled && !string.IsNullOrEmpty(repo) && !RepoRx.IsMatch(repo))
             throw new BadHttpRequestException("Repository must be in owner/name form.");
 
-        var enabled = form["enabled"].ToString() == "true";
         var path = form["path"].ToString();
         var branch = form["branch"].ToString();
         var scope = form["scope"].ToString();
@@ -39,6 +41,8 @@ public class WardenBackupController(WardenStore warden) : BaseApiController
         var tokenRaw = form["token"].ToString();
         string? token = string.IsNullOrEmpty(tokenRaw) ? null : tokenRaw;
 
+        if (enabled && string.IsNullOrWhiteSpace(repo))
+            throw new BadHttpRequestException("A GitHub repository is required to enable backups.");
         if (enabled && token is null && !warden.GetBackupSettings().HasToken)
             throw new BadHttpRequestException("A GitHub token is required to enable backups.");
 
@@ -70,7 +74,11 @@ public class WardenBackupNowController(WardenBackupService backup) : BaseApiCont
     protected override async Task<IActionResult> HandleRequest()
     {
         var msg = await backup.PushAsync(HttpContext.RequestAborted).ConfigureAwait(false);
-        return Ok(new WardenBackupMutateResponse { Status = !msg.StartsWith("error"), Message = msg });
+        return Ok(new WardenBackupMutateResponse
+        {
+            Status = !msg.StartsWith("error", StringComparison.OrdinalIgnoreCase),
+            Message = msg,
+        });
     }
 }
 
@@ -81,7 +89,11 @@ public class WardenBackupRestoreController(WardenBackupService backup) : BaseApi
     protected override async Task<IActionResult> HandleRequest()
     {
         var msg = await backup.RestoreAsync(HttpContext.RequestAborted).ConfigureAwait(false);
-        return Ok(new WardenBackupMutateResponse { Status = true, Message = msg });
+        return Ok(new WardenBackupMutateResponse
+        {
+            Status = !msg.StartsWith("error", StringComparison.OrdinalIgnoreCase),
+            Message = msg,
+        });
     }
 }
 

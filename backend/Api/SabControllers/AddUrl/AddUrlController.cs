@@ -15,7 +15,8 @@ public class AddUrlController(
     QueueManager queueManager,
     ConfigManager configManager,
     WebsocketManager websocketManager,
-    IndexerHitTracker hitTracker
+    IndexerHitTracker hitTracker,
+    NewznabRateLimiter rateLimiter
 ) : SabApiController.BaseController(httpContext, configManager)
 {
     public async Task<AddUrlResponse> AddUrlAsync(AddUrlRequest request)
@@ -31,7 +32,9 @@ public class AddUrlController(
 
     protected override async Task<IActionResult> Handle()
     {
-        var request = await AddUrlRequest.New(httpContext, configManager, hitTracker).ConfigureAwait(false);
+        var request = await AddUrlRequest
+            .New(httpContext, configManager, hitTracker, rateLimiter)
+            .ConfigureAwait(false);
         return Ok(await AddUrlAsync(request).ConfigureAwait(false));
     }
 }

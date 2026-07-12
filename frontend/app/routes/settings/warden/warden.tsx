@@ -10,6 +10,22 @@ type WardenSettingsProps = {
 
 type Trust = "full" | "corroborate" | "observe";
 
+const isRefreshHours = (value: string) => {
+    const n = Number(value);
+    return /^\d+$/.test(value.trim()) && Number.isInteger(n) && n >= 1 && n <= 720;
+};
+
+const isHttpUrl = (value: string) => {
+    try {
+        const url = new URL(value.trim());
+        return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
+    } catch {
+        return false;
+    }
+};
+
+const isGithubRepo = (value: string) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value.trim());
+
 type Source = {
     id: string;
     kind: "local" | "remote" | "imported";
@@ -52,6 +68,16 @@ const TRUST_HELP: Record<Trust, string> = {
     corroborate: "Filters only when enough sources agree",
     observe: "Never filters (watch only)",
 };
+
+function isIntegerInRange(raw: string, min: number, max: number): boolean {
+    if (!/^-?\d+$/.test(raw.trim())) return false;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= min && value <= max;
+}
+
+function isBoolean(value: string): boolean {
+    return value === "true" || value === "false";
+}
 
 function ago(sec?: number) {
     if (!sec) return "never";
@@ -142,7 +168,8 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
     const post = async (url: string, form: FormData): Promise<any> => {
         const res = await fetch(url, { method: "POST", body: form });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || "Request failed.");
+        if (!res.ok || data.status === false)
+            throw new Error(data.error || data.message || "Request failed.");
         return data;
     };
 
@@ -401,6 +428,8 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                     they refresh on their own schedule, never touch your own list, and you decide how
                     much each one is trusted. Fingerprints are universal: identical on any provider,
                     indexer, or server, and free of credentials.
+                    The global filter controls use the page-level Save button; source and GitHub
+                    backup changes below are applied immediately.
                 </div>
             </div>
 
@@ -547,7 +576,11 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                                             <span className={styles.metaLabel}>Refresh (h)</span>
                                             <Form.Control type="number" min={1} max={720} size="sm" className={styles.refreshInput}
                                                 key={`rh-${s.id}-${s.refreshHours}`} defaultValue={s.refreshHours} disabled={rowBusy}
-                                                onBlur={e => { const v = parseInt(e.target.value, 10); if (v && v !== s.refreshHours) updateSource(s.id, { refreshHours: String(v) }); }}
+                                                onBlur={e => {
+                                                    const v = e.target.value.trim();
+                                                    if (!isRefreshHours(v)) e.currentTarget.value = String(s.refreshHours);
+                                                    else if (Number(v) !== s.refreshHours) updateSource(s.id, { refreshHours: v });
+                                                }}
                                                 onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
                                         </div>}
 
@@ -641,7 +674,7 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="secondary" onClick={() => setShowAddRemote(false)}>Cancel</Button>
-                    <Button variant="primary" disabled={busy === "add-remote" || !remoteUrl.trim()} onClick={addRemoteSource}>
+                    <Button variant="primary" disabled={busy === "add-remote" || !isHttpUrl(remoteUrl) || !isRefreshHours(remoteInterval)} onClick={addRemoteSource}>
                         {busy === "add-remote" ? <><Spinner as="span" animation="border" size="sm" /> Adding…</> : "Add & fetch"}
                     </Button>
                 </Modal.Footer>
@@ -691,7 +724,7 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="secondary" onClick={() => setShowBulk(false)}>Cancel</Button>
-                    <Button variant="primary" disabled={busy === "bulk" || (!bulkText.trim() && !bulkFile)} onClick={submitBulk}>
+                    <Button variant="primary" disabled={busy === "bulk" || (!bulkText.trim() && !bulkFile) || !isRefreshHours(bulkInterval)} onClick={submitBulk}>
                         {busy === "bulk" ? <><Spinner as="span" animation="border" size="sm" /> Importing…</> : "Import"}
                     </Button>
                 </Modal.Footer>
@@ -820,7 +853,9 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="secondary" onClick={() => setShowBackup(false)}>Cancel</Button>
-                    <Button variant="primary" disabled={busy === "backup-save" || !bRepo.trim()} onClick={saveBackup}>
+                    <Button variant="primary" disabled={busy === "backup-save"
+                        || (bEnabled && !isGithubRepo(bRepo))
+                        || !isRefreshHours(bInterval)} onClick={saveBackup}>
                         {busy === "backup-save" ? <><Spinner as="span" animation="border" size="sm" /> Saving…</> : "Save"}
                     </Button>
                 </Modal.Footer>
@@ -853,4 +888,10 @@ export function isWardenSettingsUpdated(config: Record<string, string>, newConfi
     return config["warden.hide-dead"] !== newConfig["warden.hide-dead"]
         || config["warden.quorum"] !== newConfig["warden.quorum"]
         || config["warden.backbone-scope"] !== newConfig["warden.backbone-scope"];
+}
+
+export function isWardenSettingsValid(config: Record<string, string>) {
+    return isBoolean(config["warden.hide-dead"] ?? "true")
+        && isIntegerInRange(config["warden.quorum"] ?? "2", 1, 20)
+        && isBoolean(config["warden.backbone-scope"] ?? "true");
 }

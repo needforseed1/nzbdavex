@@ -20,6 +20,7 @@ public class UsenetProviderConfig
 
     public class ConnectionDetails
     {
+        public string Id { get; set; } = "";
         public required ProviderType Type { get; set; }
         public required string Host { get; set; }
         public required int Port { get; set; }
@@ -48,8 +49,7 @@ public class UsenetProviderConfig
         // the dedicated BackupAndStats health-check path.
         public bool PrepSpreadEnabled { get; set; } = true;
 
-        // Optional user-friendly label shown in the UI in place of Host. Host is
-        // still the real NNTP target and the stable key used for metrics/logs.
+        // Optional user-friendly label shown in the UI in place of Host.
         public string? Nickname { get; set; }
 
         // null or 0 = no cap. Used by block-account holders to stop a paid block

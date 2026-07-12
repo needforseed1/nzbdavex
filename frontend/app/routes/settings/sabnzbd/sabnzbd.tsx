@@ -2,16 +2,14 @@ import { Button, Form, InputGroup } from "react-bootstrap";
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { TagInput } from "~/components/tag-input/tag-input";
 import { MultiCheckboxInput } from "~/components/multi-checkbox-input/multi-checkbox-input";
-import { ExpandingTextInput } from "~/components/expanding-text-input/expanding-text-input";
 import styles from "./sabnzbd.module.css"
 
 type SabnzbdSettingsProps = {
     config: Record<string, string>
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
-    appVersion: string,
 };
 
-export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSettingsProps) {
+export function SabnzbdSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
 
     const onRefreshApiKey = useCallback(() => {
         setNewConfig({ ...config, "api.key": generateNewApiKey() })
@@ -50,7 +48,8 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                     placeholder="tv, movies, audio, software"
                     onChange={value => setNewConfig({ ...config, "api.categories": value })} />
                 <Form.Text id="categories-help" muted>
-                    The complete list of categories for organizing imported nzbs. Only letters, numbers, and dashes are allowed.
+                    The complete list of categories for organizing imported NZBs. Leave blank to use
+                    audio, software, tv, and movies. Only letters, numbers, and dashes are allowed.
                 </Form.Text>
             </Form.Group>
             <hr />
@@ -63,9 +62,10 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                     aria-describedby="manual-category-help"
                     value={config["api.manual-category"]}
                     placeholder="uncategorized"
+                    isInvalid={!isValidManualCategory(config["api.manual-category"] ?? "")}
                     onChange={e => setNewConfig({ ...config, "api.manual-category": e.target.value })} />
                 <Form.Text id="manual-category-help" muted>
-                    The category to use for manual uploads through the Queue page on the UI.
+                    The category to use for manual uploads through the Queue page. Use one name containing only letters, numbers, and dashes.
                 </Form.Text>
             </Form.Group>
             <hr />
@@ -94,6 +94,7 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                         aria-describedby="mount-dir-help"
                         placeholder="/mnt/nzbdav"
                         value={config["rclone.mount-dir"]}
+                        isInvalid={!config["rclone.mount-dir"]?.trim()}
                         onChange={e => setNewConfig({ ...config, "rclone.mount-dir": e.target.value })} />
                     <Form.Text id="mount-dir-help" muted>
                         The location at which you've mounted (or will mount) the webdav root, through Rclone. This is used to tell Radarr / Sonarr where to look for completed "downloads."
@@ -110,27 +111,13 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                         aria-describedby="completed-downloads-dir-help"
                         placeholder="/data/completed-downloads"
                         value={config["api.completed-downloads-dir"]}
+                        isInvalid={!config["api.completed-downloads-dir"]?.trim()}
                         onChange={e => setNewConfig({ ...config, "api.completed-downloads-dir": e.target.value })} />
                     <Form.Text id="completed-downloads-dir-help" muted>
                         This is used to tell Radarr / Sonarr where to look for completed "downloads." Make sure this path is also visible to your Radarr / Sonarr containers. The "downloads" placed in this folder will all be *.strm files that point to nzbdav for streaming.
                     </Form.Text>
                 </Form.Group>
             }
-            <hr />
-            <Form.Group>
-                <Form.Label htmlFor="base-url-input">Base URL</Form.Label>
-                <Form.Control
-                    className={styles.input}
-                    type="text"
-                    id="base-url-input"
-                    aria-describedby="base-url-help"
-                    placeholder="http://localhost:3000"
-                    value={config["general.base-url"]}
-                    onChange={e => setNewConfig({ ...config, "general.base-url": e.target.value })} />
-                <Form.Text id="base-url-help" muted>
-                    The public URL at which you access nzbdav. Used for all streaming links — both <code>*.strm</code> file contents (Emby/Jellyfin) and profile streaming/sharing URLs (Plex). If left blank, nzbdav infers it from request headers, which often fails behind reverse proxies. Make sure your media servers can reach this URL.
-                </Form.Text>
-            </Form.Group>
             <hr />
             <Form.Group>
                 <Form.Label htmlFor="ignored-files-input">Ignored Files</Form.Label>
@@ -159,23 +146,6 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
                 </Form.Select>
                 <Form.Text id="duplicate-nzb-behavior-help" muted>
                     When an NZB is added, a new folder is created on the webdav. What should be done when the download folder for an NZB already exists?
-                </Form.Text>
-            </Form.Group>
-            <hr />
-            <Form.Group>
-                <Form.Label htmlFor="user-agent-input">Retrieve User Agent</Form.Label>
-                <ExpandingTextInput
-                    className={styles.input}
-                    id="user-agent-input"
-                    aria-describedby="user-agent-help"
-                    value={config["api.user-agent"]}
-                    placeholder={`nzbdav/${appVersion}`}
-                    onChange={value => setNewConfig({ ...config, "api.user-agent": value })} />
-                <Form.Text id="user-agent-help" muted>
-                    The user-agent used by the&nbsp;
-                    <a href="https://sabnzbd.org/wiki/configuration/4.5/api#addurl">addurl</a> api
-                    for fetching nzb files. The user-agent for indexer searches is set separately
-                    under Settings → Indexers.
                 </Form.Text>
             </Form.Group>
             <hr />
@@ -327,14 +297,14 @@ export function isSabnzbdSettingsUpdated(config: Record<string, string>, newConf
         || config["api.download-file-blocklist"] !== newConfig["api.download-file-blocklist"]
         || config["api.import-strategy"] !== newConfig["api.import-strategy"]
         || config["api.completed-downloads-dir"] !== newConfig["api.completed-downloads-dir"]
-        || config["general.base-url"] !== newConfig["general.base-url"]
-        || config["api.user-agent"] !== newConfig["api.user-agent"]
         || config["api.nzb-backup-enabled"] !== newConfig["api.nzb-backup-enabled"]
         || config["api.nzb-backup-location"] !== newConfig["api.nzb-backup-location"]
 }
 
 export function isSabnzbdSettingsValid(newConfig: Record<string, string>) {
-    return isValidCategories(newConfig["api.categories"])
+    return isValidCategories(newConfig["api.categories"] ?? "")
+        && isValidManualCategory(newConfig["api.manual-category"] ?? "")
+        && isValidImportConfiguration(newConfig)
         && isValidNzbBackupLocation(newConfig);
 }
 
@@ -346,6 +316,31 @@ function isValidCategories(categories: string): boolean {
     if (categories === "") return true;
     var parts = categories.split(",");
     return parts.map(x => x.trim()).every(x => isAlphaNumericWithDashes(x));
+}
+
+function isValidManualCategory(category: string): boolean {
+    return isAlphaNumericWithDashes(category.trim());
+}
+
+function isValidImportConfiguration(config: Record<string, string>): boolean {
+    const strategy = config["api.import-strategy"];
+    if (strategy === "symlinks") {
+        return (config["rclone.mount-dir"] ?? "").trim() !== "";
+    }
+    if (strategy === "strm") {
+        return (config["api.completed-downloads-dir"] ?? "").trim() !== ""
+            && isAbsoluteHttpUrl(config["general.base-url"] ?? "");
+    }
+    return false;
+}
+
+function isAbsoluteHttpUrl(value: string): boolean {
+    try {
+        const url = new URL(value.trim());
+        return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
+    } catch {
+        return false;
+    }
 }
 
 function isValidNzbBackupLocation(config: Record<string, string>) {

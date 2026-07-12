@@ -28,8 +28,23 @@ public class SearchIndexersController(
             var sw = Stopwatch.StartNew();
             try
             {
+                var preliminary = await hitTracker
+                    .CheckAsync(x.Id, IndexerApiHit.HitType.Search,
+                        x.HitLimit, x.HitLimitResetTime, ct)
+                    .ConfigureAwait(false);
+                if (preliminary is { Allowed: false })
+                {
+                    return (Status: new SearchIndexersResponse.IndexerStatus
+                    {
+                        Name = x.Name,
+                        Ok = false,
+                        Error = IndexerHitTracker.FormatSkipReason(preliminary, IndexerApiHit.HitType.Search),
+                        ElapsedMs = sw.ElapsedMilliseconds,
+                    }, Results: new List<SearchIndexersResponse.Result>());
+                }
+                await rateLimiter.WaitAsync(x.Id, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
                 var hitCheck = await hitTracker
-                    .CheckAsync(x.Name, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
+                    .ReserveAsync(x.Id, IndexerApiHit.HitType.Search, x.HitLimit, x.HitLimitResetTime, ct)
                     .ConfigureAwait(false);
                 if (hitCheck is { Allowed: false })
                 {
@@ -45,10 +60,8 @@ public class SearchIndexersController(
                 var ua = IndexerConfig.PerIndexerSearchUserAgent(x) ?? configManager.GetSearchUserAgent();
                 var proxy = string.IsNullOrWhiteSpace(x.ProxyUrl) ? globalProxy : x.ProxyUrl;
                 var timeout = indexerConfig.GetEffectiveTimeoutSeconds(x);
-                await rateLimiter.WaitAsync(x.Name, x.MaxRequestsPerMinute, ct).ConfigureAwait(false);
                 var client = new NewznabClient(x.Url, x.ApiKey, ua, proxy, timeout);
                 var items = await client.SearchAsync(request.Query, request.Limit, ct).ConfigureAwait(false);
-                _ = hitTracker.RecordAsync(x.Name, IndexerApiHit.HitType.Search, CancellationToken.None);
                 var mapped = items
                     .Where(i => !x.EnableStrictMatching || FilenameMatcher.Matches(request.Query, i.Title))
                     .Select(i => new SearchIndexersResponse.Result

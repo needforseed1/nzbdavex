@@ -39,7 +39,15 @@ public class CreateStrmFilesPostProcessor(ConfigManager configManager, DavDataba
     {
         var path = davItem.Path + ".strm";
         var parts = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return Path.Join(configManager.GetStrmCompletedDownloadDir(), Path.Join(parts[2..]));
+        var root = Path.GetFullPath(configManager.GetStrmCompletedDownloadDir());
+        var result = Path.GetFullPath(Path.Combine(root, Path.Join(parts[2..])));
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var rootPrefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
+        if (!string.Equals(root, result, comparison) && !result.StartsWith(rootPrefix, comparison))
+            throw new InvalidOperationException("STRM output path escapes the configured downloads directory.");
+        return result;
     }
 
     private string GetStrmTargetUrl(DavItem davItem)

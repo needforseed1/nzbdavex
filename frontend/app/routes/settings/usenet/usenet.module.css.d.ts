@@ -12,6 +12,8 @@ declare const styles: {
   readonly "header-action-button": string;
   readonly "advanced-panel": string;
   readonly "advanced-summary-note": string;
+  readonly "advanced-summary-title": string;
+  readonly "advanced-subsection": string;
   readonly "advanced-panel-content": string;
   readonly "advanced-disclosure": string;
   readonly "advanced-disclosure-content": string;
@@ -72,6 +74,7 @@ declare const styles: {
   readonly "form-paired-input": string;
   readonly "form-hint": string;
   readonly "usage-row": string;
+  readonly "usage-row-danger": string;
   readonly "usage-header": string;
   readonly "usage-label": string;
   readonly "usage-value-ok": string;

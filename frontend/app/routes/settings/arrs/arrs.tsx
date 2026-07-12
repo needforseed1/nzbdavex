@@ -23,6 +23,27 @@ interface ArrConfig {
     QueueRules: QueueRule[];
 }
 
+function parseArrConfig(raw: string | undefined): ArrConfig | null {
+    try {
+        const parsed = JSON.parse(raw || "");
+        if (parsed === null || typeof parsed !== "object"
+            || (parsed.RadarrInstances !== undefined && !Array.isArray(parsed.RadarrInstances))
+            || (parsed.SonarrInstances !== undefined && !Array.isArray(parsed.SonarrInstances))
+            || (parsed.QueueRules !== undefined && !Array.isArray(parsed.QueueRules))) return null;
+        const instances = [...(parsed.RadarrInstances ?? []), ...(parsed.SonarrInstances ?? [])];
+        if (instances.some(instance => typeof instance?.Host !== "string" || typeof instance?.ApiKey !== "string"))
+            return null;
+        return {
+            ...parsed,
+            RadarrInstances: parsed.RadarrInstances ?? [],
+            SonarrInstances: parsed.SonarrInstances ?? [],
+            QueueRules: parsed.QueueRules ?? [],
+        } as ArrConfig;
+    } catch {
+        return null;
+    }
+}
+
 const queueStatusMessages = [
     {
         display: "Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible.",
@@ -87,7 +108,8 @@ const queueStatusMessages = [
 ];
 
 export function ArrsSettings({ config, setNewConfig }: ArrsSettingsProps) {
-    const arrConfig = JSON.parse(config["arr.instances"]);
+    const parsedArrConfig = parseArrConfig(config["arr.instances"]);
+    const arrConfig = parsedArrConfig ?? { RadarrInstances: [], SonarrInstances: [], QueueRules: [] };
 
     const updateConfig = useCallback((newArrConfig: ArrConfig) => {
         setNewConfig({ ...config, "arr.instances": JSON.stringify(newArrConfig) });
@@ -152,7 +174,6 @@ export function ArrsSettings({ config, setNewConfig }: ArrsSettingsProps) {
     const updateQueueAction = useCallback((searchTerm: string, action: number) => {
         // update the queue rule if it already exists
         var newQueueRules = (arrConfig.QueueRules || [])
-            .filter((queueRule: QueueRule) => queueStatusMessages.map(x => x.searchTerm).includes(queueRule.Message))
             .map((queueRule: QueueRule) => queueRule.Message == searchTerm
                 ? { Message: searchTerm, Action: action }
                 : queueRule
@@ -169,6 +190,14 @@ export function ArrsSettings({ config, setNewConfig }: ArrsSettingsProps) {
         })
     }, [arrConfig, updateConfig])
 
+
+    if (parsedArrConfig === null) {
+        return <div className={styles.container}>
+            <div className={styles.alertMessage} role="alert">
+                Radarr/Sonarr settings contain invalid JSON. This section is locked to prevent overwriting it; restore a valid <code>arr.instances</code> value before editing.
+            </div>
+        </div>;
+    }
 
     return (
         <div className={styles.container}>
@@ -265,7 +294,7 @@ function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFor
     }, [instance.Host, instance.ApiKey]);
 
     const testConnection = useCallback(async (host: string, apiKey: string) => {
-        if (!host.trim() || !apiKey.trim()) {
+        if (!isValidHost(host) || !apiKey.trim()) {
             return;
         }
 
@@ -310,8 +339,9 @@ function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFor
                             type="text"
                             placeholder={type === "radarr" ? "http://localhost:7878" : "http://localhost:8989"}
                             value={instance.Host}
+                            isInvalid={instance.Host.trim() !== "" && !isValidHost(instance.Host)}
                             onChange={e => onUpdate(index, 'Host', e.target.value)} />
-                        {instance.Host.trim() && instance.ApiKey.trim() && (
+                        {isValidHost(instance.Host) && instance.ApiKey.trim() && (
                             <Button
                                 variant={connectionState === 'success' ? 'success' :
                                     connectionState === 'error' ? 'danger' : 'secondary'}
@@ -353,21 +383,35 @@ export function isArrsSettingsUpdated(config: Record<string, string>, newConfig:
 
 export function isArrsSettingsValid(newConfig: Record<string, string>) {
     try {
-        const arrConfig: ArrConfig = JSON.parse(newConfig["arr.instances"] || "{}");
+        const arrConfig = parseArrConfig(newConfig["arr.instances"]);
+        if (arrConfig === null) return false;
+        const hosts = new Set<string>();
 
         // Validate all Radarr instances
-        for (const instance of arrConfig.RadarrInstances || []) {
+        for (const instance of arrConfig.RadarrInstances) {
             if (!isValidHost(instance.Host) || !isValidApiKey(instance.ApiKey)) {
                 return false;
             }
+            const normalizedHost = instance.Host.trim().replace(/\/+$/, "").toLowerCase();
+            if (hosts.has(normalizedHost)) return false;
+            hosts.add(normalizedHost);
         }
 
         // Validate all Sonarr instances
-        for (const instance of arrConfig.SonarrInstances || []) {
+        for (const instance of arrConfig.SonarrInstances) {
             if (!isValidHost(instance.Host) || !isValidApiKey(instance.ApiKey)) {
                 return false;
             }
+            const normalizedHost = instance.Host.trim().replace(/\/+$/, "").toLowerCase();
+            if (hosts.has(normalizedHost)) return false;
+            hosts.add(normalizedHost);
         }
+
+        if (arrConfig.QueueRules.some(rule =>
+            !rule?.Message?.trim()
+            || !Number.isInteger(rule.Action)
+            || rule.Action < 0
+            || rule.Action > 3)) return false;
 
         return true;
     } catch {
@@ -378,8 +422,8 @@ export function isArrsSettingsValid(newConfig: Record<string, string>) {
 function isValidHost(host: string): boolean {
     if (host.trim().length === 0) return false;
     try {
-        new URL(host);
-        return true;
+        const url = new URL(host);
+        return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
     } catch {
         return false;
     }

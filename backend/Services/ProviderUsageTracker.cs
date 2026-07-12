@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using NzbWebDAV.Config;
 
 namespace NzbWebDAV.Services;
 
@@ -54,6 +55,28 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         {
             if (_usage.TryGetValue(id, out var d))
                 result[id] = d.ToDictionary(kv => kv.Key, kv => kv.Value);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Converts stable provider IDs used by internal accounting back to configured
+    /// hostnames for user-facing queue, history, and watchdog output. Older
+    /// hostname-keyed snapshots and unknown providers remain readable.
+    /// </summary>
+    public static IReadOnlyDictionary<string, long> ToDisplayHosts(
+        IReadOnlyDictionary<string, long> usage,
+        IEnumerable<UsenetProviderConfig.ConnectionDetails> providers)
+    {
+        var hostsById = providers
+            .Where(p => !string.IsNullOrWhiteSpace(p.Id) && !string.IsNullOrWhiteSpace(p.Host))
+            .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Host, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, count) in usage)
+        {
+            var host = hostsById.GetValueOrDefault(key) ?? key;
+            result[host] = result.GetValueOrDefault(host) + count;
         }
         return result;
     }

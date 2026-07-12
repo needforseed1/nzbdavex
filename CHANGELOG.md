@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased (2026-07-10)
+## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-12)
 
-This work focuses on getting from an added NZB to verified, playable content faster, while making high-connection Usenet setups more predictable.
+This section records changes in this repository that are not yet present in the `qooode/nzbdavex` upstream repository. The work focuses on getting from an added NZB to verified, playable content faster, making high-connection Usenet setups more predictable, and completing an application-wide settings audit.
 
 ### Faster preparation and health checks
 
@@ -30,6 +30,7 @@ This work focuses on getting from an added NZB to verified, playable content fas
 * Queue percentages now update inline with completed work instead of lagging behind prep at 48–49% while callbacks drain in the background.
 * Overlapped health timing now stops when STAT work finishes, rather than including time spent waiting for prep processors.
 * The in-app log view shows newest entries first.
+* Live prep/health-check provider attribution now converts internal stable UUIDs back to configured provider hostnames and nicknames in queue, history, and Watchdog displays. Live usage lists include only providers that actually served articles instead of padding the list with every configured provider at 0%.
 
 ### Settings experience
 
@@ -39,6 +40,45 @@ This work focuses on getting from an added NZB to verified, playable content fas
 * Backup providers can optionally join normal bulk health checks without becoming eligible for prep or playback.
 * Provider action tooltips appear promptly instead of waiting for the browser's native tooltip delay.
 * Prep connection limits are optional; Automatic remains the default and recommended behavior.
+
+### Settings audit, validation, and safety
+
+* Every settings area was reviewed across the frontend, database-backed configuration, nested provider/indexer models, hidden switches, and operational environment variables. The detailed findings and disposition are recorded in `docs/settings-audit.md` and `docs/settings-review-summary.md`.
+* Settings now load effective backend values and metadata from a typed registry instead of duplicating defaults in the frontend. Metadata includes the value source (stored, environment, or default), data type, allowed range or choices, secret status, and restart requirement.
+* Shared settings saves now report backend failures correctly, validate dependent values across tabs, reject malformed JSON and invalid embedded models or regular expressions, and parse scalar values consistently.
+* Secret values returned to the UI are masked more consistently, including WebDAV and rclone credentials, so visiting and saving a settings page does not expose or accidentally replace them.
+* Provider spreading, block-account cap initialization, credential-test races, indexer quota/RPM enforcement, proxy failure behavior, and request timeout handling were corrected.
+* Warden, Watchtower, Search Profiles, Arr monitoring, rclone, SAB path containment, maintenance operations, and container startup received settings-related correctness and safety fixes.
+* Frontend session keys persist across restarts, operational environment values receive stricter validation, disabling authentication produces a visible warning, release versions are consistent, and database backups use a consistent SQLite snapshot of the main database.
+
+### Settings organization and cleanup
+
+* Usenet connection budgets, streaming priority, article buffering, and decoded segment-cache controls moved from WebDAV to a clearer, full-width **Usenet → Advanced performance** disclosure. Concurrency, streaming/cache, provider-routing, and pipelining subsections have restrained visual grouping without the previous vertical accent line.
+* The prep connection limit no longer has a separate enable toggle: blank directly means Automatic. Decoded segment caching is documented as recommended for Nuvio-style streaming when backed by fast local SSD/NVMe storage.
+* Public Base URL moved out of the SAB page and now sits with Search Profiles, which generate and display most public adapter and playback URLs. The stored `general.base-url` key and inferred-value behavior are unchanged.
+* The unreachable Library settings route was removed while retaining the underlying `media.library-dir` control where it is still used by Repairs and Maintenance.
+* The duplicate global Retrieve User-Agent control was removed from SAB. Indexers is now the canonical UI for the separate global Search and Retrieve identities and their per-indexer overrides.
+* The legacy blob-migration panel is now status-only and appears only while legacy database blobs remain. Automatic migration and its progress channel remain available for restored legacy databases.
+* Provider data usage is presented as a compact inline status strip instead of a large panel.
+
+### Configuration migrations and stable identity
+
+* Legacy `play.exclude-patterns` is migrated to `search.exclude-patterns` only when the current key is absent, then removed. An explicitly stored empty current value remains authoritative.
+* Legacy per-indexer `UserAgent` values are migrated into missing Search and Retrieve User-Agent fields without overwriting explicit values; the old alias is removed while unknown indexer fields are preserved.
+* Providers and indexers now receive persistent UUIDs. Provider usage, caps, failover metrics, connection snapshots, and frontend identity use provider IDs, while quota/RPM state, Search Profile references, cached candidates, and Watchtower pointers use indexer IDs.
+* Existing provider host metrics remain readable during transition, and database migrations convert name-based indexer hits and Search Profile references to stable IDs.
+* The one-time `UPGRADE=0.6.0` acknowledgement remains supported for irreversible upgrades from legacy databases; it is documented as migration safety rather than a normal tuning setting.
+
+### Watchtower active-set behavior
+
+* Watchtower's active-set cap now enforces a real least-recently-used warm/cold set. Lowering the cap cools the least recently accessed ready entries, and new resolutions make room using the same policy.
+* Cold entries retain their verified winner and promote immediately when accessed, avoiding a needless re-resolution while keeping the configured warm-set bound meaningful.
+* Wanted items now persist their last-access time and expose the cold state needed for deterministic rotation and UI status.
+
+### Verification
+
+* Added regression coverage for settings parsing and validation, provider routing, indexer quotas, Warden behavior, Watchtower active-set rotation, path safety, proxy handling, and coalesced NZB fetches.
+* The current local change set passes all 105 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
 
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 

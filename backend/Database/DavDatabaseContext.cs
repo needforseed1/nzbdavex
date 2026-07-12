@@ -646,11 +646,13 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.UpdatedAtUnix).IsRequired();
             e.Property(i => i.LastResolvedAtUnix).IsRequired(false);
             e.Property(i => i.LastVerifiedAtUnix).IsRequired(false);
+            e.Property(i => i.LastAccessedAtUnix).IsRequired(false);
             e.Property(i => i.NextCheckAtUnix).IsRequired(false);
 
             e.HasIndex(i => i.Key).IsUnique();
             e.HasIndex(i => i.NextCheckAtUnix);
             e.HasIndex(i => i.State);
+            e.HasIndex(i => new { i.State, i.LastAccessedAtUnix });
             e.HasIndex(i => i.UpdatedAtUnix);
         });
     }

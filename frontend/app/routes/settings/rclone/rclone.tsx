@@ -9,6 +9,8 @@ type RcloneSettingsProps = {
 
 export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
     const [connectionState, setConnectionState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const isEnabled = config["rclone.rc-enabled"] === "true";
+    const isHostValid = isAbsoluteHttpUrl(config["rclone.host"] ?? "");
 
     useEffect(() => {
         setConnectionState('idle');
@@ -16,7 +18,7 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
 
     const testConnection = useCallback(async () => {
         const host = config["rclone.host"];
-        if (!host?.trim()) {
+        if (!isAbsoluteHttpUrl(host ?? "")) {
             return;
         }
 
@@ -54,7 +56,7 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                     id="rclone-rc-enabled-checkbox"
                     aria-describedby="rclone-rc-enabled-help"
                     label={`Enable Rclone RC Server Notifications`}
-                    checked={config["rclone.rc-enabled"] === "true"}
+                    checked={isEnabled}
                     onChange={e => setNewConfig({ ...config, "rclone.rc-enabled": "" + e.target.checked })} />
                 <Form.Text id="rclone-rc-enabled-help" muted>
                     When enabled, nzbdav will automatically notify your rclone mount via the RC API whenever files are added or removed on the webdav. This allows setting a high dir-cache-time setting on Rclone.
@@ -70,8 +72,9 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                         aria-describedby="rclone-host-help"
                         placeholder="http://localhost:5572"
                         value={config["rclone.host"]}
+                        isInvalid={isEnabled && !isHostValid}
                         onChange={e => setNewConfig({ ...config, "rclone.host": e.target.value })} />
-                    {config["rclone.host"]?.trim() && (
+                    {isHostValid && (
                         <Button
                             variant={connectionState === 'success' ? 'success' :
                                 connectionState === 'error' ? 'danger' : 'secondary'}
@@ -94,7 +97,7 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                     )}
                 </InputGroup>
                 <Form.Text id="rclone-host-help" muted>
-                    The host address of the rclone RC API.
+                    The absolute HTTP(S) address of the rclone RC API. Required when notifications are enabled.
                 </Form.Text>
             </Form.Group>
             <hr />
@@ -122,7 +125,8 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
                     value={config["rclone.pass"]}
                     onChange={e => setNewConfig({ ...config, "rclone.pass": e.target.value })} />
                 <Form.Text id="rclone-pass-help" muted>
-                    The password for authenticating to the rclone RC API. This field is optional.
+                    Stored passwords are not shown. Leave blank to keep the current password,
+                    or enter a value to replace it. Authentication is optional.
                 </Form.Text>
             </Form.Group>
         </div>
@@ -134,4 +138,18 @@ export function isRcloneSettingsUpdated(config: Record<string, string>, newConfi
         || config["rclone.host"] !== newConfig["rclone.host"]
         || config["rclone.user"] !== newConfig["rclone.user"]
         || config["rclone.pass"] !== newConfig["rclone.pass"];
+}
+
+export function isRcloneSettingsValid(config: Record<string, string>) {
+    return config["rclone.rc-enabled"] !== "true"
+        || isAbsoluteHttpUrl(config["rclone.host"] ?? "");
+}
+
+function isAbsoluteHttpUrl(value: string) {
+    try {
+        const url = new URL(value.trim());
+        return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
+    } catch {
+        return false;
+    }
 }

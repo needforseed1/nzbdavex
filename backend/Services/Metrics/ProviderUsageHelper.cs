@@ -57,10 +57,12 @@ public static class ProviderUsageHelper
     /// firing N queries — the settings page polls every 10s.
     /// </summary>
     public static async Task<Dictionary<string, List<(long Hour, long Bytes)>>> ReadRecentHoursAsync(
-        IEnumerable<string> hosts)
+        IEnumerable<UsenetProviderConfig.ConnectionDetails> providers)
     {
-        var distinct = hosts.Where(h => !string.IsNullOrEmpty(h)).Distinct().ToArray();
-        if (distinct.Length == 0) return new Dictionary<string, List<(long, long)>>();
+        var providerList = providers.Where(p => !string.IsNullOrWhiteSpace(p.Id)).ToList();
+        var identities = providerList.SelectMany(p => new[] { p.Id, p.Host })
+            .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToArray();
+        if (identities.Length == 0) return new Dictionary<string, List<(long, long)>>();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         const long sevenDaysMs = 7L * 24 * 60 * 60 * 1000;
@@ -68,17 +70,17 @@ public static class ProviderUsageHelper
 
         await using var db = new MetricsDbContext();
         var rows = await db.ProviderHourly
-            .Where(x => distinct.Contains(x.Provider) && x.Hour >= since)
+            .Where(x => identities.Contains(x.Provider) && x.Hour >= since)
             .Select(x => new { x.Provider, x.Hour, x.BytesFetched })
             .ToListAsync()
             .ConfigureAwait(false);
 
-        return rows
-            .GroupBy(r => r.Provider, StringComparer.Ordinal)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Select(r => (r.Hour, r.BytesFetched)).ToList(),
-                StringComparer.Ordinal);
+        return providerList.ToDictionary(
+            p => p.Id,
+            p => rows.Where(r => r.Provider == p.Id || r.Provider == p.Host)
+                .GroupBy(r => r.Hour)
+                .Select(g => (g.Key, g.Sum(x => x.BytesFetched))).ToList(),
+            StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -143,18 +145,15 @@ public static class ProviderUsageHelper
         try
         {
             await using var db = new MetricsDbContext();
-            // Distinct host so we don't issue duplicate queries for the unusual
-            // case where two ConnectionDetails entries share a Host.
-            var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var provider in config.Providers)
             {
-                var host = provider.Host;
-                if (string.IsNullOrEmpty(host) || !seen.Add(host)) continue;
+                if (string.IsNullOrWhiteSpace(provider.Id)) continue;
                 var bytes = await db.ProviderHourly
-                    .Where(x => x.Provider == host && x.Hour >= provider.BytesUsedResetAt)
+                    .Where(x => (x.Provider == provider.Id || x.Provider == provider.Host)
+                                && x.Hour >= provider.BytesUsedResetAt)
                     .SumAsync(x => x.BytesFetched)
                     .ConfigureAwait(false);
-                tracker.SetLifetime(host, bytes);
+                tracker.SetLifetime(provider.Id, bytes);
             }
         }
         catch (Exception ex)
@@ -170,7 +169,7 @@ public static class ProviderUsageHelper
     /// </summary>
     public static long ComputeUsage(ProviderBytesTracker tracker, UsenetProviderConfig.ConnectionDetails provider)
     {
-        var live = tracker.GetLifetime(provider.Host);
+        var live = tracker.GetLifetime(provider.Id);
         return Math.Max(0, live + provider.BytesUsedOffset);
     }
 

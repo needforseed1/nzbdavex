@@ -504,6 +504,9 @@ namespace NzbWebDAV.Database.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("LastAccessedAtUnix")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long?>("LastResolvedAtUnix")
                         .HasColumnType("INTEGER");
 
@@ -550,6 +553,8 @@ namespace NzbWebDAV.Database.Migrations
                     b.HasIndex("NextCheckAtUnix");
 
                     b.HasIndex("State");
+
+                    b.HasIndex("State", "LastAccessedAtUnix");
 
                     b.HasIndex("UpdatedAtUnix");
 
