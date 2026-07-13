@@ -243,6 +243,6 @@ Recommended order:
 
 Build/test output still reports known dependency advisories for Microsoft.OpenApi and SQLitePCLRaw (high) and SharpCompress (moderate). The container's npm install also reports 13 findings (2 low, 4 moderate, 7 high). Those are dependency-maintenance findings rather than settings behavior, but should be scheduled separately.
 
-Latest verification result: 114/114 backend tests passed; frontend type-check and production build passed.
+Latest verification result: 116/116 backend tests passed; frontend type-check and production build passed.
 
 Deployment verification (2026-07-12): rebuilt `nzbdavex:main-local`, ran database maintenance, and redeployed current image `sha256:168d626720734e5bc395c0b9546344279bc4a73a97adf82b52d2b1bac21f9e2b`. The nzbdavex and rclone containers are healthy with zero restarts; the public route returns the expected authentication redirect. Live structural validation found 102 metadata entries and valid unique provider UUIDs/Profile references. An entrypoint export-order bug found during deployment was fixed before the final healthy rollout.

@@ -18,7 +18,7 @@ Key fixes include:
 
 ## Verification
 
-- Backend: 114/114 tests passing.
+- Backend: 116/116 tests passing.
 - Frontend TypeScript/type generation: passing.
 - Frontend production build: passing.
 - Container entrypoint shell syntax: passing.

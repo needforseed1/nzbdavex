@@ -24,6 +24,7 @@ This section records changes in this repository that are not yet present in the 
 * Incomplete pipelined batches now count as provider failures. Repeated partial failures trip the provider circuit breaker, and later batches rotate to another eligible provider.
 * Successfully completed pipelined batches return their healthy connection to the pool instead of reconnecting for the next batch.
 * Provider circuit breaking is now concurrency-aware: a few simultaneous socket timeouts during a large prep job no longer sideline an otherwise healthy provider, while serial and widespread failures still trip promptly. Successful fresh-socket retries no longer count as failed logical operations.
+* Legacy host-keyed bandwidth history is no longer duplicated across multiple provider accounts that share the same NNTP hostname. Shared-host providers now use their stable IDs for independent usage and burn-rate accounting.
 
 ### Diagnostics
 
@@ -80,7 +81,7 @@ This section records changes in this repository that are not yet present in the 
 ### Verification
 
 * Added regression coverage for settings parsing and validation, provider routing, indexer quotas, Warden behavior, Watchtower active-set rotation, path safety, proxy handling, and coalesced NZB fetches.
-* The current local change set passes all 114 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
+* The current local change set passes all 116 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
 
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 

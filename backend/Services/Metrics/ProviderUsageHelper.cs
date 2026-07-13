@@ -60,7 +60,11 @@ public static class ProviderUsageHelper
         IEnumerable<UsenetProviderConfig.ConnectionDetails> providers)
     {
         var providerList = providers.Where(p => !string.IsNullOrWhiteSpace(p.Id)).ToList();
-        var identities = providerList.SelectMany(p => new[] { p.Id, p.Host })
+        var legacyHostFallbackIds = GetLegacyHostFallbackProviderIds(providerList);
+        var identities = providerList.Select(p => p.Id)
+            .Concat(providerList
+                .Where(p => legacyHostFallbackIds.Contains(p.Id))
+                .Select(p => p.Host))
             .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToArray();
         if (identities.Length == 0) return new Dictionary<string, List<(long, long)>>();
 
@@ -77,7 +81,8 @@ public static class ProviderUsageHelper
 
         return providerList.ToDictionary(
             p => p.Id,
-            p => rows.Where(r => r.Provider == p.Id || r.Provider == p.Host)
+            p => rows.Where(r => r.Provider == p.Id ||
+                                 legacyHostFallbackIds.Contains(p.Id) && r.Provider == p.Host)
                 .GroupBy(r => r.Hour)
                 .Select(g => (g.Key, g.Sum(x => x.BytesFetched))).ToList(),
             StringComparer.Ordinal);
@@ -145,11 +150,14 @@ public static class ProviderUsageHelper
         try
         {
             await using var db = new MetricsDbContext();
+            var legacyHostFallbackIds = GetLegacyHostFallbackProviderIds(config.Providers);
             foreach (var provider in config.Providers)
             {
                 if (string.IsNullOrWhiteSpace(provider.Id)) continue;
+                var includeLegacyHost = legacyHostFallbackIds.Contains(provider.Id);
                 var bytes = await db.ProviderHourly
-                    .Where(x => (x.Provider == provider.Id || x.Provider == provider.Host)
+                    .Where(x => (x.Provider == provider.Id ||
+                                 includeLegacyHost && x.Provider == provider.Host)
                                 && x.Hour >= provider.BytesUsedResetAt)
                     .SumAsync(x => x.BytesFetched)
                     .ConfigureAwait(false);
@@ -160,6 +168,24 @@ public static class ProviderUsageHelper
         {
             Log.Warning(ex, "Failed to seed ProviderBytesTracker from metrics DB; continuing with zeros.");
         }
+    }
+
+    /// <summary>
+    /// Identifies providers for which old host-keyed metrics can be attributed
+    /// unambiguously. When multiple accounts use the same NNTP host, assigning
+    /// the shared legacy total to every account duplicates usage and can pause
+    /// otherwise unused block accounts. New metrics are keyed by provider ID,
+    /// so shared hosts must use ID-only accounting.
+    /// </summary>
+    internal static HashSet<string> GetLegacyHostFallbackProviderIds(
+        IEnumerable<UsenetProviderConfig.ConnectionDetails> providers)
+    {
+        return providers
+            .Where(p => !string.IsNullOrWhiteSpace(p.Id) && !string.IsNullOrWhiteSpace(p.Host))
+            .GroupBy(p => p.Host, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .Select(group => group.Single().Id)
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     /// <summary>
