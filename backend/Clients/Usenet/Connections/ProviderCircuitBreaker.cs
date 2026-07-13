@@ -79,11 +79,11 @@ public class ProviderCircuitBreaker
     {
         lock (_lock)
         {
-            // Requests admitted before another request tripped the breaker may
-            // still complete successfully. They must not reopen the provider;
-            // only the deliberately admitted half-open probe can do that.
-            if (_trippedUntilMs > 0 && !halfOpenProbe) return;
-
+            // A request admitted before a concurrent failure burst may finish
+            // after that burst opens the circuit. Its success is current proof
+            // that the provider can still serve work, so recover immediately
+            // instead of ignoring it and locking out a healthy provider for the
+            // full cooldown.
             if (_consecutiveFailures > 0 || _trippedUntilMs > 0)
                 Log.Information("Provider {Provider} recovered - circuit breaker reset.", _providerName);
 

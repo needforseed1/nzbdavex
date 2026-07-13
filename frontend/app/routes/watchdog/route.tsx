@@ -195,7 +195,12 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     <div className={styles.timingBoxes}>
                         {winner.prepDurationMs != null || winner.healthDurationMs != null ? <>
                             <TimingBox label="Prep" value={formatDuration(winner.prepDurationMs)} />
-                            <TimingBox label="Health" value={formatDuration(winner.healthDurationMs)} />
+                            <TimingBox
+                                label="Health"
+                                value={winner.healthDurationMs != null
+                                    ? formatDuration(winner.healthDurationMs)
+                                    : "Not run"}
+                            />
                         </> : (
                             <TimingBox label="Total" value={formatDuration(winner.durationMs)} />
                         )}

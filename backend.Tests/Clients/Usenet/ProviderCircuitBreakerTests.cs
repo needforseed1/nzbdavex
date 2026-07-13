@@ -30,7 +30,7 @@ public class ProviderCircuitBreakerTests
     }
 
     [Fact]
-    public void InFlightSuccessDoesNotResetTrippedBreaker()
+    public void InFlightSuccessResetsTrippedBreaker()
     {
         var breaker = new ProviderCircuitBreaker("test");
         Assert.True(breaker.TryBeginAttempt(out var halfOpenProbe));
@@ -41,7 +41,10 @@ public class ProviderCircuitBreakerTests
         breaker.RecordFailure();
         breaker.RecordSuccess(halfOpenProbe);
 
-        Assert.True(breaker.IsTripped);
+        Assert.False(breaker.IsTripped);
+        Assert.True(breaker.TryBeginAttempt(out var nextProbe));
+        Assert.False(nextProbe);
+        breaker.EndAttempt(nextProbe);
     }
 
     [Fact]
@@ -105,6 +108,54 @@ public class ProviderCircuitBreakerTests
         breaker.RecordFailure();
         Assert.True(breaker.IsTripped);
 
+        foreach (var attempt in attempts) breaker.EndAttempt(attempt);
+    }
+
+    [Theory]
+    [InlineData(72, 12)]
+    [InlineData(34, 7)]
+    public void SuccessfulTailRequestRecoversProviderAfterReportedFailureBurst(
+        int activeAttempts,
+        int failures)
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        var attempts = Enumerable.Range(0, activeAttempts)
+            .Select(_ =>
+            {
+                Assert.True(breaker.TryBeginAttempt(out var probe));
+                Assert.False(probe);
+                return probe;
+            })
+            .ToArray();
+
+        for (var i = 0; i < failures; i++) breaker.RecordFailure();
+        Assert.True(breaker.IsTripped);
+
+        breaker.RecordSuccess(false);
+
+        Assert.False(breaker.IsTripped);
+        Assert.True(breaker.TryBeginAttempt(out var recoveryProbe));
+        Assert.False(recoveryProbe);
+        breaker.EndAttempt(recoveryProbe);
+        foreach (var attempt in attempts) breaker.EndAttempt(attempt);
+    }
+
+    [Fact]
+    public void ProviderRemainsTrippedWhenEntireConcurrentWorkloadFails()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        var attempts = Enumerable.Range(0, 72)
+            .Select(_ =>
+            {
+                Assert.True(breaker.TryBeginAttempt(out var probe));
+                return probe;
+            })
+            .ToArray();
+
+        for (var i = 0; i < 12; i++) breaker.RecordFailure();
+
+        Assert.True(breaker.IsTripped);
+        Assert.False(breaker.TryBeginAttempt(out _));
         foreach (var attempt in attempts) breaker.EndAttempt(attempt);
     }
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-12)
+## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-13)
 
 This section records changes in this repository that are not yet present in the `qooode/nzbdavex` upstream repository. The work focuses on getting from an added NZB to verified, playable content faster, making high-connection Usenet setups more predictable, and completing an application-wide settings audit.
 
@@ -23,7 +23,7 @@ This section records changes in this repository that are not yet present in the 
 * Cancelled connection attempts no longer leak pool capacity, and concurrent connection handshakes can no longer incorrectly disable a provider.
 * Incomplete pipelined batches now count as provider failures. Repeated partial failures trip the provider circuit breaker, and later batches rotate to another eligible provider.
 * Successfully completed pipelined batches return their healthy connection to the pool instead of reconnecting for the next batch.
-* Provider circuit breaking is now concurrency-aware: a few simultaneous socket timeouts during a large prep job no longer sideline an otherwise healthy provider, while serial and widespread failures still trip promptly. Successful fresh-socket retries no longer count as failed logical operations.
+* Provider circuit breaking is now concurrency-aware: a few simultaneous socket timeouts during a large prep job no longer sideline an otherwise healthy provider, while serial and widespread failures still trip promptly. Successful fresh-socket retries no longer count as failed logical operations, and successful work already in flight now immediately recovers a provider tripped by a transient failure burst.
 * Legacy host-keyed bandwidth history is no longer duplicated across multiple provider accounts that share the same NNTP hostname. Shared-host providers now use their stable IDs for independent usage and burn-rate accounting.
 
 ### Diagnostics
@@ -31,6 +31,7 @@ This section records changes in this repository that are not yet present in the 
 * Connection and health-check logging now includes enough provider, lane, batch, and timing detail to diagnose stalls and unreliable pipelining.
 * Queue percentages now update inline with completed work instead of lagging behind prep at 48–49% while callbacks drain in the background.
 * Overlapped health timing now stops when STAT work finishes, rather than including time spent waiting for prep processors.
+* Watchdog timing now labels a category-based health check that did not run as **Not run** instead of showing an ambiguous dash beside a valid prep time.
 * The in-app log view shows newest entries first.
 * Live prep/health-check provider attribution now converts internal stable UUIDs back to configured provider hostnames and nicknames in queue, history, and Watchdog displays. Live usage lists include only providers that actually served articles instead of padding the list with every configured provider at 0%.
 
@@ -81,7 +82,7 @@ This section records changes in this repository that are not yet present in the 
 ### Verification
 
 * Added regression coverage for settings parsing and validation, provider routing, indexer quotas, Warden behavior, Watchtower active-set rotation, path safety, proxy handling, and coalesced NZB fetches.
-* The current local change set passes all 116 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
+* The current local change set passes all 119 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
 
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 
