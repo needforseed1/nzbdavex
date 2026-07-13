@@ -267,7 +267,6 @@ public class MultiConnectionNntpClient(
                 }
                 catch (Exception e)
                 {
-                    circuitBreaker.RecordFailure(halfOpenProbe);
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
                     if (retryCount > 0)
@@ -277,6 +276,10 @@ public class MultiConnectionNntpClient(
                         continue;
                     }
 
+                    // Count the logical operation only after its fresh-socket
+                    // retry also fails. A recovered retry is a provider success,
+                    // not two failures followed by a success.
+                    circuitBreaker.RecordFailure(halfOpenProbe);
                     Log.Warning(e, $"Error executing nntp {name} command.");
                     LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                     throw;

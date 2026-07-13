@@ -62,4 +62,64 @@ public class ProviderCircuitBreakerTests
 
         Assert.False(breaker.IsTripped);
     }
+
+    [Fact]
+    public void SmallFailureBurstDoesNotTripLargeConcurrentWorkload()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        var attempts = Enumerable.Range(0, 100)
+            .Select(_ =>
+            {
+                Assert.True(breaker.TryBeginAttempt(out var probe));
+                Assert.False(probe);
+                return probe;
+            })
+            .ToArray();
+
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+
+        Assert.False(breaker.IsTripped);
+
+        breaker.RecordSuccess(false);
+        foreach (var attempt in attempts) breaker.EndAttempt(attempt);
+        Assert.False(breaker.IsTripped);
+    }
+
+    [Fact]
+    public void WidespreadConcurrentFailuresStillTripPromptly()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        var attempts = Enumerable.Range(0, 100)
+            .Select(_ =>
+            {
+                Assert.True(breaker.TryBeginAttempt(out var probe));
+                return probe;
+            })
+            .ToArray();
+
+        for (var i = 0; i < 11; i++) breaker.RecordFailure();
+        Assert.False(breaker.IsTripped);
+
+        breaker.RecordFailure();
+        Assert.True(breaker.IsTripped);
+
+        foreach (var attempt in attempts) breaker.EndAttempt(attempt);
+    }
+
+    [Fact]
+    public void SerialWorkloadRetainsThreeFailureThreshold()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.True(breaker.TryBeginAttempt(out var probe));
+            breaker.RecordFailure(probe);
+            breaker.EndAttempt(probe);
+        }
+
+        Assert.True(breaker.IsTripped);
+    }
 }
