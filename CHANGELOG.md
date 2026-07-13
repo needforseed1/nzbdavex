@@ -11,8 +11,10 @@ This section records changes in this repository that are not yet present in the 
 * Health-check lanes and pipeline depth can be tuned independently from playback. Providers can override the global pipeline depth.
 * A per-provider health pipeline benchmark measures throughput and reliability, then recommends a suitable depth.
 * Providers can be marked as health-check-only. This is useful for fast block or trial accounts because `STAT` checks transfer very little data and the account is kept out of playback traffic.
+* Partial-coverage health providers are admitted when their measured STAT speed still reduces total completion time; their misses fall directly through to a full-coverage provider instead of being repeated across similar partial accounts.
 * The default Usenet connection limit is now 64 and remains configurable.
 * File-size probes read only the required yEnc header instead of waiting for an entire article to be cached, removing an intermittent processor-tail delay during prep.
+* Eager RAR prep parses continuation headers directly from the 16KB prefix already retained during initial inspection, avoiding a second full BODY download for nearly every ordinary split volume. Final and multi-file boundary volumes retain the full scan, and memory-heavy parser fallbacks are capped independently of very large prep-connection budgets.
 * Queue imports begin warming Pool provider connections as soon as an NZB arrives, up to the configured queue connection budget.
 
 ### More reliable connections and failover
@@ -24,6 +26,7 @@ This section records changes in this repository that are not yet present in the 
 * Incomplete pipelined batches now count as provider failures. Repeated partial failures trip the provider circuit breaker, and later batches rotate to another eligible provider.
 * Successfully completed pipelined batches return their healthy connection to the pool instead of reconnecting for the next batch.
 * Provider circuit breaking is now concurrency-aware: a few simultaneous socket timeouts during a large prep job no longer sideline an otherwise healthy provider, while serial and widespread failures still trip promptly. Successful fresh-socket retries no longer count as failed logical operations, and successful work already in flight now immediately recovers a provider tripped by a transient failure burst.
+* A provider tripped by BODY preparation receives one controlled STAT recovery probe at the health-phase boundary. A successful lightweight probe restores its health capacity immediately; a failed probe remains isolated behind the circuit breaker.
 * Legacy host-keyed bandwidth history is no longer duplicated across multiple provider accounts that share the same NNTP hostname. Shared-host providers now use their stable IDs for independent usage and burn-rate accounting.
 
 ### Diagnostics
@@ -82,7 +85,7 @@ This section records changes in this repository that are not yet present in the 
 ### Verification
 
 * Added regression coverage for settings parsing and validation, provider routing, indexer quotas, Warden behavior, Watchtower active-set rotation, path safety, proxy handling, and coalesced NZB fetches.
-* The current local change set passes all 119 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
+* The current local change set passes all 130 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
 
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 

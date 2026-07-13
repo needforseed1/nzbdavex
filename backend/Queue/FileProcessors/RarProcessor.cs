@@ -19,8 +19,7 @@ public class RarProcessor(
 {
     public override async Task<BaseProcessor.Result?> ProcessAsync()
     {
-        await using var stream = await GetNzbFileStream().ConfigureAwait(false);
-        var headers = await RarUtil.GetRarHeadersAsync(stream, password, ct).ConfigureAwait(false);
+        var (headers, partSize) = await GetRequiredHeadersAsync().ConfigureAwait(false);
         var archiveName = GetArchiveName();
         var partNumber = GetPartNumber(headers);
         return new Result()
@@ -30,7 +29,7 @@ public class RarProcessor(
                 .Select(x => new StoredFileSegment()
                 {
                     NzbFile = fileInfo.NzbFile,
-                    PartSize = stream.Length,
+                    PartSize = partSize,
                     ArchiveName = archiveName,
                     PartNumber = partNumber,
                     PathWithinArchive = x.GetFileName(),
@@ -44,6 +43,35 @@ public class RarProcessor(
                 }).ToArray(),
         };
     }
+
+    private async Task<(List<IRarHeader> Headers, long PartSize)> GetRequiredHeadersAsync()
+    {
+        if (fileInfo.First16KB is { Length: > 0 } firstBytes)
+        {
+            await using var prefix = new MemoryStream(firstBytes, writable: false);
+            var firstHeaders = await RarUtil.ReadHeadersUntilFirstFileAsync(prefix, password, ct)
+                .ConfigureAwait(false);
+            var firstFileHeader = firstHeaders.FirstOrDefault(x => x.HeaderType == HeaderType.File);
+
+            // A split-after file entry continues in the next RAR volume. By
+            // RAR's volume layout it consumes the remainder of this volume, so
+            // there cannot be another file entry here. Crucially, parse this
+            // from the 16KB prefix retained by the initial prep stage before
+            // opening NzbFileStream: the queue cache otherwise downloads the
+            // entire first article before exposing a single header byte.
+            if (CanStopAfterFirstFileHeader(firstFileHeader?.GetIsSplitAfter() == true))
+                return (firstHeaders, await GetFileSizeAsync().ConfigureAwait(false));
+        }
+
+        // A non-split entry can end before another file begins in this same
+        // volume. Preserve the full scan for those boundary/final volumes so
+        // multi-file archives retain every stored-file segment.
+        await using var stream = await GetNzbFileStream().ConfigureAwait(false);
+        var headers = await RarUtil.GetRarHeadersAsync(stream, password, ct).ConfigureAwait(false);
+        return (headers, stream.Length);
+    }
+
+    internal static bool CanStopAfterFirstFileHeader(bool isSplitAfter) => isSplitAfter;
 
     private string GetArchiveName()
     {
@@ -105,10 +133,12 @@ public class RarProcessor(
 
     private async Task<NzbFileStream> GetNzbFileStream()
     {
-        var filesize = fileInfo.FileSize;
-        filesize ??= await usenetClient.GetFileSizeAsync(fileInfo.NzbFile, ct).ConfigureAwait(false);
-        return usenetClient.GetFileStream(fileInfo.NzbFile, filesize!.Value, articleBufferSize: 0);
+        var filesize = await GetFileSizeAsync().ConfigureAwait(false);
+        return usenetClient.GetFileStream(fileInfo.NzbFile, filesize, articleBufferSize: 0);
     }
+
+    private async Task<long> GetFileSizeAsync() => fileInfo.FileSize
+        ?? await usenetClient.GetFileSizeAsync(fileInfo.NzbFile, ct).ConfigureAwait(false);
 
     public new class Result : BaseProcessor.Result
     {

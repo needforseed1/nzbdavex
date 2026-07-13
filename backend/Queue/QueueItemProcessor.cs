@@ -222,7 +222,7 @@ public class QueueItemProcessor(
             .ToMultiProgress(fileProcessors.Count);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors start processors={Processors}",
             queueItem.Id, queueItem.JobName, fileProcessors.Count);
-        var processorConcurrency = configManager.GetMaxQueueConnections() + 5;
+        var processorConcurrency = GetProcessorConcurrency(configManager.GetMaxQueueConnections());
         var fileProcessingTask = fileProcessors
             .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
             .WithConcurrencyAsync(processorConcurrency)
@@ -420,6 +420,9 @@ public class QueueItemProcessor(
         : x.IsRar || FilenameUtil.IsRarFile(x.FileName) ? "rar"
         : FilenameUtil.IsMultipartMkv(x.FileName) ? "multipart-mkv"
         : "other";
+
+    internal static int GetProcessorConcurrency(int maxQueueConnections) =>
+        Math.Min(maxQueueConnections + 5, 128);
 
     private async Task<DavItem?> GetMountFolder()
     {

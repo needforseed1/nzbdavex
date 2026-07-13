@@ -66,6 +66,33 @@ public class ProviderCircuitBreaker
         }
     }
 
+    /// <summary>
+    /// Admits one explicit recovery probe even while the normal cooldown is
+    /// active. This is used at an operation-phase boundary (for example, a
+    /// lightweight STAT qualification after BODY prep) where a successful
+    /// command is useful current evidence that the provider is healthy.
+    /// Concurrent callers remain blocked behind the single probe gate.
+    /// </summary>
+    public bool TryBeginRecoveryProbe(out bool halfOpenProbe)
+    {
+        lock (_lock)
+        {
+            halfOpenProbe = false;
+            if (_trippedUntilMs == 0)
+            {
+                _activeAttempts++;
+                return true;
+            }
+
+            if (_probeInFlight) return false;
+
+            _probeInFlight = true;
+            halfOpenProbe = true;
+            _activeAttempts++;
+            return true;
+        }
+    }
+
     public void EndAttempt(bool halfOpenProbe)
     {
         lock (_lock)

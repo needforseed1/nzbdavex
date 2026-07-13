@@ -348,6 +348,14 @@ public class MultiConnectionNntpClient(
             segmentIds.Count,
             cancellationToken);
 
+    internal IAsyncEnumerable<PipelinedStatResult> StatsPipelinedRecoveryProbeAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
+        => RunPipelinedAsync(
+            c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken),
+            segmentIds.Count,
+            cancellationToken,
+            allowDuringCooldown: true);
+
     public override IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
         => RunPipelinedAsync(
@@ -365,9 +373,13 @@ public class MultiConnectionNntpClient(
     private async IAsyncEnumerable<T> RunPipelinedAsync<T>(
         Func<INntpClient, IAsyncEnumerable<T>> batchFactory,
         int expectedCount,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken,
+        bool allowDuringCooldown = false)
     {
-        if (!circuitBreaker.TryBeginAttempt(out var halfOpenProbe))
+        var admitted = allowDuringCooldown
+            ? circuitBreaker.TryBeginRecoveryProbe(out var halfOpenProbe)
+            : circuitBreaker.TryBeginAttempt(out halfOpenProbe);
+        if (!admitted)
             throw new ProviderCircuitOpenException(Host);
 
         var priority = GetDownloadPriority(cancellationToken);

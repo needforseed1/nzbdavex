@@ -262,6 +262,65 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthRecoversPrepTrippedProviderWithControlledStatProbe()
+    {
+        var recoveredClient = new CoveragePipelineClient(_ => true);
+        var healthyClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(20, cancellationToken));
+        var breaker = new ProviderCircuitBreaker("prep-tripped");
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        var recoveredProvider = CreateProvider(
+            recoveredClient, ProviderType.Pooled, "prep-tripped", 0,
+            maxConnections: 8, circuitBreaker: breaker);
+        using var multiProvider = new MultiProviderNntpClient([
+            recoveredProvider,
+            CreateProvider(healthyClient, ProviderType.Pooled, "healthy", 1, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 8, progress: null, CancellationToken.None);
+
+        Assert.False(recoveredProvider.IsTripped);
+        Assert.True(recoveredClient.Batches.Count > 1);
+    }
+
+    [Fact]
+    public async Task EconomicallyUsefulSeventyFivePercentProvidersJoinBulkHealth()
+    {
+        static bool FarmCoverage(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length)) % 4 != 0;
+
+        var firstFarm = new CoveragePipelineClient(FarmCoverage);
+        var secondFarm = new CoveragePipelineClient(FarmCoverage);
+        var complete = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(20, cancellationToken));
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstFarm, ProviderType.HealthChecksOnly, "farm-1", 0, maxConnections: 8),
+            CreateProvider(secondFarm, ProviderType.HealthChecksOnly, "farm-2", 1, maxConnections: 8),
+            CreateProvider(complete, ProviderType.Pooled, "complete", 2, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 12, progress: null, CancellationToken.None);
+
+        Assert.True(firstFarm.Batches.Count > 1);
+        Assert.True(secondFarm.Batches.Count > 1);
+
+        // After qualification, partial peers receive disjoint primary work.
+        // A miss on one goes directly to the complete provider rather than
+        // repeating through the other account with identical coverage.
+        var firstFarmBulkSegments = firstFarm.Batches.Skip(1).SelectMany(x => x).ToHashSet();
+        var secondFarmBulkSegments = secondFarm.Batches.Skip(1).SelectMany(x => x).ToHashSet();
+        Assert.Empty(firstFarmBulkSegments.Intersect(secondFarmBulkSegments));
+    }
+
+    [Fact]
     public async Task HealthAndBodyPipelineDepthOverridesAreIndependent()
     {
         var transport = new RecordingPipelineClient([true, true]);
@@ -289,13 +348,14 @@ public class PipelinedFallbackTests
 
     private static MultiConnectionNntpClient CreateProvider(
         INntpClient client, ProviderType type, string host, int priority, int maxConnections = 1,
-        int? pipeliningDepth = null, int? healthPipeliningDepth = null)
+        int? pipeliningDepth = null, int? healthPipeliningDepth = null,
+        ProviderCircuitBreaker? circuitBreaker = null)
     {
         var pool = new ConnectionPool<INntpClient>(maxConnections, _ => ValueTask.FromResult(client));
         return new MultiConnectionNntpClient(
             pool,
             type,
-            new ProviderCircuitBreaker(host),
+            circuitBreaker ?? new ProviderCircuitBreaker(host),
             host,
             byteLimit: null,
             bytesUsedOffset: 0,

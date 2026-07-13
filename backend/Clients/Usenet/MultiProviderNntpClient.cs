@@ -27,7 +27,6 @@ public class MultiProviderNntpClient(
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
-    private const double PartialStatMinimumCoverage = 0.90;
     private const double PartialStatAdmissionMargin = 0.90;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
@@ -463,13 +462,27 @@ public class MultiProviderNntpClient(
                 if (preferred.Count > 0)
                 {
                     var preferredSet = preferred.ToHashSet();
+                    var selectedPrimary = preferred[0];
+                    // Partial providers are valuable primary workers, but when
+                    // one reports a miss, go straight to the highest-coverage
+                    // peer. Do not repeat the same likely-backbone miss through
+                    // several other partial accounts before reaching a complete
+                    // provider.
+                    var preferredFallback = preferred
+                        .Skip(1)
+                        .OrderByDescending(plan.Coverage)
+                        .ThenBy(plan.ProbeRank)
+                        .ThenBy(EffectivePriority);
                     var plannedFallback = pool
                         .Where(x => !preferredSet.Contains(x))
                         .OrderBy(plan.ProbeRank)
                         .ThenBy(x => x.ProviderType)
                         .ThenBy(EffectivePriority)
                         .ThenByDescending(GetRemainingBytes);
-                    var planned = preferred.Concat(plannedFallback).ToList();
+                    var planned = new[] { selectedPrimary }
+                        .Concat(preferredFallback)
+                        .Concat(plannedFallback)
+                        .ToList();
                     reserved = planned[0];
                     reserved.ReservePending();
                     return planned;
@@ -546,8 +559,6 @@ public class MultiProviderNntpClient(
             return false;
 
         var coverage = found / (double)received;
-        if (coverage < PartialStatMinimumCoverage) return false;
-
         var expectedSecondsPerArticle = 1d / statRate + (1d - coverage) / fallbackRate;
         var fallbackSecondsPerArticle = 1d / fallbackRate;
         return expectedSecondsPerArticle <= fallbackSecondsPerArticle * PartialStatAdmissionMargin;
@@ -698,18 +709,23 @@ public class MultiProviderNntpClient(
                             x.ProviderType == ProviderType.HealthChecksOnly)
                 .Where(x => !IsOverLimit(x))
                 .ToList();
-            var healthy = enabled.Where(x => !x.IsTripped).ToList();
-            candidates = healthy.Count > 0 ? healthy : enabled;
+            // Probe every eligible provider. A provider tripped by BODY prep is
+            // allowed one controlled STAT recovery attempt below; excluding it
+            // here would unnecessarily carry BODY state into the health phase.
+            candidates = enabled;
         }
 
         var probeCandidates = SelectPrimaryStatTier(candidates).ToList();
-        if (probeCandidates.Count <= 1) return BulkStatQualification.None;
+        if (probeCandidates.Count == 0 ||
+            (probeCandidates.Count == 1 && !probeCandidates[0].IsTripped))
+            return BulkStatQualification.None;
 
         var sampleIndexes = SelectProbeIndexes(segmentIds.Count, BulkStatProbeSize);
         var sample = sampleIndexes.Select(index => segmentIds[index]).ToArray();
         var qualificationTimer = Stopwatch.StartNew();
         var pendingProbes = probeCandidates
-            .Select(provider => ProbeStatProviderAsync(provider, sample, depth, cancellationToken))
+            .Select(provider => ProbeStatProviderAsync(
+                provider, sample, depth, provider.IsTripped, cancellationToken))
             .ToList();
         var probes = new List<BulkStatProbe>(pendingProbes.Count);
         var endedEarly = false;
@@ -774,6 +790,7 @@ public class MultiProviderNntpClient(
         MultiConnectionNntpClient provider,
         IReadOnlyList<string> segmentIds,
         int fallbackDepth,
+        bool recoveryProbe,
         CancellationToken cancellationToken)
     {
         var exists = new bool[segmentIds.Count];
@@ -785,7 +802,10 @@ public class MultiProviderNntpClient(
         try
         {
             var providerDepth = ResolveHealthDepth(provider, fallbackDepth);
-            await foreach (var result in provider.StatsPipelinedAsync(segmentIds, providerDepth, probeCts.Token)
+            var results = recoveryProbe
+                ? provider.StatsPipelinedRecoveryProbeAsync(segmentIds, providerDepth, probeCts.Token)
+                : provider.StatsPipelinedAsync(segmentIds, providerDepth, probeCts.Token);
+            await foreach (var result in results
                                .WithCancellation(probeCts.Token).ConfigureAwait(false))
             {
                 if (received >= segmentIds.Count ||
@@ -1305,6 +1325,12 @@ public class MultiProviderNntpClient(
 
         public int ProbeRank(MultiConnectionNntpClient provider) =>
             _probeRanks.GetValueOrDefault(provider, int.MaxValue);
+
+        public double Coverage(MultiConnectionNntpClient provider)
+        {
+            var probe = _probes.GetValueOrDefault(provider);
+            return probe is { Received: > 0 } ? probe.Found / (double)probe.Received : 0;
+        }
 
         public double SelectionScore(MultiConnectionNntpClient provider)
         {

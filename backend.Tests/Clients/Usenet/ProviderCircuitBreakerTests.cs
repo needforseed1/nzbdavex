@@ -67,6 +67,44 @@ public class ProviderCircuitBreakerTests
     }
 
     [Fact]
+    public void ExplicitRecoveryProbeBypassesCooldownForOnlyOneCaller()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        Assert.True(breaker.IsTripped);
+
+        Assert.True(breaker.TryBeginRecoveryProbe(out var recoveryProbe));
+        Assert.True(recoveryProbe);
+        Assert.False(breaker.TryBeginRecoveryProbe(out _));
+
+        breaker.RecordSuccess(recoveryProbe);
+        breaker.EndAttempt(recoveryProbe);
+
+        Assert.False(breaker.IsTripped);
+        Assert.True(breaker.TryBeginAttempt(out var normalAttempt));
+        Assert.False(normalAttempt);
+        breaker.EndAttempt(normalAttempt);
+    }
+
+    [Fact]
+    public void FailedExplicitRecoveryProbeKeepsProviderTripped()
+    {
+        var breaker = new ProviderCircuitBreaker("test");
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+        breaker.RecordFailure();
+
+        Assert.True(breaker.TryBeginRecoveryProbe(out var recoveryProbe));
+        breaker.RecordFailure(recoveryProbe);
+        breaker.EndAttempt(recoveryProbe);
+
+        Assert.True(breaker.IsTripped);
+        Assert.False(breaker.TryBeginAttempt(out _));
+    }
+
+    [Fact]
     public void SmallFailureBurstDoesNotTripLargeConcurrentWorkload()
     {
         var breaker = new ProviderCircuitBreaker("test");

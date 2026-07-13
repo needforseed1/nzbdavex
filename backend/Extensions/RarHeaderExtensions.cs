@@ -54,6 +54,11 @@ public static class RarHeaderExtensions
         return (bool)header.GetReflectionProperty("IsFirstVolume")!;
     }
 
+    public static bool GetIsSplitAfter(this IRarHeader header)
+    {
+        return (bool)header.GetReflectionProperty("IsSplitAfter")!;
+    }
+
     public static byte[]? GetR4Salt(this IRarHeader header)
     {
         return (byte[]?)header.GetReflectionProperty("R4Salt")!;
