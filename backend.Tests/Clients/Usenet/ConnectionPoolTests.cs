@@ -6,6 +6,23 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 public class ConnectionPoolTests
 {
     [Fact]
+    public async Task DisposalLetsBorrowedConnectionFinishBeforeDestroyingIt()
+    {
+        var disposed = 0;
+        var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                1, () => Interlocked.Increment(ref disposed))));
+        var borrowed = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+
+        await pool.DisposeAsync();
+        Assert.Equal(0, disposed);
+
+        borrowed.Dispose();
+        Assert.Equal(1, disposed);
+    }
+
+    [Fact]
     public async Task ValidationReplacesOneUnhealthyIdleConnectionWithoutExceedingCapacity()
     {
         var created = 0;

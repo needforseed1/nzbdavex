@@ -18,7 +18,7 @@ Key fixes include:
 
 ## Verification
 
-- Backend: 162/162 tests passing.
+- Backend: 168/168 tests passing.
 - Frontend settings-state tests: passing.
 - Frontend TypeScript/type generation: passing.
 - Frontend production build: passing.
@@ -43,9 +43,8 @@ The first deployment also exposed and fixed an entrypoint regression: the defaul
 
 ## Highest-value remaining decisions
 
-1. Drain and safely apply provider graph changes without interrupting active streams.
-2. Add credential removal/rotation actions and a complete encrypted `CONFIG_PATH` backup workflow.
-3. Add missing Arr, rclone timeout, and NZB backup-policy controls.
+1. Add credential removal/rotation actions and a complete encrypted `CONFIG_PATH` backup workflow.
+2. Add missing Arr, rclone timeout, and NZB backup-policy controls.
 
 Stable provider/indexer UUIDs, the centralized settings defaults and validation catalog, and Watchtower LRU enforcement are now implemented.
 
@@ -55,6 +54,7 @@ Stable provider/indexer UUIDs, the centralized settings defaults and validation 
 - Indexer UUIDs now own quota/RPM state, Search Profile references, cached candidate retrieval, and Watchtower pointers. Existing name-based hits and references are migrated.
 - The backend settings registry supplies UI defaults and basic scalar validation. The settings endpoint returns only the effective key/value pairs the frontend consumes, so the duplicate frontend default table and unused presentation metadata are gone.
 - Watchtower now enforces the active-set cap with LRU warm/cold rotation. Verified cold entries retain their winner and promote immediately when accessed.
+- Provider graph reloads now publish the replacement atomically and drain calls already using the retired graph before disposing it.
 
 ## Implemented retirement and relocation work
 

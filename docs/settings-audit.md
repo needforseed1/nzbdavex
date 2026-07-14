@@ -22,7 +22,7 @@ Verdicts used below:
 | Embedded JSON | **Fixed** | Malformed Usenet, Indexer, Profile, or Arr JSON is locked in the UI rather than silently displayed as an empty configuration. Unknown fields and custom Arr rules are preserved during normal edits. |
 | Secrets | **Partly fixed / Decision** | WebDAV and rclone passwords are masked and blank means “keep existing”. Provider and indexer UUIDs now provide stable merge identity, but Usenet credentials and Indexer/Arr API keys remain embedded in returned JSON. Secret-aware merge/masking and explicit clear actions are still missing. |
 | Effective values | **Fixed** | The internal frontend-bootstrap endpoint exposes the editable key/value pairs consumed by the page, resolves blank stored values through runtime fallbacks where blank means “default,” and masks standalone passwords. Blank remains visible where it means Automatic or intentionally empty. The endpoint is not a versioned public settings schema. |
-| Apply behavior | **Decision** | Saving provider JSON replaces and disposes the old NNTP client graph immediately, which can disrupt active streams. Provider changes should be validated, built, then drained/applied safely. |
+| Apply behavior | **Fixed** | Provider JSON is structurally validated before persistence and the replacement graph is built before publication. New work switches atomically; calls already inside the old graph drain before it is disposed, and borrowed sockets remain alive until their response streams return them. |
 
 ## Usenet
 
@@ -225,13 +225,12 @@ These settings are intentionally outside the database/UI because most affect pro
 
 Recommended order:
 
-1. **Safe provider apply** — build and validate a replacement NNTP graph, then drain the old graph without interrupting active streams.
-2. **Arr controls** — per-instance Enabled, request timeout, poll interval, and identity-aware connection test. Longer term, prefer stable Arr status codes/state over localized English substrings.
-3. **Credential lifecycle actions** — clear stored WebDAV/rclone passwords, remove Warden GitHub token, rotate Search Profile tokens, and define immediate cookie/session invalidation on WebDAV credential rotation.
-4. **Watchtower persistence controls** — persist the daily resolve counter if “per day” must survive restarts; expose or derive resolve concurrency.
-5. **Full configuration backup/restore** — snapshot all databases plus blobs and data-protection/session keys, with secret-aware encryption and restore validation. The opt-in main-DB endpoint is not this workflow.
-6. **Rclone timeout** and optional retry/backoff policy.
-7. **NZB backup failure policy** — strict intake failure versus best-effort backup with alerting.
+1. **Arr controls** — per-instance Enabled, request timeout, poll interval, and identity-aware connection test. Longer term, prefer stable Arr status codes/state over localized English substrings.
+2. **Credential lifecycle actions** — clear stored WebDAV/rclone passwords, remove Warden GitHub token, rotate Search Profile tokens, and define immediate cookie/session invalidation on WebDAV credential rotation.
+3. **Watchtower persistence controls** — persist the daily resolve counter if “per day” must survive restarts; expose or derive resolve concurrency.
+4. **Full configuration backup/restore** — snapshot all databases plus blobs and data-protection/session keys, with secret-aware encryption and restore validation. The opt-in main-DB endpoint is not this workflow.
+5. **Rclone timeout** and optional retry/backoff policy.
+6. **NZB backup failure policy** — strict intake failure versus best-effort backup with alerting.
 
 ## Verification
 
@@ -244,6 +243,6 @@ Recommended order:
 
 Build/test output still reports known dependency advisories for Microsoft.OpenApi and SQLitePCLRaw (high) and SharpCompress (moderate). The container's npm install also reports 13 findings (2 low, 4 moderate, 7 high). Those are dependency-maintenance findings rather than settings behavior, but should be scheduled separately.
 
-Latest verification result: 162/162 backend tests passed; frontend settings-state tests, type-check, and production build passed.
+Latest verification result: 168/168 backend tests passed; frontend settings-state tests, type-check, and production build passed.
 
 Deployment verification (2026-07-12): rebuilt `nzbdavex:main-local`, ran database maintenance, and redeployed current image `sha256:168d626720734e5bc395c0b9546344279bc4a73a97adf82b52d2b1bac21f9e2b`. The nzbdavex and rclone containers are healthy with zero restarts; the public route returns the expected authentication redirect. Live structural validation found 102 metadata entries and valid unique provider UUIDs/Profile references. An entrypoint export-order bug found during deployment was fixed before the final healthy rollout.

@@ -17,6 +17,11 @@ public class UsenetStreamingClient : WrappingNntpClient
     private const int WarmConnectionsPerProvider = 16;
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan WarmConnectionRefreshInterval = TimeSpan.FromSeconds(15);
+    private readonly DrainingNntpClient _drainingClient;
+    private readonly object _reloadLock = new();
+    private readonly ConfigManager _configManager;
+    private readonly EventHandler<ConfigManager.ConfigEventArgs> _configChangedHandler;
+    private bool _disposed;
 
     public UsenetStreamingClient(
         ConfigManager configManager,
@@ -24,18 +29,52 @@ public class UsenetStreamingClient : WrappingNntpClient
         ProviderUsageTracker usageTracker,
         MetricsWriter metricsWriter,
         ProviderBytesTracker bytesTracker)
-        : base(CreateDownloadingNntpClient(configManager, websocketManager, usageTracker, metricsWriter, bytesTracker))
+        : this(
+            new DrainingNntpClient(CreateDownloadingNntpClient(
+                configManager, websocketManager, usageTracker, metricsWriter, bytesTracker)),
+            configManager, websocketManager, usageTracker, metricsWriter, bytesTracker)
     {
-        // when config changes, create a new MultiProviderClient to use instead.
-        configManager.OnConfigChanged += (_, configEventArgs) =>
+    }
+
+    private UsenetStreamingClient(
+        DrainingNntpClient drainingClient,
+        ConfigManager configManager,
+        WebsocketManager websocketManager,
+        ProviderUsageTracker usageTracker,
+        MetricsWriter metricsWriter,
+        ProviderBytesTracker bytesTracker)
+        : base(drainingClient)
+    {
+        _drainingClient = drainingClient;
+        _configManager = configManager;
+        _configChangedHandler = (_, configEventArgs) =>
         {
-            // if unrelated config changed, do nothing
             if (!configEventArgs.ChangedConfig.ContainsKey("usenet.providers")) return;
 
-            // update the connection-pool according to the new config
-            var newUsenetClient = CreateDownloadingNntpClient(configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
-            ReplaceUnderlyingClient(newUsenetClient);
+            // Config updates can arrive concurrently. Serializing the read/build/swap
+            // sequence prevents a slower older build from publishing after a newer one.
+            lock (_reloadLock)
+            {
+                if (_disposed) return;
+                var newUsenetClient = CreateDownloadingNntpClient(
+                    configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
+                _drainingClient.Replace(newUsenetClient);
+            }
         };
+        _configManager.OnConfigChanged += _configChangedHandler;
+    }
+
+    public override void Dispose()
+    {
+        lock (_reloadLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _configManager.OnConfigChanged -= _configChangedHandler;
+            base.Dispose();
+        }
+
+        GC.SuppressFinalize(this);
     }
 
     private static INntpClient CreateDownloadingNntpClient
