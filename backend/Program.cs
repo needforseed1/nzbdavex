@@ -132,6 +132,8 @@ class Program
             .AddSingleton<PlayResolutionCoalescer>()
             .AddSingleton<CandidateNegativeCache>()
             .AddSingleton<WardenStore>()
+            .AddSingleton<SettingsCoordinator>()
+            .AddHostedService(sp => sp.GetRequiredService<SettingsCoordinator>())
             .AddSingleton<WardenRemoteSourceService>()
             .AddHostedService(sp => sp.GetRequiredService<WardenRemoteSourceService>())
             .AddSingleton<WardenBackupService>()

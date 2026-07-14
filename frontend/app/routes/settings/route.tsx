@@ -15,7 +15,7 @@ import { isPreflightSettingsValid, PreflightSettings } from "./preflight/preflig
 import { isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
 import { isWardenSettingsValid, WardenSettings } from "./warden/warden";
 import { isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
 import { getDirtySettingsSections, getValidationSections } from "./settings-state";
@@ -27,10 +27,18 @@ export async function loader({ request }: Route.LoaderArgs) {
         backendClient.getBlobMigrationRemaining(),
     ]);
 
-    const config = Object.fromEntries(settingsMetadata.map(item => [item.key, item.effectiveValue]));
+    const config = Object.fromEntries(settingsMetadata.settings.map(item => [item.key, item.effectiveValue]));
 
     return {
         config,
+        revision: settingsMetadata.revision,
+        sync: settingsMetadata.sync,
+        environmentActive: settingsMetadata.settings
+            .filter(item => item.source === "environment")
+            .map(item => `${item.yamlPath} (${item.environmentFallback})`),
+        environmentShadowed: settingsMetadata.settings
+            .filter(item => item.source === "yaml/sqlite" && item.environmentPresent)
+            .map(item => ({ key: item.key, label: `${item.yamlPath} (${item.environmentFallback})` })),
         blobMigrationRemaining,
     }
 }
@@ -43,6 +51,16 @@ export default function Settings(props: Route.ComponentProps) {
 
 type BodyProps = {
     config: Record<string, string>,
+    revision: number,
+    sync: {
+        enabled: boolean,
+        healthy: boolean,
+        path: string,
+        error?: string | null,
+        dirty: boolean,
+    },
+    environmentActive: string[],
+    environmentShadowed: { key: string, label: string }[],
     blobMigrationRemaining: number,
 };
 
@@ -53,6 +71,9 @@ function Body(props: BodyProps) {
     const [isSaving, setIsSaving] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
+    const [saveWarning, setSaveWarning] = useState<string | null>(null);
+    const [revision, setRevision] = useState(props.revision);
+    const [externalRevision, setExternalRevision] = useState<number | null>(null);
     const [activeTab, setActiveTab] = useState('usenet');
 
     // derived variables
@@ -115,6 +136,7 @@ function Body(props: BodyProps) {
         setNewConfig(config);
         setIsSaved(false);
         setSaveError(null);
+        setSaveWarning(null);
     }, [config, setNewConfig]);
 
     const onSave = useCallback(async () => {
@@ -129,11 +151,14 @@ function Body(props: BodyProps) {
         try {
             const form = new FormData();
             form.append("config", JSON.stringify(changedConfig));
+            form.append("revision", String(revision));
             const response = await fetch("/settings/update", {
                 method: "POST",
                 body: form,
             });
-            const result = await response.json().catch(() => null) as { status?: boolean, error?: string } | null;
+            const result = await response.json().catch(() => null) as {
+                status?: boolean, error?: string, warning?: string, revision?: number
+            } | null;
             if (!response.ok || result?.status !== true) {
                 throw new Error(result?.error || `Failed to save settings (${response.status})`);
             }
@@ -144,6 +169,9 @@ function Body(props: BodyProps) {
                 "rclone.pass": "",
             };
             setConfig(savedConfig);
+            if (Number.isSafeInteger(result?.revision)) setRevision(result!.revision!);
+            setSaveWarning(result?.warning || null);
+            setExternalRevision(null);
             setNewConfig(current => ({
                 ...current,
                 // Clear a successfully submitted replacement from browser
@@ -161,10 +189,104 @@ function Body(props: BodyProps) {
         } finally {
             setIsSaving(false);
         }
-    }, [config, newConfig, setIsSaving, setIsSaved, setConfig]);
+    }, [config, newConfig, revision, setIsSaving, setIsSaved, setConfig]);
+
+    const resetToEnvironment = useCallback(async (key: string) => {
+        setIsSaving(true);
+        setSaveError(null);
+        try {
+            const form = new FormData();
+            form.append("config", "{}");
+            form.append("revision", String(revision));
+            form.append("reset", key);
+            const response = await fetch("/settings/update", { method: "POST", body: form });
+            const result = await response.json().catch(() => null) as { status?: boolean, error?: string } | null;
+            if (!response.ok || result?.status !== true)
+                throw new Error(result?.error || `Failed to reset setting (${response.status})`);
+            window.location.reload();
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : "Failed to reset setting");
+            setIsSaving(false);
+        }
+    }, [revision]);
+
+    const rebuildSettingsFile = useCallback(async () => {
+        if (!window.confirm("Replace settings.yaml with SQLite's last-known-good settings?")) return;
+        setIsSaving(true);
+        setSaveError(null);
+        try {
+            const response = await fetch("/api/settings-sync", { method: "POST" });
+            const result = await response.json().catch(() => null) as { status?: boolean, error?: string } | null;
+            if (!response.ok || result?.status !== true)
+                throw new Error(result?.error || `Failed to rebuild settings.yaml (${response.status})`);
+            window.location.reload();
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : "Failed to rebuild settings.yaml");
+            setIsSaving(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        let ws: WebSocket | null = null;
+        try {
+            ws = new WebSocket(window.location.origin.replace(/^http/, "ws"));
+            ws.onopen = () => ws?.send(JSON.stringify({ settings: "event" }));
+            ws.onmessage = event => {
+                try {
+                    const envelope = JSON.parse(event.data) as { Topic?: string, Message?: string };
+                    if (envelope.Topic !== "settings" || !envelope.Message) return;
+                    const change = JSON.parse(envelope.Message) as { revision?: number, source?: string };
+                    if (!Number.isSafeInteger(change.revision) || change.revision! <= revision) return;
+                    if (isSaving && change.source === "api") return;
+                    if (!isUpdated) window.location.reload();
+                    else setExternalRevision(change.revision!);
+                } catch {
+                    // Ignore unrelated or malformed websocket messages.
+                }
+            };
+        } catch {
+            // Saving still has optimistic concurrency if websocket setup fails.
+        }
+        return () => ws?.close();
+    }, [revision, isUpdated, isSaving]);
 
     return (
         <div className={styles.container}>
+            {props.sync.enabled && (
+                <Alert variant={props.sync.healthy ? "info" : "danger"}>
+                    Settings file: <code>{props.sync.path}</code>. {props.sync.healthy
+                        ? "Synchronization is active."
+                        : `Synchronization needs attention: ${props.sync.error || "unknown error"}`}
+                    {!props.sync.healthy && <>{" "}<Button size="sm" variant="danger"
+                        disabled={isSaving || isUpdated} onClick={rebuildSettingsFile}>
+                        Rebuild from SQLite
+                    </Button></>}
+                </Alert>
+            )}
+            {(props.environmentActive.length > 0 || props.environmentShadowed.length > 0) && (
+                <Alert variant="secondary">
+                    {props.environmentActive.length > 0 && <div>
+                        Environment fallbacks active: {props.environmentActive.join(", ")}.
+                    </div>}
+                    {props.environmentShadowed.length > 0 && <div>
+                        Explicit settings override present environment values:{" "}
+                        {props.environmentShadowed.map(item => (
+                            <Button key={item.key} size="sm" variant="outline-secondary"
+                                disabled={isSaving || isUpdated}
+                                onClick={() => resetToEnvironment(item.key)}>
+                                Use {item.label}
+                            </Button>
+                        ))}
+                    </div>}
+                </Alert>
+            )}
+            {externalRevision !== null && (
+                <Alert variant="warning">
+                    Settings changed outside this form. Your unsaved edits were preserved.{" "}
+                    <Button size="sm" variant="warning" onClick={() => window.location.reload()}>Reload</Button>{" "}
+                    <Button size="sm" variant="outline-secondary" onClick={() => setExternalRevision(null)}>Review my edits</Button>
+                </Alert>
+            )}
             <Tabs
                 activeKey={activeTab}
                 onSelect={x => setActiveTab(x!)}
@@ -254,6 +376,11 @@ function Body(props: BodyProps) {
             {saveError && (
                 <Alert variant="danger" dismissible onClose={() => setSaveError(null)}>
                     Settings were not saved: {saveError}. Review the error and try again.
+                </Alert>
+            )}
+            {saveWarning && (
+                <Alert variant="warning" dismissible onClose={() => setSaveWarning(null)}>
+                    Settings were saved to SQLite, but file synchronization needs attention: {saveWarning}
                 </Alert>
             )}
             {isUpdated && <Button

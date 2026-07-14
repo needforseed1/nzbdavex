@@ -242,6 +242,61 @@ public partial class WardenStore
         return (added, skipped);
     }
 
+    public void ReplaceRemoteSources(IReadOnlyList<WardenRemoteSourceSetting> sources)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        var existing = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using (var select = conn.CreateCommand())
+        {
+            select.Transaction = tx;
+            select.CommandText = "SELECT id, url FROM warden_sources WHERE id <> 'local' AND url IS NOT NULL";
+            using var reader = select.ExecuteReader();
+            while (reader.Read()) existing[reader.GetString(1)] = reader.GetString(0);
+        }
+
+        var retained = new HashSet<string>(StringComparer.Ordinal);
+        for (var sort = 0; sort < sources.Count; sort++)
+        {
+            var source = sources[sort];
+            var id = existing.GetValueOrDefault(source.Url) ?? "src_" + Guid.NewGuid().ToString("n")[..12];
+            retained.Add(id);
+            using var upsert = conn.CreateCommand();
+            upsert.Transaction = tx;
+            upsert.CommandText =
+                "INSERT INTO warden_sources " +
+                "(id, kind, name, url, enabled, trust, refresh_hours, last_checked, last_updated, status, sort) " +
+                "VALUES ($id, 'remote', $name, $url, $enabled, $trust, $refresh, 0, 0, NULL, $sort) " +
+                "ON CONFLICT(id) DO UPDATE SET kind = 'remote', name = $name, url = $url, " +
+                "enabled = $enabled, trust = $trust, refresh_hours = $refresh, sort = $sort";
+            upsert.Parameters.AddWithValue("$id", id);
+            upsert.Parameters.AddWithValue("$name", source.Name.Trim());
+            upsert.Parameters.AddWithValue("$url", source.Url.Trim());
+            upsert.Parameters.AddWithValue("$enabled", source.Enabled ? 1 : 0);
+            upsert.Parameters.AddWithValue("$trust", NormalizeTrust(source.Trust));
+            upsert.Parameters.AddWithValue("$refresh", ClampRefreshHours(source.RefreshHours));
+            upsert.Parameters.AddWithValue("$sort", sort + 1);
+            upsert.ExecuteNonQuery();
+        }
+
+        var obsolete = existing.Values.Where(x => !retained.Contains(x)).ToArray();
+        foreach (var id in obsolete)
+        {
+            using var deleteEntries = conn.CreateCommand();
+            deleteEntries.Transaction = tx;
+            deleteEntries.CommandText = "DELETE FROM warden_entries WHERE source_id = $id";
+            deleteEntries.Parameters.AddWithValue("$id", id);
+            deleteEntries.ExecuteNonQuery();
+
+            using var deleteSource = conn.CreateCommand();
+            deleteSource.Transaction = tx;
+            deleteSource.CommandText = "DELETE FROM warden_sources WHERE id = $id";
+            deleteSource.Parameters.AddWithValue("$id", id);
+            deleteSource.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
     public void UpdateSource(string id, bool? enabled, string? trust, int? refreshHours, string? name)
     {
         if (id == LocalSourceId) return;

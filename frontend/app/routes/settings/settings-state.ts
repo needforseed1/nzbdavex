@@ -2,6 +2,11 @@ export type SettingsSection =
     "usenet" | "indexers" | "profiles" | "watchdog" | "preflight" | "watchtower" | "warden"
     | "webdav" | "sabnzbd" | "arrs" | "repairs" | "rclone" | "maintenance";
 
+export const SETTINGS_SECTION_ORDER: readonly SettingsSection[] = [
+    "usenet", "indexers", "profiles", "watchdog", "preflight", "watchtower", "warden",
+    "webdav", "sabnzbd", "arrs", "repairs", "rclone", "maintenance",
+];
+
 export function getSettingsSection(key: string): SettingsSection | null {
     if (key.startsWith("usenet.")) return "usenet";
     if (["indexers.instances", "api.user-agent", "api.search-user-agent", "search.exclude-patterns"].includes(key))

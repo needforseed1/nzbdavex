@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getDirtySettingsSections, getSettingsSection, getValidationSections } from "./settings-state";
+import {
+    getDirtySettingsSections, getSettingsSection, getValidationSections, SETTINGS_SECTION_ORDER,
+} from "./settings-state";
+
+test("keeps the canonical GUI and YAML section order", () => {
+    assert.deepEqual(SETTINGS_SECTION_ORDER, [
+        "usenet", "indexers", "profiles", "watchdog", "preflight", "watchtower", "warden",
+        "webdav", "sabnzbd", "arrs", "repairs", "rclone", "maintenance",
+    ]);
+});
 
 test("assigns representative keys to every settings section", () => {
     const expected = new Map([

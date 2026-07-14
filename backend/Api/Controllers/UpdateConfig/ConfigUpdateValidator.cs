@@ -9,6 +9,31 @@ namespace NzbWebDAV.Api.Controllers.UpdateConfig;
 
 internal static class ConfigUpdateValidator
 {
+    public static void ValidateSnapshot(IReadOnlyDictionary<string, string> values)
+    {
+        Validate(values.Select(x => new ConfigItem { ConfigName = x.Key, ConfigValue = x.Value }).ToArray());
+
+        var indexers = Deserialize<IndexerConfig>(values["indexers.instances"], "Indexer settings");
+        var profiles = Deserialize<ProfileConfig>(values["profiles.instances"], "Search Profiles");
+        var indexerIds = indexers.Indexers.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles.Profiles)
+            if (profile.IndexerIds.Any(x => !indexerIds.Contains(x)))
+                Invalid($"Search Profile {profile.Name} references an indexer that does not exist.");
+
+        var watchtowerToken = values["watchtower.profile-token"].Trim();
+        if (watchtowerToken.Length > 0
+            && profiles.Profiles.All(x => !string.Equals(x.Token, watchtowerToken, StringComparison.Ordinal)))
+            Invalid("Watchtower references a Search Profile token that does not exist.");
+
+        if (values["repair.enable"] == "true")
+        {
+            var arr = Deserialize<ArrConfig>(values["arr.instances"], "Radarr/Sonarr settings");
+            if (arr.RadarrInstances.Count + arr.SonarrInstances.Count == 0
+                || string.IsNullOrWhiteSpace(values["media.library-dir"]))
+                Invalid("Repairs require a media library directory and at least one Radarr/Sonarr instance.");
+        }
+    }
+
     public static void Validate(IReadOnlyList<ConfigItem> items)
     {
         var changed = items

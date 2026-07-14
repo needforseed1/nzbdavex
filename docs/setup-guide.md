@@ -83,6 +83,10 @@ services:
       - PGID=1000
       # Used by local-time maintenance schedules
       - TZ=America/New_York
+      # Optional: create and live-sync /config/settings.yaml (contains credentials)
+      # - SETTINGS_FILE_SYNC_ENABLED=true
+      # Optional custom path; defaults to /config/settings.yaml
+      # - SETTINGS_FILE_PATH=/config/settings.yaml
     volumes:
       - ./config:/config
       - /mnt:/mnt
@@ -94,6 +98,29 @@ docker compose up -d --build
 ```
 
 To update later: `git pull` in the cloned `nzbdavex` directory, then `docker compose up -d --build` again.
+
+#### Optional live `settings.yaml`
+
+Bidirectional file synchronization is permanently opt-in because the generated
+file contains reusable provider passwords, API keys, and tokens in cleartext.
+Enable it with `SETTINGS_FILE_SYNC_ENABLED=true`. The default file is
+`/config/settings.yaml`; `SETTINGS_FILE_PATH` can select another absolute path.
+
+On first enablement, nzbdavex creates a complete, typed YAML projection of the
+current SQLite settings. GUI saves rewrite it canonically in GUI order, and
+valid edits made while the application is running are imported back into
+SQLite. Custom comments are discarded. Setting an environment-backed field to
+`null` removes its explicit override, restoring the precedence
+`environment -> default` for that field.
+
+The file is forced to mode `0600`. If permissions cannot be corrected, file
+synchronization is disabled while the application continues using SQLite's
+last-known-good configuration. Invalid YAML is preserved for correction and is
+never partially applied. The Settings page shows synchronization health and
+offers a reload when another editor changes the configuration.
+
+Treat `/config/settings.yaml`, editor swap files, and all `/config` backups as
+credentials. Do not attach them to diagnostics or commit them to source control.
 
 ### 2. Core Configuration
 

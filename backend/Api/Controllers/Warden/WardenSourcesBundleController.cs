@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using NzbWebDAV.Config;
 using NzbWebDAV.Services;
 using Serilog;
 
@@ -10,7 +11,8 @@ namespace NzbWebDAV.Api.Controllers.Warden;
 
 [ApiController]
 [Route("api/warden-sources-import")]
-public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourceService remote) : BaseApiController
+public class WardenSourcesImportController(
+    WardenStore warden, WardenRemoteSourceService remote, SettingsCoordinator coordinator) : BaseApiController
 {
     private const int MaxItems = 1000;
     private const long MaxUploadBytes = 5L * 1024 * 1024;
@@ -49,7 +51,8 @@ public class WardenSourcesImportController(WardenStore warden, WardenRemoteSourc
         if (specs.Count == 0 && invalid == 0)
             throw new BadHttpRequestException("Nothing found.");
 
-        var (added, skipped) = warden.ImportRemoteSources(specs);
+        var (added, skipped) = await coordinator.ApplyOutOfBandChangeAsync("warden",
+            () => warden.ImportRemoteSources(specs), ct).ConfigureAwait(false);
 
         if (added > 0)
             _ = Task.Run(async () =>

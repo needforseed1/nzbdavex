@@ -17,3 +17,6 @@ nuget
 .idea/
 .vscode/
 .claude/
+
+# Credential-bearing synchronized runtime configuration
+settings.yaml

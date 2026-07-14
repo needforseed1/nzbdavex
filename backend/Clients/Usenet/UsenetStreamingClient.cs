@@ -49,7 +49,11 @@ public class UsenetStreamingClient : WrappingNntpClient
         _configManager = configManager;
         _configChangedHandler = (_, configEventArgs) =>
         {
-            if (!configEventArgs.ChangedConfig.ContainsKey("usenet.providers")) return;
+            var changed = configEventArgs.ChangedConfig;
+            if (!changed.ContainsKey("usenet.providers")
+                && !changed.ContainsKey("usenet.segment-cache.enabled")
+                && !changed.ContainsKey("usenet.segment-cache.path")
+                && !changed.ContainsKey("usenet.segment-cache.max-gb")) return;
 
             // Config updates can arrive concurrently. Serializing the read/build/swap
             // sequence prevents a slower older build from publishing after a newer one.

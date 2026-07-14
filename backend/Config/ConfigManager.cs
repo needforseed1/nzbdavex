@@ -131,17 +131,22 @@ public class ConfigManager
     }
 
     public void UpdateValues(List<ConfigItem> configItems)
+        => ApplyChanges(configItems.ToDictionary(
+            x => x.ConfigName, x => (string?)x.ConfigValue, StringComparer.Ordinal));
+
+    public void ApplyChanges(IReadOnlyDictionary<string, string?> changes)
     {
         lock (_config)
         {
-            foreach (var configItem in configItems)
+            foreach (var (key, value) in changes)
             {
-                _config[configItem.ConfigName] = configItem.ConfigValue;
-                _invalidConfigWarnings.Remove(configItem.ConfigName);
+                if (value is null) _config.Remove(key);
+                else _config[key] = value;
+                _invalidConfigWarnings.Remove(key);
             }
         }
 
-        var changedConfig = configItems.ToDictionary(x => x.ConfigName, x => x.ConfigValue);
+        var changedConfig = changes.ToDictionary(x => x.Key, x => x.Value ?? "", StringComparer.Ordinal);
         OnConfigChanged?.Invoke(this, new ConfigEventArgs { ChangedConfig = changedConfig });
     }
 

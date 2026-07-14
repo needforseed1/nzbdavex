@@ -2,19 +2,20 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using NzbWebDAV.Config;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.Controllers.Warden;
 
 [ApiController]
 [Route("api/warden-backup")]
-public class WardenBackupController(WardenStore warden) : BaseApiController
+public class WardenBackupController(WardenStore warden, SettingsCoordinator coordinator) : BaseApiController
 {
     private static readonly Regex RepoRx = new("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$");
 
     protected override Task<IActionResult> HandleRequest()
     {
-        return Task.FromResult(HttpContext.Request.Method == HttpMethods.Post ? Save() : Status());
+        return HttpContext.Request.Method == HttpMethods.Post ? SaveAsync() : Task.FromResult(Status());
     }
 
     private IActionResult Status()
@@ -23,7 +24,7 @@ public class WardenBackupController(WardenStore warden) : BaseApiController
         return Ok(ToResponse(s));
     }
 
-    private IActionResult Save()
+    private async Task<IActionResult> SaveAsync()
     {
         var form = HttpContext.Request.Form;
         var repo = form["repo"].ToString().Trim();
@@ -46,7 +47,11 @@ public class WardenBackupController(WardenStore warden) : BaseApiController
         if (enabled && token is null && !warden.GetBackupSettings().HasToken)
             throw new BadHttpRequestException("A GitHub token is required to enable backups.");
 
-        warden.SaveBackupSettings(enabled, repo, path, branch, scope, interval, token);
+        await coordinator.ApplyOutOfBandChangeAsync("warden", () =>
+        {
+            warden.SaveBackupSettings(enabled, repo, path, branch, scope, interval, token);
+            return true;
+        }, HttpContext.RequestAborted).ConfigureAwait(false);
         return Ok(ToResponse(warden.GetBackupSettings()));
     }
 

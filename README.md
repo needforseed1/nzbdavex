@@ -15,6 +15,7 @@ This is an extended fork of [nzbdav](https://github.com/nzbdav-dev/nzbdav) with 
 - **Watchdog**: automated verification and re-fetch workflows driven by user-defined rules
 - **Search Profiles**: token-scoped search-API endpoints with per-profile indexer selection, consumable by any compatible external client
 - **Health checks & repairs**: detect and replace content no longer available at the source
+- **Optional live settings file**: bidirectionally synchronize the GUI and a typed `/config/settings.yaml`
 
 ## Getting Started
 

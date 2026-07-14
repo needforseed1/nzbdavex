@@ -208,16 +208,22 @@ class BackendClient {
         return data.configItems || [];
     }
 
-    public async getSettingsMetadata(): Promise<SettingMetadata[]> {
+    public async getSettingsMetadata(): Promise<SettingsMetadataResponse> {
         const response = await fetch(BACKEND_URL + "/api/get-settings-metadata", {
             headers: { "x-api-key": FRONTEND_BACKEND_API_KEY },
         });
         if (!response.ok) throw new Error(`Failed to get settings metadata: ${response.status}`);
         const data = await response.json();
-        return data.settings || [];
+        return {
+            settings: data.settings || [],
+            revision: Number.isInteger(data.revision) ? data.revision : 0,
+            sync: data.sync || { enabled: false, healthy: true, path: "", error: null, revision: 0, dirty: false },
+        };
     }
 
-    public async updateConfig(configItems: ConfigItem[]): Promise<boolean> {
+    public async updateConfig(
+        configItems: ConfigItem[], revision: number, resetKeys: string[] = []
+    ): Promise<UpdateConfigResult> {
         const url = BACKEND_URL + "/api/update-config";
 
         const apiKey = FRONTEND_BACKEND_API_KEY;
@@ -226,6 +232,8 @@ class BackendClient {
             headers: { "x-api-key": apiKey },
             body: (() => {
                 const form = new FormData();
+                form.append("revision", String(revision));
+                for (const key of resetKeys) form.append("reset", key);
                 for (const item of configItems) {
                     form.append(item.configName, item.configValue);
                 }
@@ -233,11 +241,20 @@ class BackendClient {
             })()
         });
 
-        if (!response.ok) {
-            throw new Error(`Failed to update config items: ${(await response.json()).error}`);
-        }
         const data = await response.json();
-        return data.status;
+        if (response.status === 409) return {
+            status: false,
+            conflict: true,
+            revision: Number.isInteger(data.revision) ? data.revision : revision,
+            error: data.error || "Settings changed in another editor.",
+        };
+        if (!response.ok) throw new Error(`Failed to update config items: ${data.error || response.status}`);
+        return {
+            status: data.status === true,
+            revision: Number.isInteger(data.revision) ? data.revision : revision,
+            warning: data.warning || undefined,
+            error: data.error || undefined,
+        };
     }
 
     public async getBlobMigrationRemaining(): Promise<number> {
@@ -527,6 +544,39 @@ export type ConfigItem = {
 export type SettingMetadata = {
     key: string,
     effectiveValue: string,
+    source: "yaml/sqlite" | "environment" | "default",
+    environmentFallback?: string | null,
+    environmentPresent: boolean,
+    yamlPath: string,
+    section: string,
+    subsection: string,
+    order: number,
+    dataType: string,
+    applyPolicy: "immediate" | "component_reload" | "restart_required",
+    sensitive: boolean,
+}
+
+export type SettingsSyncStatus = {
+    enabled: boolean,
+    healthy: boolean,
+    path: string,
+    error?: string | null,
+    revision: number,
+    dirty: boolean,
+}
+
+export type SettingsMetadataResponse = {
+    settings: SettingMetadata[],
+    revision: number,
+    sync: SettingsSyncStatus,
+}
+
+export type UpdateConfigResult = {
+    status: boolean,
+    revision: number,
+    warning?: string,
+    error?: string,
+    conflict?: boolean,
 }
 
 export type WatchtowerQuery = {

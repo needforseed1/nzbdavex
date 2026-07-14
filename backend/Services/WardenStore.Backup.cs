@@ -43,7 +43,8 @@ public partial class WardenStore
     public (string? Sha, string? Hash) GetBackupSyncState()
         => (GetBackupMeta(BkSha), GetBackupMeta(BkHash));
 
-    public void SaveBackupSettings(bool enabled, string repo, string path, string branch, string scope, int intervalHours, string? token)
+    public void SaveBackupSettings(bool enabled, string repo, string path, string branch, string scope,
+        int intervalHours, string? token, bool replaceToken = false)
     {
         var sets = new Dictionary<string, string?>
         {
@@ -54,7 +55,7 @@ public partial class WardenStore
             [BkScope] = scope == "merged" ? "merged" : "local",
             [BkInterval] = Math.Clamp(intervalHours, 1, 720).ToString(),
         };
-        if (token is not null) sets[BkToken] = token;
+        if (replaceToken || token is not null) sets[BkToken] = token;
         WriteBackupMeta(sets);
     }
 

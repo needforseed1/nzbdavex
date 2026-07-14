@@ -9,7 +9,10 @@ namespace NzbWebDAV.Api.Controllers.GetSettingsMetadata;
 [ApiController]
 [Route("api/get-settings-metadata")]
 // Internal bootstrap contract for the bundled frontend, not a versioned public settings schema.
-public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigManager configManager) : BaseApiController
+public class GetSettingsMetadataController(
+    DavDatabaseClient dbClient,
+    ConfigManager configManager,
+    SettingsCoordinator coordinator) : BaseApiController
 {
     private static readonly HashSet<string> MeaningfulBlankValues =
     [
@@ -27,14 +30,39 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
             .ToDictionaryAsync(x => x.ConfigName, x => x.ConfigValue, HttpContext.RequestAborted)
             .ConfigureAwait(false);
 
-        var items = SettingsRegistry.Defaults.Keys.Select(key =>
+        var items = SettingsSchema.Ordered.Select(definition =>
         {
+            var key = definition.Key;
             stored.TryGetValue(key, out var storedValue);
             var effective = ResolveEffectiveValue(key, storedValue, configManager);
-            return new SettingMetadataItem { Key = key, EffectiveValue = effective };
+            var explicitValue = storedValue is not null
+                && (!string.IsNullOrWhiteSpace(storedValue) || MeaningfulBlankValues.Contains(key));
+            var environmentPresent = definition.EnvironmentFallback is not null
+                && EnvironmentUtil.GetEnvironmentVariable(definition.EnvironmentFallback) is not null;
+            var environmentActive = !explicitValue && environmentPresent;
+            return new SettingMetadataItem
+            {
+                Key = key,
+                EffectiveValue = effective,
+                Source = explicitValue ? "yaml/sqlite" : environmentActive ? "environment" : "default",
+                EnvironmentFallback = definition.EnvironmentFallback,
+                EnvironmentPresent = environmentPresent,
+                YamlPath = string.Join('.', definition.YamlPath),
+                Section = definition.Section,
+                Subsection = definition.Subsection,
+                Order = definition.Order,
+                DataType = definition.DataType.ToString().ToLowerInvariant(),
+                ApplyPolicy = definition.ApplyPolicy switch
+                {
+                    SettingApplyPolicy.ComponentReload => "component_reload",
+                    SettingApplyPolicy.RestartRequired => "restart_required",
+                    _ => "immediate",
+                },
+                Sensitive = definition.Sensitive,
+            };
         }).ToList();
 
-        return Ok(new { status = true, settings = items });
+        return Ok(new { status = true, revision = coordinator.Status.Revision, sync = coordinator.Status, settings = items });
     }
 
     internal static string ResolveEffectiveValue(string key, string? storedValue, ConfigManager config)
@@ -64,5 +92,15 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
     {
         public required string Key { get; init; }
         public required string EffectiveValue { get; init; }
+        public required string Source { get; init; }
+        public string? EnvironmentFallback { get; init; }
+        public bool EnvironmentPresent { get; init; }
+        public required string YamlPath { get; init; }
+        public required string Section { get; init; }
+        public required string Subsection { get; init; }
+        public int Order { get; init; }
+        public required string DataType { get; init; }
+        public required string ApplyPolicy { get; init; }
+        public bool Sensitive { get; init; }
     }
 }

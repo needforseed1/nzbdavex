@@ -26,7 +26,8 @@ public class WardenSourcesController(WardenStore warden, ConfigManager configMan
 
 [ApiController]
 [Route("api/warden-source-add")]
-public class WardenSourceAddController(WardenStore warden, WardenRemoteSourceService remote) : BaseApiController
+public class WardenSourceAddController(
+    WardenStore warden, WardenRemoteSourceService remote, SettingsCoordinator coordinator) : BaseApiController
 {
     protected override async Task<IActionResult> HandleRequest()
     {
@@ -45,7 +46,9 @@ public class WardenSourceAddController(WardenStore warden, WardenRemoteSourceSer
         if (string.IsNullOrWhiteSpace(trust)) trust = WardenStore.TrustCorroborate;
         var refreshHours = int.TryParse(form["refreshHours"].ToString(), out var rh) ? rh : 24;
 
-        var id = warden.AddSource("remote", name, url, trust, refreshHours);
+        var id = await coordinator.ApplyOutOfBandChangeAsync("warden",
+            () => warden.AddSource("remote", name, url, trust, refreshHours),
+            HttpContext.RequestAborted).ConfigureAwait(false);
         var source = warden.GetSources().FirstOrDefault(s => s.Id == id);
         var status = source is null ? "error" : await remote.RefreshAsync(source, HttpContext.RequestAborted);
 
@@ -55,9 +58,9 @@ public class WardenSourceAddController(WardenStore warden, WardenRemoteSourceSer
 
 [ApiController]
 [Route("api/warden-source-update")]
-public class WardenSourceUpdateController(WardenStore warden) : BaseApiController
+public class WardenSourceUpdateController(WardenStore warden, SettingsCoordinator coordinator) : BaseApiController
 {
-    protected override Task<IActionResult> HandleRequest()
+    protected override async Task<IActionResult> HandleRequest()
     {
         if (!HttpContext.Request.HasFormContentType)
             throw new BadHttpRequestException("Missing form body.");
@@ -70,16 +73,20 @@ public class WardenSourceUpdateController(WardenStore warden) : BaseApiControlle
         int? refreshHours = form.ContainsKey("refreshHours") && int.TryParse(form["refreshHours"].ToString(), out var rh) ? rh : null;
         var name = form.ContainsKey("name") ? form["name"].ToString() : null;
 
-        warden.UpdateSource(id, enabled, trust, refreshHours, name);
-        return Task.FromResult<IActionResult>(Ok(new WardenSourceMutateResponse { Status = true, SourceId = id }));
+        await coordinator.ApplyOutOfBandChangeAsync("warden", () =>
+        {
+            warden.UpdateSource(id, enabled, trust, refreshHours, name);
+            return true;
+        }, HttpContext.RequestAborted).ConfigureAwait(false);
+        return Ok(new WardenSourceMutateResponse { Status = true, SourceId = id });
     }
 }
 
 [ApiController]
 [Route("api/warden-source-remove")]
-public class WardenSourceRemoveController(WardenStore warden) : BaseApiController
+public class WardenSourceRemoveController(WardenStore warden, SettingsCoordinator coordinator) : BaseApiController
 {
-    protected override Task<IActionResult> HandleRequest()
+    protected override async Task<IActionResult> HandleRequest()
     {
         if (!HttpContext.Request.HasFormContentType)
             throw new BadHttpRequestException("Missing form body.");
@@ -87,11 +94,14 @@ public class WardenSourceRemoveController(WardenStore warden) : BaseApiControlle
         var id = form["id"].ToString();
         if (string.IsNullOrWhiteSpace(id)) throw new BadHttpRequestException("Missing source id.");
 
-        var removed = form["action"].ToString() == "clear"
+        var isClear = form["action"].ToString() == "clear";
+        var removed = isClear
             ? warden.ClearSource(id)
-            : warden.RemoveSource(id) ? 1 : 0;
+            : await coordinator.ApplyOutOfBandChangeAsync("warden",
+                () => warden.RemoveSource(id) ? 1 : 0,
+                HttpContext.RequestAborted).ConfigureAwait(false);
 
-        return Task.FromResult<IActionResult>(Ok(new WardenSourceMutateResponse { Status = true, SourceId = id, Removed = removed }));
+        return Ok(new WardenSourceMutateResponse { Status = true, SourceId = id, Removed = removed });
     }
 }
 

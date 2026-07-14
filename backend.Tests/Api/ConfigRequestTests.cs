@@ -57,6 +57,21 @@ public class ConfigRequestTests
         Assert.True(PasswordUtil.Verify(password.ConfigValue, "new-password"));
     }
 
+    [Fact]
+    public void RevisionAndResetControlsAreNotTreatedAsSettings()
+    {
+        var context = FormContext(
+            ("revision", "42"),
+            ("reset", "api.categories"),
+            ("api.manual-category", "manual"));
+
+        var request = new UpdateConfigRequest(context);
+
+        Assert.Equal(42, request.BaseRevision);
+        Assert.Equal(["api.categories"], request.ResetKeys);
+        Assert.Equal("api.manual-category", Assert.Single(request.ConfigItems).ConfigName);
+    }
+
     private static DefaultHttpContext FormContext(params (string Key, string Value)[] values)
     {
         var context = new DefaultHttpContext();
