@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.3](https://github.com/needforseed1/nzbdavex/compare/v1.3.2...v1.3.3) (2026-07-14)
+
+### Fixes
+
+* Health-only and backup-plus-health providers now prewarm 50% of their configured connections instead of the full allowance. Pools can still expand on demand, while startup authentication pressure, idle socket count, and baseline memory use are substantially reduced on high-connection installations.
+
 ## [1.3.2](https://github.com/needforseed1/nzbdavex/compare/v1.3.1...v1.3.2) (2026-07-14)
 
 This release tightens provider recovery and live reconfiguration, removes several preparation stalls, and makes the resulting work substantially easier to inspect.

@@ -111,9 +111,9 @@ public class MultiProviderNntpClient(
     {
         // Pool providers are already warmed by queue prewarm and then exercised by
         // BODY/ARTICLE prep. Health-only and backup+STAT providers otherwise sit
-        // outside that path, so establish their full configured capacity while
-        // prep is busy instead of paying connection/authentication latency when
-        // the health phase begins.
+        // outside that path, so establish the same bounded warm floor used at
+        // startup while prep is busy. The pool can still grow to its configured
+        // maximum when health work actually demands it.
         var eligible = providers
             .Where(x => x.ProviderType == ProviderType.BackupAndStats ||
                         (UsenetStreamingClient.HealthProviderPrewarmEnabled &&
@@ -124,12 +124,14 @@ public class MultiProviderNntpClient(
 
         await Task.WhenAll(eligible.Select(async provider =>
         {
+            var target = UsenetStreamingClient.GetWarmConnectionTarget(
+                provider.ProviderType, provider.MaxConnections);
             try
             {
-                await provider.PrewarmAsync(provider.MaxConnections, cancellationToken).ConfigureAwait(false);
+                await provider.PrewarmAsync(target, cancellationToken).ConfigureAwait(false);
                 Log.Debug(
                     "Health prewarm provider={Provider} target={Target} live={Live} idle={Idle}",
-                    provider.Host, provider.MaxConnections,
+                    provider.Host, target,
                     provider.LiveConnections, provider.IdleConnections);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -139,7 +141,7 @@ public class MultiProviderNntpClient(
             catch (Exception e)
             {
                 Log.Debug(e, "Health prewarm failed for provider={Provider} target={Target}",
-                    provider.Host, provider.MaxConnections);
+                    provider.Host, target);
             }
         })).ConfigureAwait(false);
     }

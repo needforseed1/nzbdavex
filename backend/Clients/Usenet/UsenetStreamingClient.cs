@@ -170,12 +170,12 @@ public class UsenetStreamingClient : WrappingNntpClient
     {
         if (maxConnections <= 0) return 0;
 
-        // Providers participating explicitly in bulk health checks benefit from
-        // having their full allowance authenticated before a job arrives. Idle
-        // sessions cost no article quota; backup+STAT providers may still serve
-        // BODY/ARTICLE later when normal failover requires them.
+        // Keep half of each health-capable provider authenticated. This preserves
+        // a useful warm floor without making large provider allowances consume
+        // excessive memory and sockets while idle. Real work can still grow the
+        // pool to its configured maximum on demand.
         if (providerType is ProviderType.HealthChecksOnly or ProviderType.BackupAndStats)
-            return HealthProviderPrewarmEnabled ? maxConnections : 0;
+            return HealthProviderPrewarmEnabled ? Math.Max(1, maxConnections / 2) : 0;
 
         return providerType == ProviderType.Pooled
             ? Math.Min(maxConnections, WarmConnectionsPerProvider)

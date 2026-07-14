@@ -10,12 +10,15 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 public class QueueConnectionWarmerTests
 {
     [Theory]
-    [InlineData(ProviderType.HealthChecksOnly, 40, 40)]
+    [InlineData(ProviderType.HealthChecksOnly, 40, 20)]
+    [InlineData(ProviderType.HealthChecksOnly, 95, 47)]
+    [InlineData(ProviderType.HealthChecksOnly, 1, 1)]
     [InlineData(ProviderType.Pooled, 100, 16)]
-    [InlineData(ProviderType.BackupAndStats, 50, 50)]
+    [InlineData(ProviderType.BackupAndStats, 50, 25)]
+    [InlineData(ProviderType.BackupAndStats, 49, 24)]
     [InlineData(ProviderType.BackupOnly, 50, 0)]
     [InlineData(ProviderType.Disabled, 50, 0)]
-    public void DedicatedHealthProvidersKeepTheirFullPoolWarm(
+    public void DedicatedHealthProvidersKeepHalfTheirPoolWarm(
         ProviderType providerType,
         int maxConnections,
         int expected)
@@ -41,7 +44,7 @@ public class QueueConnectionWarmerTests
     }
 
     [Fact]
-    public async Task HealthPrewarmFillsDedicatedHealthProvidersOnly()
+    public async Task HealthPrewarmFillsHalfOfDedicatedHealthProvidersOnly()
     {
         using var pooled = CreateProvider(ProviderType.Pooled, "pooled", 6, priority: 0);
         using var healthOnly = CreateProvider(ProviderType.HealthChecksOnly, "farm", 4, priority: 1);
@@ -53,8 +56,8 @@ public class QueueConnectionWarmerTests
         await client.PrewarmHealthCheckAsync(CancellationToken.None);
 
         Assert.Equal(0, pooled.LiveConnections);
-        Assert.Equal(4, healthOnly.LiveConnections);
-        Assert.Equal(3, backupAndStats.LiveConnections);
+        Assert.Equal(2, healthOnly.LiveConnections);
+        Assert.Equal(1, backupAndStats.LiveConnections);
         Assert.Equal(0, backupOnly.LiveConnections);
     }
 
