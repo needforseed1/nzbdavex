@@ -1133,7 +1133,9 @@ function ProviderModal({
             setLimitUnit(lim.unit);
             setInitialUsedValue(used.value);
             setInitialUsedUnit(used.unit);
-            setConnectionTested(provider !== null);
+            // Opening an existing provider is not a connection test. Preserve
+            // the two-stage Test Connection -> Save Provider workflow.
+            setConnectionTested(false);
             setTestError(null);
             setIntensity("quick");
             setIsBenchmarking(false);
