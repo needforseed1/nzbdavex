@@ -133,13 +133,6 @@ export function RcloneSettings({ config, setNewConfig }: RcloneSettingsProps) {
     );
 }
 
-export function isRcloneSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["rclone.rc-enabled"] !== newConfig["rclone.rc-enabled"]
-        || config["rclone.host"] !== newConfig["rclone.host"]
-        || config["rclone.user"] !== newConfig["rclone.user"]
-        || config["rclone.pass"] !== newConfig["rclone.pass"];
-}
-
 export function isRcloneSettingsValid(config: Record<string, string>) {
     return config["rclone.rc-enabled"] !== "true"
         || isAbsoluteHttpUrl(config["rclone.host"] ?? "");

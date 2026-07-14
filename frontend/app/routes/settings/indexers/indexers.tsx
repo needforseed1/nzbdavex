@@ -1284,13 +1284,6 @@ function IndexerModal({ show, indexer, otherIndexerNames, onClose, onSave }: Ind
     );
 }
 
-export function isIndexersSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["indexers.instances"] !== newConfig["indexers.instances"]
-        || (config["api.user-agent"] ?? "") !== (newConfig["api.user-agent"] ?? "")
-        || (config["api.search-user-agent"] ?? "") !== (newConfig["api.search-user-agent"] ?? "")
-        || (config["search.exclude-patterns"] ?? "") !== (newConfig["search.exclude-patterns"] ?? "");
-}
-
 export function isIndexersSettingsValid(newConfig: Record<string, string>) {
     try {
         if (!isIndexerConfigJsonValid(newConfig["indexers.instances"])) return false;

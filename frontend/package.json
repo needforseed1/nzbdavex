@@ -7,6 +7,7 @@
     "build:server": "tsc -p tsconfig.node.json --outDir dist-node",
     "dev": "cross-env NODE_ENV=development PORT=5173 tsx server.js",
     "start": "node dist-node/server.js",
+    "test:settings": "tsx --test app/routes/settings/settings-state.test.ts",
     "typecheck": "react-router typegen && tsc -b"
   },
   "dependencies": {

@@ -453,11 +453,6 @@ function AdapterRow({ token, origin, adapter, enabled, onToggle }: AdapterRowPro
     );
 }
 
-export function isProfilesSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["profiles.instances"] !== newConfig["profiles.instances"]
-        || config["general.base-url"] !== newConfig["general.base-url"];
-}
-
 export function isProfilesSettingsValid(newConfig: Record<string, string>) {
     try {
         if (!isProfileConfigJsonValid(newConfig["profiles.instances"])) return false;

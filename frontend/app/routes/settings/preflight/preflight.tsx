@@ -124,14 +124,6 @@ export function PreflightSettings({ config, setNewConfig }: PreflightSettingsPro
     );
 }
 
-export function isPreflightSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["preflight.mode"] !== newConfig["preflight.mode"]
-        || config["preflight.max-attempts"] !== newConfig["preflight.max-attempts"]
-        || config["preflight.verify-sample-count"] !== newConfig["preflight.verify-sample-count"]
-        || config["preflight.ttl-seconds"] !== newConfig["preflight.ttl-seconds"]
-        || config["preflight.indexer-max-wait-seconds"] !== newConfig["preflight.indexer-max-wait-seconds"];
-}
-
 export function isPreflightSettingsValid(config: Record<string, string>) {
     const value = (key: string, fallback: string) => config[key] ?? fallback;
     if (!["off", "light", "standard", "full"].includes(value("preflight.mode", "off"))) return false;

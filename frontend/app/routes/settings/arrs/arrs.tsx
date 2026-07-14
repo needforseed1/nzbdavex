@@ -377,10 +377,6 @@ function InstanceForm({ instance, index, type, onUpdate, onRemove }: InstanceFor
     );
 }
 
-export function isArrsSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["arr.instances"] !== newConfig["arr.instances"];
-}
-
 export function isArrsSettingsValid(newConfig: Record<string, string>) {
     try {
         const arrConfig = parseArrConfig(newConfig["arr.instances"]);

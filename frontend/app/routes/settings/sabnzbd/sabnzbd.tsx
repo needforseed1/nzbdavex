@@ -286,22 +286,6 @@ function useEnsureArticleExistanceSetting(
     }
 }
 
-export function isSabnzbdSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["api.key"] !== newConfig["api.key"]
-        || config["api.categories"] !== newConfig["api.categories"]
-        || config["api.manual-category"] !== newConfig["api.manual-category"]
-        || config["rclone.mount-dir"] !== newConfig["rclone.mount-dir"]
-        || config["api.ensure-importable-video"] !== newConfig["api.ensure-importable-video"]
-        || config["api.ensure-article-existence-categories"] !== newConfig["api.ensure-article-existence-categories"]
-        || config["api.ignore-history-limit"] !== newConfig["api.ignore-history-limit"]
-        || config["api.duplicate-nzb-behavior"] !== newConfig["api.duplicate-nzb-behavior"]
-        || config["api.download-file-blocklist"] !== newConfig["api.download-file-blocklist"]
-        || config["api.import-strategy"] !== newConfig["api.import-strategy"]
-        || config["api.completed-downloads-dir"] !== newConfig["api.completed-downloads-dir"]
-        || config["api.nzb-backup-enabled"] !== newConfig["api.nzb-backup-enabled"]
-        || config["api.nzb-backup-location"] !== newConfig["api.nzb-backup-location"]
-}
-
 export function isSabnzbdSettingsValid(newConfig: Record<string, string>) {
     return isValidCategories(newConfig["api.categories"] ?? "")
         && isValidManualCategory(newConfig["api.manual-category"] ?? "")

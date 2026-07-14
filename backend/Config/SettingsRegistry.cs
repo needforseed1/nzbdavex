@@ -45,25 +45,66 @@ public static class SettingsRegistry
     public static IReadOnlyDictionary<string, string> Defaults { get; } =
         JsonSerializer.Deserialize<Dictionary<string, string>>(DefaultsJson)!;
 
-    private static readonly HashSet<string> Secrets =
-        ["webdav.pass", "rclone.pass", "api.key", "usenet.providers", "indexers.instances", "arr.instances"];
+    private static readonly IReadOnlyDictionary<string, string> InternalDefaults =
+        new Dictionary<string, string>
+        {
+            ["api.strm-key"] = "",
+            ["api.lazy-rar-parsing"] = "true",
+            ["watchtower.resolve-concurrency"] = "3",
+            ["warden.max-source-entries"] = "2000000",
+        };
 
-    private static readonly HashSet<string> RestartRequired =
-        ["usenet.segment-cache.enabled", "usenet.segment-cache.path", "usenet.segment-cache.max-gb", "db.is-startup-vacuum-enabled"];
-
-    private static readonly Dictionary<string, (long Min, long Max)> Ranges = new()
+    internal static readonly IReadOnlyDictionary<string, (long Min, long Max)> Ranges =
+        new Dictionary<string, (long Min, long Max)>
     {
+        ["usenet.max-download-connections"] = (1, int.MaxValue),
+        ["usenet.max-queue-connections"] = (1, int.MaxValue),
         ["usenet.streaming-priority"] = (0, 100),
+        ["usenet.article-buffer-size"] = (1, int.MaxValue),
+        ["usenet.segment-cache.max-gb"] = (1, long.MaxValue / (1024L * 1024L * 1024L)),
         ["usenet.pipelining.depth"] = (1, 64),
         ["usenet.pipelining.health.depth"] = (1, 64),
         ["usenet.pipelining.health.lanes"] = (1, 1024),
+        ["play.total-budget-seconds"] = (3, 180),
+        ["play.hedge-delay-seconds"] = (1, 30),
+        ["play.max-candidates"] = (1, 10),
+        ["play.max-attempts"] = (1, 200),
+        ["play.verify-sample-count"] = (1, 10),
+        ["play.candidate-negative-cache-minutes"] = (1, 1440),
+        ["grab.stall-failover-window-seconds"] = (2, 60),
+        ["grab.stall-failover-ceiling-seconds"] = (5, 120),
+        ["variants.tolerance-pct"] = (0, 100),
+        ["variants.max-per-group"] = (0, 50),
+        ["variants.eviction-active-grace-seconds"] = (0, 300),
+        ["preflight.max-attempts"] = (1, 50),
+        ["preflight.verify-sample-count"] = (1, 10),
+        ["preflight.ttl-seconds"] = (10, 1800),
+        ["preflight.indexer-max-wait-seconds"] = (0, 120),
+        ["maintenance.remove-orphaned-schedule-time"] = (0, 1439),
+        ["watchtower.size-floor-bytes"] = (0, long.MaxValue),
+        ["watchtower.size-ceiling-bytes"] = (0, long.MaxValue),
+        ["watchtower.shortlist-depth"] = (1, 5),
+        ["watchtower.grab-cap-per-resolve"] = (1, 10),
         ["watchtower.active-set-cap"] = (1, 100000),
+        ["watchtower.daily-resolve-budget"] = (0, int.MaxValue),
+        ["watchtower.sync-interval-seconds"] = (60, 86400),
+        ["watchtower.series-max-episodes"] = (0, 1000),
+        ["watchtower.series-recent-count"] = (1, 100),
+        ["watchtower.season-bundle-fallback-recent-count"] = (1, 100),
+        ["watchtower.season-bundle-fallback-max-episodes"] = (1, 1000),
+        ["watchtower.min-grabs"] = (0, int.MaxValue),
         ["watchtower.verify-sample-count"] = (1, 20),
         ["watchtower.verify-timeout-seconds"] = (2, 120),
+        ["watchtower.keepfresh-base-seconds"] = (300, 604800),
+        ["watchtower.keepfresh-max-seconds"] = (600, 2592000),
+        ["watchtower.unavailable-retry-seconds"] = (600, 604800),
+        ["watchtower.resolve-concurrency"] = (1, 16),
         ["warden.quorum"] = (1, 20),
+        ["warden.max-source-entries"] = (1, 10000000),
     };
 
-    private static readonly Dictionary<string, string[]> Choices = new()
+    internal static readonly IReadOnlyDictionary<string, string[]> Choices =
+        new Dictionary<string, string[]>
     {
         ["api.duplicate-nzb-behavior"] = ["increment", "mark-failed"],
         ["api.import-strategy"] = ["symlinks", "strm"],
@@ -73,33 +114,14 @@ public static class SettingsRegistry
         ["variants.eviction-strategy"] = ["lru", "largest-first", "smallest-first", "never"],
         ["preflight.mode"] = ["off", "light", "standard", "full"],
         ["watchtower.ranking"] = ["watchdog", "largest"],
-        ["watchtower.series-scope"] = ["latest-season", "first-season", "all", "recent"],
+        ["watchtower.series-scope"] = ["latest-season", "first-season", "all-aired", "recent", "off"],
         ["watchtower.series-cap-keep"] = ["newest", "oldest"],
+        ["watchtower.season-bundle-fallback-scope"] = ["latest-season", "all", "recent"],
     };
 
-    public static SettingDescriptor Describe(string key)
+    internal static bool TryGetValidationDefault(string key, out string defaultValue)
     {
-        var defaultValue = Defaults[key];
-        var type = defaultValue is "true" or "false" ? "boolean"
-            : Choices.ContainsKey(key) ? "choice"
-            : key.EndsWith(".instances", StringComparison.Ordinal) || key == "usenet.providers" ? "json"
-            : long.TryParse(defaultValue, out _) ? "integer"
-            : "string";
-        Ranges.TryGetValue(key, out var range);
-        return new SettingDescriptor(
-            key, defaultValue, type, Secrets.Contains(key), RestartRequired.Contains(key),
-            Ranges.ContainsKey(key) ? range.Min : null,
-            Ranges.ContainsKey(key) ? range.Max : null,
-            Choices.GetValueOrDefault(key));
+        if (Defaults.TryGetValue(key, out defaultValue!)) return true;
+        return InternalDefaults.TryGetValue(key, out defaultValue!);
     }
-
-    public sealed record SettingDescriptor(
-        string Key,
-        string DefaultValue,
-        string Type,
-        bool Secret,
-        bool RestartRequired,
-        long? Min,
-        long? Max,
-        IReadOnlyList<string>? Choices);
 }

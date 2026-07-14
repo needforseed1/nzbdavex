@@ -527,14 +527,6 @@ export type ConfigItem = {
 export type SettingMetadata = {
     key: string,
     effectiveValue: string,
-    source: "stored" | "environment" | "default",
-    defaultValue: string,
-    type: "string" | "boolean" | "integer" | "choice" | "json",
-    secret: boolean,
-    restartRequired: boolean,
-    min?: number | null,
-    max?: number | null,
-    choices?: string[] | null,
 }
 
 export type WatchtowerQuery = {

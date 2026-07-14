@@ -57,11 +57,6 @@ export function RepairsSettings({ config, setNewConfig }: RepairsSettingsProps) 
     );
 }
 
-export function isRepairsSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["repair.enable"] !== newConfig["repair.enable"]
-        || config["media.library-dir"] !== newConfig["media.library-dir"];
-}
-
 export function isRepairsSettingsValid(config: Record<string, string>) {
     return config["repair.enable"] !== "true"
         || ((config["media.library-dir"] ?? "").trim() !== ""

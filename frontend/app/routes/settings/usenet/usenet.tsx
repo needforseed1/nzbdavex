@@ -2235,23 +2235,6 @@ function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
     );
 }
 
-export function isUsenetSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["usenet.providers"] !== newConfig["usenet.providers"]
-        || config["usenet.max-download-connections"] !== newConfig["usenet.max-download-connections"]
-        || config["usenet.max-queue-connections"] !== newConfig["usenet.max-queue-connections"]
-        || config["usenet.streaming-priority"] !== newConfig["usenet.streaming-priority"]
-        || config["usenet.article-buffer-size"] !== newConfig["usenet.article-buffer-size"]
-        || config["usenet.segment-cache.enabled"] !== newConfig["usenet.segment-cache.enabled"]
-        || config["usenet.segment-cache.path"] !== newConfig["usenet.segment-cache.path"]
-        || config["usenet.segment-cache.max-gb"] !== newConfig["usenet.segment-cache.max-gb"]
-        || config["usenet.pipelining.playback.enabled"] !== newConfig["usenet.pipelining.playback.enabled"]
-        || config["usenet.pipelining.health.enabled"] !== newConfig["usenet.pipelining.health.enabled"]
-        || config["usenet.pipelining.health.depth"] !== newConfig["usenet.pipelining.health.depth"]
-        || config["usenet.pipelining.health.lanes"] !== newConfig["usenet.pipelining.health.lanes"]
-        || config["usenet.pipelining.depth"] !== newConfig["usenet.pipelining.depth"]
-        || config["usenet.cascade.enabled"] !== newConfig["usenet.cascade.enabled"]
-}
-
 export function isUsenetSettingsValid(config: Record<string, string>) {
     const segmentCacheValid = config["usenet.segment-cache.enabled"] !== "true"
         || (isValidSegmentCachePath(config["usenet.segment-cache.path"])

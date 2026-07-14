@@ -367,27 +367,6 @@ export function WatchdogSettings({ config, setNewConfig }: WatchdogSettingsProps
     );
 }
 
-export function isWatchdogSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["play.watchdog-enabled"] !== newConfig["play.watchdog-enabled"]
-        || config["play.total-budget-seconds"] !== newConfig["play.total-budget-seconds"]
-        || config["play.hedge-delay-seconds"] !== newConfig["play.hedge-delay-seconds"]
-        || config["play.max-candidates"] !== newConfig["play.max-candidates"]
-        || config["play.max-attempts"] !== newConfig["play.max-attempts"]
-        || config["play.verify-mode"] !== newConfig["play.verify-mode"]
-        || config["play.verify-sample-count"] !== newConfig["play.verify-sample-count"]
-        || config["play.candidate-negative-cache-minutes"] !== newConfig["play.candidate-negative-cache-minutes"]
-        || config["grab.stall-failover-enabled"] !== newConfig["grab.stall-failover-enabled"]
-        || config["grab.stall-failover-window-seconds"] !== newConfig["grab.stall-failover-window-seconds"]
-        || config["grab.stall-failover-ceiling-seconds"] !== newConfig["grab.stall-failover-ceiling-seconds"]
-        || config["variants.mode"] !== newConfig["variants.mode"]
-        || config["variants.tolerance-pct"] !== newConfig["variants.tolerance-pct"]
-        || config["variants.max-per-group"] !== newConfig["variants.max-per-group"]
-        || config["variants.replay-strategy"] !== newConfig["variants.replay-strategy"]
-        || config["variants.fallback-on-failure"] !== newConfig["variants.fallback-on-failure"]
-        || config["variants.eviction-strategy"] !== newConfig["variants.eviction-strategy"]
-        || config["variants.eviction-active-grace-seconds"] !== newConfig["variants.eviction-active-grace-seconds"];
-}
-
 export function isWatchdogSettingsValid(config: Record<string, string>) {
     const value = (key: string, fallback: string) => config[key] ?? fallback;
 

@@ -8,8 +8,17 @@ namespace NzbWebDAV.Api.Controllers.GetSettingsMetadata;
 
 [ApiController]
 [Route("api/get-settings-metadata")]
+// Internal bootstrap contract for the bundled frontend, not a versioned public settings schema.
 public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigManager configManager) : BaseApiController
 {
+    private static readonly HashSet<string> MeaningfulBlankValues =
+    [
+        "general.base-url", "api.key", "api.ensure-article-existence-categories",
+        "api.download-file-blocklist", "api.nzb-backup-location", "usenet.providers",
+        "usenet.max-queue-connections", "rclone.host", "rclone.user", "rclone.pass",
+        "media.library-dir", "search.exclude-patterns", "watchtower.profile-token",
+    ];
+
     protected override async Task<IActionResult> HandleRequest()
     {
         var knownKeys = SettingsRegistry.Defaults.Keys.ToArray();
@@ -20,62 +29,40 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
 
         var items = SettingsRegistry.Defaults.Keys.Select(key =>
         {
-            var descriptor = SettingsRegistry.Describe(key);
-            var source = "default";
-            var effective = descriptor.DefaultValue;
-            if (stored.TryGetValue(key, out var storedValue))
-            {
-                source = "stored";
-                effective = storedValue;
-            }
-            else if (EnvironmentFallback(key) is { } environmentValue)
-            {
-                source = "environment";
-                effective = environmentValue;
-            }
-            else if (key == "usenet.max-download-connections")
-            {
-                effective = configManager.GetMaxDownloadConnections().ToString();
-            }
-
-            if (key is "webdav.pass" or "rclone.pass") effective = "";
-            return new SettingMetadataItem
-            {
-                Key = key, EffectiveValue = effective, Source = source,
-                DefaultValue = descriptor.DefaultValue, Type = descriptor.Type,
-                Secret = descriptor.Secret, RestartRequired = descriptor.RestartRequired,
-                Min = descriptor.Min, Max = descriptor.Max, Choices = descriptor.Choices,
-            };
+            stored.TryGetValue(key, out var storedValue);
+            var effective = ResolveEffectiveValue(key, storedValue, configManager);
+            return new SettingMetadataItem { Key = key, EffectiveValue = effective };
         }).ToList();
 
         return Ok(new { status = true, settings = items });
     }
 
-    private static string? EnvironmentFallback(string key)
+    internal static string ResolveEffectiveValue(string key, string? storedValue, ConfigManager config)
     {
-        var variable = key switch
+        if (key is "webdav.pass" or "rclone.pass") return "";
+        if (storedValue is not null
+            && (!string.IsNullOrWhiteSpace(storedValue) || MeaningfulBlankValues.Contains(key)))
+            return storedValue;
+
+        return key switch
         {
-            "rclone.mount-dir" => "MOUNT_DIR",
-            "api.categories" => "CATEGORIES",
-            "webdav.user" => "WEBDAV_USER",
-            "api.user-agent" => "NZB_GRAB_USER_AGENT",
-            "api.search-user-agent" => "NZB_SEARCH_USER_AGENT",
-            _ => null,
+            "api.categories" => EnvironmentUtil.GetEnvironmentVariable("CATEGORIES")
+                                ?? "audio,software,tv,movies",
+            "api.manual-category" => config.GetManualUploadCategory(),
+            "api.completed-downloads-dir" => config.GetStrmCompletedDownloadDir(),
+            "api.user-agent" => config.GetUserAgent(),
+            "api.search-user-agent" => config.GetSearchUserAgent(),
+            "usenet.max-download-connections" => config.GetMaxDownloadConnections().ToString(),
+            "usenet.segment-cache.path" => config.GetSegmentCachePath(),
+            "webdav.user" => config.GetWebdavUser() ?? "",
+            "rclone.mount-dir" => config.GetRcloneMountDir(),
+            _ => SettingsRegistry.Defaults[key],
         };
-        return variable is null ? null : EnvironmentUtil.GetEnvironmentVariable(variable)?.Trim();
     }
 
     private sealed class SettingMetadataItem
     {
         public required string Key { get; init; }
         public required string EffectiveValue { get; init; }
-        public required string Source { get; init; }
-        public required string DefaultValue { get; init; }
-        public required string Type { get; init; }
-        public bool Secret { get; init; }
-        public bool RestartRequired { get; init; }
-        public long? Min { get; init; }
-        public long? Max { get; init; }
-        public IReadOnlyList<string>? Choices { get; init; }
     }
 }

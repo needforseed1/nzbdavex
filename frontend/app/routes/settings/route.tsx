@@ -2,22 +2,23 @@ import type { Route } from "./+types/route";
 import styles from "./route.module.css"
 import { Tabs, Tab, Button, Accordion, Alert } from "react-bootstrap"
 import { backendClient } from "~/clients/backend-client.server";
-import { isUsenetSettingsUpdated, isUsenetSettingsValid, UsenetSettings } from "./usenet/usenet";
-import { isSabnzbdSettingsUpdated, isSabnzbdSettingsValid, SabnzbdSettings } from "./sabnzbd/sabnzbd";
-import { isWebdavSettingsUpdated, isWebdavSettingsValid, WebdavSettings } from "./webdav/webdav";
-import { isArrsSettingsUpdated, isArrsSettingsValid, ArrsSettings } from "./arrs/arrs";
-import { isIndexersSettingsUpdated, isIndexersSettingsValid, IndexersSettings } from "./indexers/indexers";
-import { isProfilesSettingsUpdated, isProfilesSettingsValid, ProfilesSettings } from "./profiles/profiles";
-import { isMaintenanceSettingsUpdated, isMaintenanceSettingsValid, Maintenance } from "./maintenance/maintenance";
-import { isRepairsSettingsUpdated, isRepairsSettingsValid, RepairsSettings } from "./repairs/repairs";
-import { isWatchdogSettingsUpdated, isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
-import { isPreflightSettingsUpdated, isPreflightSettingsValid, PreflightSettings } from "./preflight/preflight";
-import { isWatchtowerSettingsUpdated, isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
-import { isWardenSettingsUpdated, isWardenSettingsValid, WardenSettings } from "./warden/warden";
-import { isRcloneSettingsUpdated, isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
+import { isUsenetSettingsValid, UsenetSettings } from "./usenet/usenet";
+import { isSabnzbdSettingsValid, SabnzbdSettings } from "./sabnzbd/sabnzbd";
+import { isWebdavSettingsValid, WebdavSettings } from "./webdav/webdav";
+import { isArrsSettingsValid, ArrsSettings } from "./arrs/arrs";
+import { isIndexersSettingsValid, IndexersSettings } from "./indexers/indexers";
+import { isProfilesSettingsValid, ProfilesSettings } from "./profiles/profiles";
+import { isMaintenanceSettingsValid, Maintenance } from "./maintenance/maintenance";
+import { isRepairsSettingsValid, RepairsSettings } from "./repairs/repairs";
+import { isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
+import { isPreflightSettingsValid, PreflightSettings } from "./preflight/preflight";
+import { isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
+import { isWardenSettingsValid, WardenSettings } from "./warden/warden";
+import { isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
 import { useCallback, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
+import { getDirtySettingsSections, getValidationSections } from "./settings-state";
 
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -55,25 +56,27 @@ function Body(props: BodyProps) {
     const [activeTab, setActiveTab] = useState('usenet');
 
     // derived variables
-    const iseUsenetUpdated = isUsenetSettingsUpdated(config, newConfig);
-    const isSabnzbdUpdated = isSabnzbdSettingsUpdated(config, newConfig);
-    const isWebdavUpdated = isWebdavSettingsUpdated(config, newConfig);
-    const isArrsUpdated = isArrsSettingsUpdated(config, newConfig);
-    const isIndexersUpdated = isIndexersSettingsUpdated(config, newConfig);
-    const isProfilesUpdated = isProfilesSettingsUpdated(config, newConfig);
-    const isRepairsUpdated = isRepairsSettingsUpdated(config, newConfig);
-    const isWatchdogUpdated = isWatchdogSettingsUpdated(config, newConfig);
-    const isPreflightUpdated = isPreflightSettingsUpdated(config, newConfig);
-    const isRcloneUpdated = isRcloneSettingsUpdated(config, newConfig);
-    const isMaintenanceUpdated = isMaintenanceSettingsUpdated(config, newConfig);
-    const isWatchtowerUpdated = isWatchtowerSettingsUpdated(config, newConfig);
-    const isWardenUpdated = isWardenSettingsUpdated(config, newConfig);
-    const isBaseUrlUpdated = config["general.base-url"] !== newConfig["general.base-url"];
-    const isUpdated = iseUsenetUpdated || isSabnzbdUpdated || isWebdavUpdated || isArrsUpdated || isIndexersUpdated || isProfilesUpdated || isRepairsUpdated || isWatchdogUpdated || isPreflightUpdated || isRcloneUpdated || isMaintenanceUpdated || isWatchtowerUpdated || isWardenUpdated;
+    const changedKeys = new Set(Object.keys(getChangedConfig(config, newConfig)));
+    const dirtySections = getDirtySettingsSections(changedKeys);
+    const validationSections = getValidationSections(changedKeys, dirtySections);
+    const isUsenetUpdated = dirtySections.has("usenet");
+    const isIndexersUpdated = dirtySections.has("indexers");
+    const isProfilesUpdated = dirtySections.has("profiles");
+    const isWatchdogUpdated = dirtySections.has("watchdog");
+    const isPreflightUpdated = dirtySections.has("preflight");
+    const isWatchtowerUpdated = dirtySections.has("watchtower");
+    const isWardenUpdated = dirtySections.has("warden");
+    const isWebdavUpdated = dirtySections.has("webdav");
+    const isSabnzbdUpdated = dirtySections.has("sabnzbd");
+    const isArrsUpdated = dirtySections.has("arrs");
+    const isRepairsUpdated = dirtySections.has("repairs");
+    const isRcloneUpdated = dirtySections.has("rclone");
+    const isMaintenanceUpdated = dirtySections.has("maintenance");
+    const isUpdated = changedKeys.size > 0;
     const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isMaintenanceUpdated;
     const navigationBlocker = useNavigationBlocker(isUpdated);
 
-    const usenetTitle = tabTitle("Usenet", iseUsenetUpdated);
+    const usenetTitle = tabTitle("Usenet", isUsenetUpdated);
     const indexersTitle = tabTitle("Indexers", isIndexersUpdated);
     const profilesTitle = tabTitle("Search Profiles", isProfilesUpdated);
     const watchdogTitle = tabTitle("Watchdog", isWatchdogUpdated);
@@ -82,27 +85,25 @@ function Body(props: BodyProps) {
     const wardenTitle = tabTitle("Warden", isWardenUpdated);
     const advancedTitle = tabTitle("Advanced", isAdvancedUpdated);
 
+    const invalidSection = findInvalidSection([
+        { active: validationSections.has("sabnzbd"), label: "SABnzbd", validate: () => isSabnzbdSettingsValid(newConfig) },
+        { active: validationSections.has("webdav"), label: "WebDAV", validate: () => isWebdavSettingsValid(newConfig) },
+        { active: validationSections.has("arrs"), label: "Arrs", validate: () => isArrsSettingsValid(newConfig) },
+        { active: validationSections.has("indexers"), label: "Indexers", validate: () => isIndexersSettingsValid(newConfig) },
+        { active: validationSections.has("profiles"), label: "Search Profiles", validate: () => isProfilesSettingsValid(newConfig) },
+        { active: validationSections.has("usenet"), label: "Usenet", validate: () => isUsenetSettingsValid(newConfig) },
+        { active: validationSections.has("watchdog"), label: "Watchdog", validate: () => isWatchdogSettingsValid(newConfig) },
+        { active: validationSections.has("preflight"), label: "Preflight", validate: () => isPreflightSettingsValid(newConfig) },
+        { active: validationSections.has("watchtower"), label: "Watchtower", validate: () => isWatchtowerSettingsValid(newConfig) },
+        { active: validationSections.has("warden"), label: "Warden", validate: () => isWardenSettingsValid(newConfig) },
+        { active: validationSections.has("rclone"), label: "Rclone", validate: () => isRcloneSettingsValid(newConfig) },
+        { active: validationSections.has("repairs"), label: "Repairs", validate: () => isRepairsSettingsValid(newConfig) },
+        { active: validationSections.has("maintenance"), label: "Maintenance", validate: () => isMaintenanceSettingsValid(newConfig) },
+    ]);
     const saveButtonLabel = isSaving ? "Saving..."
         : !isUpdated && isSaved ? "Saved ✅"
         : !isUpdated && !isSaved ? "There are no changes to save"
-        : (isSabnzbdUpdated || isBaseUrlUpdated)
-            && !isSabnzbdSettingsValid(newConfig) ? "Invalid SABnzbd settings"
-        : isWebdavUpdated && !isWebdavSettingsValid(newConfig) ? "Invalid WebDAV settings"
-        : isArrsUpdated && !isArrsSettingsValid(newConfig) ? "Invalid Arrs settings"
-        : isIndexersUpdated && !isIndexersSettingsValid(newConfig) ? "Invalid Indexers settings"
-        : (isProfilesUpdated || isIndexersUpdated)
-            && !isProfilesSettingsValid(newConfig) ? "Invalid Search Profiles settings"
-        : iseUsenetUpdated && !isUsenetSettingsValid(newConfig) ? "Invalid Usenet settings"
-        : isWatchdogUpdated && !isWatchdogSettingsValid(newConfig) ? "Invalid Watchdog settings"
-        : isPreflightUpdated && !isPreflightSettingsValid(newConfig) ? "Invalid Preflight settings"
-        : (isWatchtowerUpdated || isProfilesUpdated)
-            && !isWatchtowerSettingsValid(newConfig) ? "Invalid Watchtower settings"
-        : isWardenUpdated && !isWardenSettingsValid(newConfig) ? "Invalid Warden settings"
-        : isRcloneUpdated && !isRcloneSettingsValid(newConfig) ? "Invalid Rclone settings"
-        : (isRepairsUpdated || isArrsUpdated)
-            && !isRepairsSettingsValid(newConfig) ? "Invalid Repairs settings"
-        : (isMaintenanceUpdated || isRepairsUpdated)
-            && !isMaintenanceSettingsValid(newConfig) ? "Invalid Maintenance settings"
+        : invalidSection ? `Invalid ${invalidSection} settings`
         : "Save";
     const saveButtonVariant = saveButtonLabel === "Save" ? "primary"
         : saveButtonLabel === "Saved ✅" ? "success"
@@ -338,6 +339,19 @@ function AdvancedItem({ eventKey, title, description, isUpdated, children }: Adv
             </Accordion.Body>
         </Accordion.Item>
     );
+}
+
+type ValidationCheck = {
+    active: boolean,
+    label: string,
+    validate: () => boolean,
+};
+
+function findInvalidSection(checks: ValidationCheck[]): string | null {
+    for (const check of checks) {
+        if (check.active && !check.validate()) return check.label;
+    }
+    return null;
 }
 
 function getChangedConfig(

@@ -153,12 +153,6 @@ export function Maintenance({
     );
 }
 
-export function isMaintenanceSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["db.is-startup-vacuum-enabled"] !== newConfig["db.is-startup-vacuum-enabled"]
-        || config["maintenance.remove-orphaned-schedule-enabled"] !== newConfig["maintenance.remove-orphaned-schedule-enabled"]
-        || config["maintenance.remove-orphaned-schedule-time"] !== newConfig["maintenance.remove-orphaned-schedule-time"];
-}
-
 export function isMaintenanceSettingsValid(config: Record<string, string>) {
     return !isScheduledOrphanTaskEnabled(config)
         || ((config["media.library-dir"] ?? "").trim() !== ""

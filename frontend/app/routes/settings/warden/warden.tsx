@@ -884,12 +884,6 @@ export function WardenSettings({ config, setNewConfig }: WardenSettingsProps) {
     );
 }
 
-export function isWardenSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["warden.hide-dead"] !== newConfig["warden.hide-dead"]
-        || config["warden.quorum"] !== newConfig["warden.quorum"]
-        || config["warden.backbone-scope"] !== newConfig["warden.backbone-scope"];
-}
-
 export function isWardenSettingsValid(config: Record<string, string>) {
     return isBoolean(config["warden.hide-dead"] ?? "true")
         && isIntegerInRange(config["warden.quorum"] ?? "2", 1, 20)

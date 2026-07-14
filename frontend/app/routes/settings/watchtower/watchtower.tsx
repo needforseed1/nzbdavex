@@ -477,38 +477,6 @@ export function WatchtowerSettings({ config, setNewConfig }: WatchtowerSettingsP
     );
 }
 
-export function isWatchtowerSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return [
-        "watchtower.enabled",
-        "watchtower.profile-token",
-        "watchtower.ranking",
-        "watchtower.size-floor-bytes",
-        "watchtower.size-ceiling-bytes",
-        "watchtower.shortlist-depth",
-        "watchtower.grab-cap-per-resolve",
-        "watchtower.active-set-cap",
-        "watchtower.daily-resolve-budget",
-        "watchtower.auto-throughput",
-        "watchtower.sync-interval-seconds",
-        "watchtower.series-scope",
-        "watchtower.season-bundles",
-        "watchtower.series-max-episodes",
-        "watchtower.series-cap-keep",
-        "watchtower.series-recent-count",
-        "watchtower.season-bundle-fallback",
-        "watchtower.season-bundle-fallback-scope",
-        "watchtower.season-bundle-fallback-recent-count",
-        "watchtower.season-bundle-fallback-max-episodes",
-        "watchtower.min-grabs",
-        "watchtower.verify-sample-count",
-        "watchtower.verify-timeout-seconds",
-        "watchtower.keepfresh-base-seconds",
-        "watchtower.keepfresh-max-seconds",
-        "watchtower.unavailable-retry-seconds",
-        "watchtower.verbose-logging",
-    ].some(k => config[k] !== newConfig[k]);
-}
-
 export function isWatchtowerSettingsValid(config: Record<string, string>) {
     const value = (key: string, fallback: string) => config[key] ?? fallback;
 

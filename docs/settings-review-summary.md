@@ -18,7 +18,8 @@ Key fixes include:
 
 ## Verification
 
-- Backend: 116/116 tests passing.
+- Backend: 162/162 tests passing.
+- Frontend settings-state tests: passing.
 - Frontend TypeScript/type generation: passing.
 - Frontend production build: passing.
 - Container entrypoint shell syntax: passing.
@@ -46,13 +47,13 @@ The first deployment also exposed and fixed an entrypoint regression: the defaul
 2. Add credential removal/rotation actions and a complete encrypted `CONFIG_PATH` backup workflow.
 3. Add missing Arr, rclone timeout, and NZB backup-policy controls.
 
-Stable provider/indexer UUIDs, the typed effective-settings registry, and Watchtower LRU enforcement are now implemented.
+Stable provider/indexer UUIDs, the centralized settings defaults and validation catalog, and Watchtower LRU enforcement are now implemented.
 
 ## Implemented architecture work
 
 - Provider UUIDs now own usage caps, byte metrics, failover edges, connection snapshots, and UI identity. Legacy host metrics remain readable during the transition.
 - Indexer UUIDs now own quota/RPM state, Search Profile references, cached candidate retrieval, and Watchtower pointers. Existing name-based hits and references are migrated.
-- The backend settings registry now supplies defaults, effective values, source, type, ranges/choices, secret flags, and restart requirements. The frontend default table was removed.
+- The backend settings registry supplies UI defaults and basic scalar validation. The settings endpoint returns only the effective key/value pairs the frontend consumes, so the duplicate frontend default table and unused presentation metadata are gone.
 - Watchtower now enforces the active-set cap with LRU warm/cold rotation. Verified cold entries retain their winner and promote immediately when accessed.
 
 ## Implemented retirement and relocation work

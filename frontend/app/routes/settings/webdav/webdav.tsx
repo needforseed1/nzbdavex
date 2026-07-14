@@ -86,14 +86,6 @@ export function WebdavSettings({ config, setNewConfig }: SabnzbdSettingsProps) {
     );
 }
 
-export function isWebdavSettingsUpdated(config: Record<string, string>, newConfig: Record<string, string>) {
-    return config["webdav.user"] !== newConfig["webdav.user"]
-        || config["webdav.pass"] !== newConfig["webdav.pass"]
-        || config["webdav.show-hidden-files"] !== newConfig["webdav.show-hidden-files"]
-        || config["webdav.enforce-readonly"] !== newConfig["webdav.enforce-readonly"]
-        || config["webdav.preview-par2-files"] !== newConfig["webdav.preview-par2-files"]
-}
-
 export function isWebdavSettingsValid(newConfig: Record<string, string>) {
     return isValidUser(newConfig["webdav.user"]);
 }
