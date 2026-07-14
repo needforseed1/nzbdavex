@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-14)
+## [1.3.2](https://github.com/needforseed1/nzbdavex/compare/v1.3.1...v1.3.2) (2026-07-14)
+
+This release tightens provider recovery and live reconfiguration, removes several preparation stalls, and makes the resulting work substantially easier to inspect.
+
+### Highlights
+
+* Provider circuit breaking is concurrency-aware, recovers promptly from transient failure bursts, and uses a controlled STAT probe to restore providers isolated during BODY preparation.
+* Provider graph reloads now drain active clients instead of disposing them underneath in-flight work.
+* RAR preparation reuses retained prefixes, bounds expensive parser fallbacks, and avoids redundant full-volume reads for ordinary split archives.
+* Watchdog entries persist expandable health-routing and preparation breakdowns, including provider shares, misses, failures, fallback counts, and phase timings.
+* Settings metadata, shared validation, and frontend state handling were consolidated; provider testing remains mandatory before save, while connection and health-pipeline benchmark recommendations are shown independently.
+
+### Fixes
+
+* Shared-host provider accounts keep independent bandwidth histories through stable provider IDs.
+* Queue imports warm eligible provider connections earlier, and health-only providers retain their configured authenticated capacity between jobs.
+* Browsers without `crypto.randomUUID()` can create providers and indexers and regenerate API keys.
+* Watchdog timing distinguishes health checks that did not run from completed checks.
+
+## Local fork changes versus upstream (2026-07-10–2026-07-14)
 
 This section records changes in this repository that are not yet present in the `qooode/nzbdavex` upstream repository. The work focuses on getting from an added NZB to verified, playable content faster, making high-connection Usenet setups more predictable, and completing an application-wide settings audit.
 
