@@ -50,6 +50,7 @@ public class BenchmarkUsenetConnectionController(
                 request.ToConnectionDetails(),
                 request.MaxConnections,
                 request.Intensity,
+                request.ConnectionsOnly,
                 request.PipeliningOnly,
                 request.StartupOnly,
                 request.HealthOnly,

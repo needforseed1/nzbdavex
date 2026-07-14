@@ -28,14 +28,6 @@ const USAGE_POLL_INTERVAL_MS = 10_000;
 // Mirrors the camelCase JSON the backend benchmark endpoint + websocket emit.
 type BenchmarkLatency = { minMs: number; avgMs: number; samples: number };
 type BenchmarkSweepPoint = { connections: number; mbPerSec: number };
-type BenchmarkPipeliningPoint = { depth: number; mbPerSec: number };
-type BenchmarkPipelining = {
-    testedAtConnections: number;
-    baselineMbPerSec: number;
-    tested: BenchmarkPipeliningPoint[];
-    recommendEnabled: boolean;
-    recommendedDepth: number;
-};
 type BenchmarkStartupPipeliningPoint = { depth: number; firstMs: number; readyMs: number };
 type BenchmarkStartup = {
     segments: number;
@@ -72,13 +64,11 @@ type BenchmarkHealthPipelining = {
 type BenchmarkResult = {
     latency?: BenchmarkLatency | null;
     throughputTested: boolean;
-    pipeliningOnly: boolean;
     startupOnly: boolean;
     healthOnly: boolean;
     sweep: BenchmarkSweepPoint[];
     recommendedConnections?: number | null;
     providerConnectionCap?: number | null;
-    pipelining?: BenchmarkPipelining | null;
     startup?: BenchmarkStartup | null;
     healthPipelining?: BenchmarkHealthPipelining | null;
     dataUsedBytes: number;
@@ -93,7 +83,7 @@ type BenchmarkProgress = {
     sweep: BenchmarkSweepPoint[];
 };
 type BenchmarkIntensity = "quick" | "thorough";
-type BenchmarkMode = "speed" | "pipelining" | "startup" | "health";
+type BenchmarkMode = "speed" | "startup" | "health";
 
 type UsenetSettingsProps = {
     config: Record<string, string>
@@ -384,20 +374,6 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
         }));
         handleCloseModal();
     }, [providerConfig, editingIndex, setNewConfig, handleCloseModal]);
-
-    const handleApplyPlaybackPipelining = useCallback((enabled: boolean) => {
-        setNewConfig(prev => ({
-            ...prev,
-            "usenet.pipelining.playback.enabled": enabled ? "true" : "false",
-        }));
-    }, [setNewConfig]);
-
-    const handleApplyHealthPipelining = useCallback((enabled: boolean) => {
-        setNewConfig(prev => ({
-            ...prev,
-            "usenet.pipelining.health.enabled": enabled ? "true" : "false",
-        }));
-    }, [setNewConfig]);
 
     const handleReorder = useCallback((from: number, to: number) => {
         if (from === to) return;
@@ -845,10 +821,11 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                 provider={editingIndex !== null ? providerConfig.Providers[editingIndex] : null}
                 onClose={handleCloseModal}
                 onSave={handleSaveProvider}
-                onApplyPlaybackPipelining={handleApplyPlaybackPipelining}
-                onApplyHealthPipelining={handleApplyHealthPipelining}
                 defaultPipeliningDepth={config["usenet.pipelining.depth"] || "8"}
                 defaultHealthPipeliningDepth={config["usenet.pipelining.health.depth"] || "32"}
+                playbackConnectionLimit={config["usenet.max-download-connections"] || "15"}
+                playbackPipeliningEnabled={config["usenet.pipelining.playback.enabled"] === "true"}
+                healthPipeliningEnabled={config["usenet.pipelining.health.enabled"] !== "false"}
             />
         </div>
     );
@@ -1068,15 +1045,16 @@ type ProviderModalProps = {
     provider: ConnectionDetails | null;
     onClose: () => void;
     onSave: (provider: ConnectionDetails) => void;
-    onApplyPlaybackPipelining: (enabled: boolean) => void;
-    onApplyHealthPipelining: (enabled: boolean) => void;
     defaultPipeliningDepth: string;
     defaultHealthPipeliningDepth: string;
+    playbackConnectionLimit: string;
+    playbackPipeliningEnabled: boolean;
+    healthPipeliningEnabled: boolean;
 };
 
 function ProviderModal({
-    show, provider, onClose, onSave, onApplyPlaybackPipelining,
-    onApplyHealthPipelining, defaultPipeliningDepth, defaultHealthPipeliningDepth,
+    show, provider, onClose, onSave, defaultPipeliningDepth, defaultHealthPipeliningDepth,
+    playbackConnectionLimit, playbackPipeliningEnabled, healthPipeliningEnabled,
 }: ProviderModalProps) {
     const isEditing = provider !== null;
     const initialLimit = bytesToValueAndUnit(provider?.ByteLimit);
@@ -1106,8 +1084,6 @@ function ProviderModal({
     const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
     const [benchmarkMode, setBenchmarkMode] = useState<BenchmarkMode>("speed");
-    const [playbackPipeliningRecommendation, setPlaybackPipeliningRecommendation] = useState<boolean | null>(null);
-    const [healthPipeliningRecommendation, setHealthPipeliningRecommendation] = useState<boolean | null>(null);
     const benchmarkAbortRef = useRef<AbortController | null>(null);
     const connectionSignature = JSON.stringify([host, port, useSsl, user, pass]);
     const connectionSignatureRef = useRef(connectionSignature);
@@ -1143,8 +1119,6 @@ function ProviderModal({
             setBenchmarkResult(null);
             setBenchmarkError(null);
             setBenchmarkMode("speed");
-            setPlaybackPipeliningRecommendation(null);
-            setHealthPipeliningRecommendation(null);
         }
     }, [show, provider]);
 
@@ -1209,7 +1183,6 @@ function ProviderModal({
 
     const handleAutoTune = useCallback(async () => {
         const requestedSignature = connectionSignature;
-        const pipeliningOnly = benchmarkMode === "pipelining";
         const startupOnly = benchmarkMode === "startup";
         const healthOnly = benchmarkMode === "health";
         // Abort any previous run still in flight before starting a new one.
@@ -1242,14 +1215,18 @@ function ProviderModal({
 
         try {
             const formData = new FormData();
+            const benchmarkConnections = startupOnly
+                ? getPlaybackBenchmarkConnections(maxConnections, playbackConnectionLimit)
+                : maxConnections || "10";
             formData.append('host', host);
             formData.append('port', port);
             formData.append('use-ssl', useSsl.toString());
             formData.append('user', user);
             formData.append('pass', pass);
-            formData.append('max-connections', maxConnections || "10");
+            formData.append('max-connections', String(benchmarkConnections));
             formData.append('intensity', intensity);
-            formData.append('pipelining-only', pipeliningOnly ? 'true' : 'false');
+            formData.append('connections-only', benchmarkMode === 'speed' ? 'true' : 'false');
+            formData.append('pipelining-only', 'false');
             formData.append('startup-only', startupOnly ? 'true' : 'false');
             formData.append('health-only', healthOnly ? 'true' : 'false');
             formData.append('provider-type', String(type));
@@ -1281,27 +1258,27 @@ function ProviderModal({
             if (benchmarkAbortRef.current === controller) benchmarkAbortRef.current = null;
             ws?.close();
         }
-    }, [host, port, useSsl, user, pass, maxConnections, intensity, benchmarkMode, type, connectionSignature]);
+    }, [host, port, useSsl, user, pass, maxConnections, playbackConnectionLimit,
+        intensity, benchmarkMode, type, connectionSignature]);
 
     const handleApplyRecommendation = useCallback(() => {
         if (!benchmarkResult) return;
 
-        if (benchmarkResult.recommendedConnections && benchmarkResult.recommendedConnections > 0) {
-            setMaxConnections(String(benchmarkResult.recommendedConnections));
-        }
-        if (benchmarkResult.pipelining) {
-            setPipeliningDepth(String(benchmarkResult.pipelining.recommendedDepth));
-        }
-        if (benchmarkResult.startup) {
-            setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
-            setPlaybackPipeliningRecommendation(benchmarkResult.startup.recommendPlaybackPipelining);
-        }
-        if (benchmarkResult.healthPipelining?.reliable) {
-            setHealthPipeliningDepth(String(benchmarkResult.healthPipelining.recommendedDepth));
-            setHealthPipeliningRecommendation(true);
+        if (benchmarkMode === "speed") {
+            if (benchmarkResult.recommendedConnections && benchmarkResult.recommendedConnections > 0)
+                setMaxConnections(String(benchmarkResult.recommendedConnections));
+            return;
         }
 
-    }, [benchmarkResult]);
+        if (benchmarkMode === "startup") {
+            if (benchmarkResult.startup?.recommendPlaybackPipelining)
+                setPipeliningDepth(String(benchmarkResult.startup.recommendedDepth));
+            return;
+        }
+
+        if (benchmarkMode === "health" && benchmarkResult.healthPipelining?.reliable)
+            setHealthPipeliningDepth(String(benchmarkResult.healthPipelining.recommendedDepth));
+    }, [benchmarkResult, benchmarkMode]);
 
     const handleCancelBenchmark = useCallback(() => {
         benchmarkAbortRef.current?.abort();
@@ -1331,12 +1308,6 @@ function ProviderModal({
             : (provider?.BytesUsedResetAt ?? 0);
 
         const trimmedNickname = nickname.trim();
-        if (playbackPipeliningRecommendation !== null) {
-            onApplyPlaybackPipelining(playbackPipeliningRecommendation);
-        }
-        if (healthPipeliningRecommendation !== null) {
-            onApplyHealthPipelining(healthPipeliningRecommendation);
-        }
         onSave({
             ...(provider ?? {}),
             Id: provider?.Id || randomUuid(),
@@ -1362,8 +1333,7 @@ function ProviderModal({
         });
     }, [type, host, port, useSsl, user, pass, maxConnections, pipeliningDepth, healthPipeliningDepth,
         prepOnly, nickname, provider, isEditing, limitValue, limitUnit, initialUsedValue, initialUsedUnit,
-        playbackPipeliningRecommendation, healthPipeliningRecommendation, onSave,
-        onApplyPlaybackPipelining, onApplyHealthPipelining]);
+        onSave]);
 
     const role = getProviderRole({ Type: type, PrepOnly: prepOnly });
 
@@ -1578,7 +1548,8 @@ function ProviderModal({
                                 onChange={(e) => setPipeliningDepth(e.target.value)}
                             />
                             <div className={styles["form-hint"]}>
-                                Leave blank to use the global playback depth.
+                                Leave blank to use the global playback depth. Global playback pipelining is currently
+                                {playbackPipeliningEnabled ? " enabled" : " disabled"}; this provider setting will not change it.
                             </div>
                         </div>
                         <div className={styles["form-group"]}>
@@ -1594,7 +1565,8 @@ function ProviderModal({
                                 onChange={(e) => setHealthPipeliningDepth(e.target.value)}
                             />
                             <div className={styles["form-hint"]}>
-                                Leave blank to use the global health depth.
+                                Leave blank to use the global health depth. Global health pipelining is currently
+                                {healthPipeliningEnabled ? " enabled" : " disabled"}; this provider setting will not change it.
                             </div>
                         </div>
 
@@ -1690,6 +1662,9 @@ function ProviderModal({
                         progress={benchmarkProgress}
                         result={benchmarkResult}
                         error={benchmarkError}
+                        playbackBenchmarkConnections={getPlaybackBenchmarkConnections(maxConnections, playbackConnectionLimit)}
+                        playbackPipeliningEnabled={playbackPipeliningEnabled}
+                        healthPipeliningEnabled={healthPipeliningEnabled}
                         onRun={handleAutoTune}
                         onCancel={handleCancelBenchmark}
                         onApply={handleApplyRecommendation}
@@ -1742,6 +1717,9 @@ type BenchmarkPanelProps = {
     progress: BenchmarkProgress | null;
     result: BenchmarkResult | null;
     error: string | null;
+    playbackBenchmarkConnections: number;
+    playbackPipeliningEnabled: boolean;
+    healthPipeliningEnabled: boolean;
     onRun: () => void;
     onCancel: () => void;
     onApply: () => void;
@@ -1750,9 +1728,10 @@ type BenchmarkPanelProps = {
 function BenchmarkPanel(props: BenchmarkPanelProps) {
     const {
         canBenchmark, isBenchmarking, intensity, setIntensity,
-        mode, setMode, progress, result, error, onRun, onCancel, onApply,
+        mode, setMode, progress, result, error, playbackBenchmarkConnections,
+        playbackPipeliningEnabled, healthPipeliningEnabled,
+        onRun, onCancel, onApply,
     } = props;
-    const pipeliningOnly = mode === "pipelining";
     const startupOnly = mode === "startup";
     const healthOnly = mode === "health";
     const [applied, setApplied] = useState(false);
@@ -1764,24 +1743,19 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
     const bestSpeed = result?.throughputTested && result.sweep.length > 0
         ? Math.max(...result.sweep.map(p => p.mbPerSec))
         : null;
-    const pipe = result?.pipelining ?? null;
     const startup = result?.startup ?? null;
     const health = result?.healthPipelining ?? null;
     const startupRecommended = startup ? getStartupPoint(startup, startup.recommendedDepth) : null;
     const startupFirstGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedFirstMs, startupRecommended.firstMs) : null;
     const startupReadyGain = startup && startupRecommended ? percentImprovement(startup.nonPipelinedReadyMs, startupRecommended.readyMs) : null;
-    const pipeBest = pipe && pipe.tested.length > 0 ? Math.max(...pipe.tested.map(t => t.mbPerSec)) : (pipe?.baselineMbPerSec ?? 0);
-    const pipeGainPct = pipe && pipe.baselineMbPerSec > 0 ? Math.round((pipeBest / pipe.baselineMbPerSec - 1) * 100) : 0;
     const canApply = !!result && (
-        (result.throughputTested && recommended != null)
-        || (result.pipeliningOnly && !!pipe)
-        || (result.startupOnly && !!startup)
-        || (result.healthOnly && health?.reliable === true)
+        (mode === "speed" && result.throughputTested && recommended != null)
+        || (mode === "startup" && startup?.recommendPlaybackPipelining === true)
+        || (mode === "health" && health?.reliable === true)
     );
     const testOptions: Array<{ value: BenchmarkMode; label: string; description: string }> = [
         { value: "speed", label: "Connections", description: "Find the fastest stable connection count." },
-        { value: "pipelining", label: "Body pipeline", description: "Measure ARTICLE throughput by pipeline depth." },
-        { value: "startup", label: "Playback startup", description: "Compare first segment and initial buffer time." },
+        { value: "startup", label: "Playback pipeline", description: "Compare normal startup with pipelined playback." },
         { value: "health", label: "Health checks", description: "Find a fast, reliable STAT pipeline depth." },
     ];
 
@@ -1834,10 +1808,8 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
             </div>
 
             <div className={styles["benchmark-test-hint"]}>
-                {pipeliningOnly
-                    ? "Won't change your connection count — it tests pipelining depth at the Max Connections you've set. Run it idle for the cleanest read."
-                    : startupOnly
-                        ? "Compares time to the first decoded article and a small startup buffer. This is the best benchmark for first-frame speed."
+                {startupOnly
+                        ? `Compares normal playback using up to ${playbackBenchmarkConnections} connections with one pipelined playback lane. The global setting is not changed.`
                     : healthOnly
                         ? "Runs repeated mixed present/missing STAT batches at depths 1, 4, 8, 16, 32 and 64. No article bodies are downloaded."
                         : (intensity === "quick"
@@ -1864,7 +1836,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                 </div>
             )}
 
-            {livePoints.length > 0 && !(isBenchmarking ? (pipeliningOnly || startupOnly || healthOnly) : (result?.pipeliningOnly || result?.startupOnly || result?.healthOnly)) && (
+            {livePoints.length > 0 && !(isBenchmarking ? (startupOnly || healthOnly) : (result?.startupOnly || result?.healthOnly)) && (
                 <SweepChart points={livePoints} recommended={recommended} />
             )}
 
@@ -1903,7 +1875,7 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                                 </div>
                                 <div className={styles["bench-pipe"]}>
                                     {health.reliable
-                                        ? <>Use provider health depth <strong>{health.recommendedDepth}</strong>. Every repeated batch completed and matched the reference results.</>
+                                        ? <>Use provider health depth <strong>{health.recommendedDepth}</strong>. Every repeated batch completed and matched the reference results. The global health toggle remains {healthPipeliningEnabled ? "enabled" : "disabled"}.</>
                                         : <>Health STAT pipelining was not reliable on this provider. Leave its health-depth override blank and consider disabling it for health checks.</>}
                                 </div>
                             </>
@@ -1962,55 +1934,13 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
 	                                <StartupChart startup={startup} />
 	                                <div className={styles["bench-pipe"]}>
 	                                    {startup.recommendPlaybackPipelining
-	                                        ? <>Enable <strong>playback pipelining</strong> at depth <strong>{startup.recommendedDepth}</strong>. This benchmark measures full first-segment readiness and the initial startup buffer, not long-run download speed.</>
-	                                        : <>Playback pipelining did not improve startup enough without delaying the first segment. Leave it off for playback.</>}
+	                                        ? <>Use provider playback depth <strong>{startup.recommendedDepth}</strong>. The global playback toggle remains {playbackPipeliningEnabled ? "enabled" : "disabled"}{playbackPipeliningEnabled ? "." : "; this depth will remain inactive until you enable it in Advanced settings."}</>
+	                                        : <>Playback pipelining did not improve startup enough without delaying the first segment. No provider or global setting will be changed.</>}
 	                                </div>
 	                            </>
                         ) : (
                             <div className={styles["bench-note"]}>
                                 Couldn’t measure playback startup{result.latency ? ` (latency ${result.latency.avgMs} ms)` : ""}. Try again when idle.
-                            </div>
-                        )
-                    ) : result.pipeliningOnly ? (
-                        pipe ? (
-                            <>
-                                <DepthChart pipe={pipe} />
-                                <div className={styles["bench-stats"]}>
-                                    <div className={styles["bench-stat"]}>
-                                        <span className={styles["bench-stat-label"]}>Pipelining</span>
-                                        <span className={`${styles["bench-stat-value"]} ${styles["bench-stat-strong"]}`}>
-                                            {pipe.recommendEnabled ? `Depth ${pipe.recommendedDepth}` : "Off"}
-                                        </span>
-                                        <span className={styles["bench-stat-sub"]}>
-                                            {pipe.recommendEnabled ? `≈ +${pipeGainPct}% vs off` : "no real gain"}
-                                        </span>
-                                    </div>
-                                    {result.latency && (
-                                        <div className={styles["bench-stat"]}>
-                                            <span className={styles["bench-stat-label"]}>Latency</span>
-                                            <span className={styles["bench-stat-value"]}>{result.latency.avgMs} ms</span>
-                                            <span className={styles["bench-stat-sub"]}>{result.latency.minMs} ms min</span>
-                                        </div>
-                                    )}
-                                    <div className={styles["bench-stat"]}>
-                                        <span className={styles["bench-stat-label"]}>Tested at</span>
-                                        <span className={styles["bench-stat-value"]}>{pipe.testedAtConnections}</span>
-                                        <span className={styles["bench-stat-sub"]}>connections</span>
-                                    </div>
-                                    <div className={styles["bench-stat"]}>
-                                        <span className={styles["bench-stat-label"]}>Data used</span>
-                                        <span className={styles["bench-stat-value"]}>{formatBytes(result.dataUsedBytes)}</span>
-                                    </div>
-                                </div>
-                                <div className={styles["bench-pipe"]}>
-                                    {pipe.recommendEnabled
-                                        ? <>Turn on <strong>NNTP pipelining</strong> at depth <strong>{pipe.recommendedDepth}</strong> — measurably faster at your {pipe.testedAtConnections} connections.</>
-                                        : <>NNTP pipelining didn’t help at your {pipe.testedAtConnections} connections — leave it off.</>}
-                                </div>
-                            </>
-                        ) : (
-                            <div className={styles["bench-note"]}>
-                                Couldn’t measure pipelining{result.latency ? ` (latency ${result.latency.avgMs} ms)` : ""}. Try again when idle.
                             </div>
                         )
                     ) : result.throughputTested && recommended ? (
@@ -2047,14 +1977,6 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                         </div>
                     )}
 
-                    {!result.pipeliningOnly && pipe && (
-                        <div className={styles["bench-pipe"]}>
-                            {pipe.recommendEnabled
-                                ? <>Turn on <strong>NNTP pipelining</strong> at depth <strong>{pipe.recommendedDepth}</strong> — measurably faster on this connection.</>
-                                : <>NNTP pipelining didn’t help here — leave it off.</>}
-                        </div>
-                    )}
-
                     {result.warnings.length > 0 && (
                         <ul className={styles["bench-warnings"]}>
                             {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
@@ -2066,9 +1988,8 @@ function BenchmarkPanel(props: BenchmarkPanelProps) {
                             <Button variant={applied ? "secondary" : "primary"} onClick={() => { onApply(); setApplied(true); }}>
                                 {applied ? "Applied ✓ — review & save" : (
                                     result.healthOnly ? "Apply health depth"
-                                        : result.startupOnly ? "Apply playback recommendation"
-                                            : result.pipeliningOnly ? "Apply pipelining"
-                                                : "Apply recommendation"
+                                        : result.startupOnly ? "Apply playback depth"
+                                            : "Apply recommendation"
                                 )}
                             </Button>
                         </div>
@@ -2197,46 +2118,6 @@ function SweepChart({ points, recommended }: { points: BenchmarkSweepPoint[]; re
     );
 }
 
-function DepthChart({ pipe }: { pipe: BenchmarkPipelining }) {
-    const points = [
-        { label: "Off", mbPerSec: pipe.baselineMbPerSec, rec: !pipe.recommendEnabled },
-        ...pipe.tested.map(t => ({
-            label: String(t.depth),
-            mbPerSec: t.mbPerSec,
-            rec: pipe.recommendEnabled && t.depth === pipe.recommendedDepth,
-        })),
-    ];
-    const max = Math.max(...points.map(p => p.mbPerSec), 0.0001);
-    return (
-        <div className={styles["bench-chart"]}>
-            <div className={styles["bench-chart-bars"]}>
-                {points.map((p, i) => {
-                    const height = Math.max(4, Math.round((p.mbPerSec / max) * 104));
-                    return (
-                        <div key={i} className={`${styles["bench-chart-col"]} ${p.rec ? styles["bench-chart-col-rec"] : ""}`}>
-                            <span className={styles["bench-chart-val"]}>
-                                {p.mbPerSec >= 10 ? p.mbPerSec.toFixed(0) : p.mbPerSec.toFixed(1)}
-                            </span>
-                            <div
-                                className={styles["bench-chart-bar"]}
-                                style={{ height: `${height}px` }}
-                                title={`${p.label} → ${p.mbPerSec.toFixed(1)} MB/s`}
-                            />
-                            <span className={styles["bench-chart-label"]}>{p.label}</span>
-                        </div>
-                    );
-                })}
-            </div>
-            <div className={styles["bench-chart-foot"]}>
-                <span className={styles["form-hint"]} style={{ margin: 0 }}>MB/s by pipeline depth</span>
-                <span className={styles["form-hint"]} style={{ margin: 0 }}>
-                    {pipe.recommendEnabled ? `best: depth ${pipe.recommendedDepth}` : "best: off"}
-                </span>
-            </div>
-        </div>
-    );
-}
-
 export function isUsenetSettingsValid(config: Record<string, string>) {
     const segmentCacheValid = config["usenet.segment-cache.enabled"] !== "true"
         || (isValidSegmentCachePath(config["usenet.segment-cache.path"])
@@ -2259,6 +2140,12 @@ function isValidSegmentCachePath(value: string): boolean {
 
 function isValidMaxDownloadConnections(value: string): boolean {
     return isPositiveInteger(value);
+}
+
+function getPlaybackBenchmarkConnections(providerMax: string, playbackLimit: string): number {
+    const parsedProviderMax = isPositiveInteger(providerMax) ? Number(providerMax) : 10;
+    const parsedPlaybackLimit = isPositiveInteger(playbackLimit) ? Number(playbackLimit) : 15;
+    return Math.max(1, Math.min(parsedProviderMax, parsedPlaybackLimit));
 }
 
 function isValidMaxQueueConnections(value: string, pooledConnections: number): boolean {

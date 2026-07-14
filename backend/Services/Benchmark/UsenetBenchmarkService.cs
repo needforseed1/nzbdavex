@@ -43,6 +43,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         UsenetProviderConfig.ConnectionDetails provider,
         int configuredMaxConnections,
         BenchmarkIntensity intensity,
+        bool connectionsOnly,
         bool pipeliningOnly,
         bool startupOnly,
         bool healthOnly,
@@ -170,6 +171,12 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
         result.ProviderConnectionCap = providerCap;
         result.RecommendedConnections = DetectKnee(result.Sweep, providerCap, result.Warnings);
+
+        if (connectionsOnly)
+        {
+            Report("done", "Done.", 100, result, null);
+            return result;
+        }
 
         // 4) Pipelining — compare off vs. a few depths at a moderate concurrency.
         if (result.Sweep.Count > 0 && result.DataUsedBytes < profile.HardTotalBytes)
