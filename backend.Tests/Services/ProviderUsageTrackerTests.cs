@@ -45,6 +45,84 @@ public class ProviderUsageTrackerTests
         Assert.Equal(2, display["unknown-provider"]);
     }
 
+    [Fact]
+    public void HealthSnapshot_KeepsSharedHostAccountsSeparate()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using (tracker.BeginScope(queueId))
+        {
+            tracker.BeginHealthCheck(113_377);
+            tracker.RecordHealthProviderStat(HealthStat("farm-1", 32_937));
+            tracker.RecordHealthProviderStat(HealthStat("farm-2", 34_183));
+            tracker.RecordHealthProviderStat(HealthStat("farm-3", 33_554));
+        }
+
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(tracker.SnapshotHealthCheck(queueId));
+
+        Assert.Equal(113_377, snapshot.TotalArticles);
+        Assert.Equal(3, snapshot.Providers.Count);
+        Assert.Equal(new[] { "farm-2", "farm-3", "farm-1" }, snapshot.Providers.Select(x => x.ProviderId));
+        Assert.All(snapshot.Providers, stat => Assert.Equal("news.usenet.farm", stat.Host));
+    }
+
+    [Fact]
+    public void PrepSnapshot_PreservesStageTimingsAndStableProviderIds()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        var expected = new PrepUsageSnapshot(
+            1_424, 150, 18_087, 8_839, 660, 489, 64, true, 2,
+            [
+                new PrepProviderStat("newshosting-id", 924, 15_138_816),
+                new PrepProviderStat("eweka-id", 500, 8_192_000),
+            ]);
+
+        using (tracker.BeginScope(queueId))
+            tracker.RecordPrepStats(expected);
+
+        var snapshot = Assert.IsType<PrepUsageSnapshot>(tracker.SnapshotPrep(queueId));
+
+        Assert.Equal(expected, snapshot);
+        Assert.Equal(new[] { "newshosting-id", "eweka-id" },
+            snapshot.Providers.Select(x => x.ProviderId));
+        Assert.Equal(1_424, snapshot.Providers.Sum(x => x.Articles));
+        Assert.Equal(23_330_816, snapshot.Providers.Sum(x => x.Bytes));
+    }
+
+    [Fact]
+    public void ByteSnapshot_AttributesReadBytesToTheActiveQueueScope()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using (tracker.BeginScope(queueId))
+        using (tracker.BeginByteCapture())
+        {
+            tracker.RecordBytes("eweka-id", 16_384);
+            tracker.RecordBytes("eweka-id", 4_096);
+            tracker.RecordBytes("newshosting-id", 8_192);
+        }
+
+        var bytes = tracker.SnapshotBytes(queueId);
+
+        Assert.Equal(20_480, bytes["eweka-id"]);
+        Assert.Equal(8_192, bytes["newshosting-id"]);
+    }
+
+    [Fact]
+    public void ByteSnapshot_IgnoresReadsOutsideExplicitCaptureWindow()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using (tracker.BeginScope(queueId))
+            tracker.RecordBytes("eweka-id", 16_384);
+
+        Assert.Empty(tracker.SnapshotBytes(queueId));
+    }
+
+    private static HealthProviderStat HealthStat(string id, long found) => new(
+        id, "news.usenet.farm", true, 32, 32, 1, found, found, found, 0, 0, 100, 400);
+
     private static UsenetProviderConfig.ConnectionDetails Provider(string id, string host) => new()
     {
         Id = id,

@@ -9,6 +9,21 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class QueueConnectionWarmerTests
 {
+    [Theory]
+    [InlineData(ProviderType.HealthChecksOnly, 40, 40)]
+    [InlineData(ProviderType.Pooled, 100, 16)]
+    [InlineData(ProviderType.BackupAndStats, 50, 50)]
+    [InlineData(ProviderType.BackupOnly, 50, 0)]
+    [InlineData(ProviderType.Disabled, 50, 0)]
+    public void DedicatedHealthProvidersKeepTheirFullPoolWarm(
+        ProviderType providerType,
+        int maxConnections,
+        int expected)
+    {
+        Assert.Equal(expected,
+            UsenetStreamingClient.GetWarmConnectionTarget(providerType, maxConnections));
+    }
+
     [Fact]
     public async Task DistributesTargetAcrossPooledProvidersByCapacity()
     {
@@ -23,6 +38,24 @@ public class QueueConnectionWarmerTests
         Assert.Equal(2, largePool.LiveConnections);
         Assert.Equal(1, smallPool.LiveConnections);
         Assert.Equal(0, backup.LiveConnections);
+    }
+
+    [Fact]
+    public async Task HealthPrewarmFillsDedicatedHealthProvidersOnly()
+    {
+        using var pooled = CreateProvider(ProviderType.Pooled, "pooled", 6, priority: 0);
+        using var healthOnly = CreateProvider(ProviderType.HealthChecksOnly, "farm", 4, priority: 1);
+        using var backupAndStats = CreateProvider(ProviderType.BackupAndStats, "block", 3, priority: 2);
+        using var backupOnly = CreateProvider(ProviderType.BackupOnly, "backup", 5, priority: 3);
+        using var client = new MultiProviderNntpClient(
+            [pooled, healthOnly, backupAndStats, backupOnly], new ProviderUsageTracker());
+
+        await client.PrewarmHealthCheckAsync(CancellationToken.None);
+
+        Assert.Equal(0, pooled.LiveConnections);
+        Assert.Equal(4, healthOnly.LiveConnections);
+        Assert.Equal(3, backupAndStats.LiveConnections);
+        Assert.Equal(0, backupOnly.LiveConnections);
     }
 
     private static MultiConnectionNntpClient CreateProvider(

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-13)
+## Unreleased — local fork changes versus upstream (2026-07-10–2026-07-14)
 
 This section records changes in this repository that are not yet present in the `qooode/nzbdavex` upstream repository. The work focuses on getting from an added NZB to verified, playable content faster, making high-connection Usenet setups more predictable, and completing an application-wide settings audit.
 
@@ -16,6 +16,7 @@ This section records changes in this repository that are not yet present in the 
 * File-size probes read only the required yEnc header instead of waiting for an entire article to be cached, removing an intermittent processor-tail delay during prep.
 * Eager RAR prep parses continuation headers directly from the 16KB prefix already retained during initial inspection, avoiding a second full BODY download for nearly every ordinary split volume. Final and multi-file boundary volumes retain the full scan, and memory-heavy parser fallbacks are capped independently of very large prep-connection budgets.
 * Queue imports begin warming Pool provider connections as soon as an NZB arrives, up to the configured queue connection budget.
+* Health-only and backup-plus-health providers now keep their full configured connection allowance authenticated between jobs, so the first Farm- or block-backed health check starts at full capacity. Plain backup providers remain cold and recovery-only.
 
 ### More reliable connections and failover
 
@@ -35,6 +36,8 @@ This section records changes in this repository that are not yet present in the 
 * Queue percentages now update inline with completed work instead of lagging behind prep at 48–49% while callbacks drain in the background.
 * Overlapped health timing now stops when STAT work finishes, rather than including time spent waiting for prep processors.
 * Watchdog timing now labels a category-based health check that did not run as **Not run** instead of showing an ambiguous dash beside a valid prep time.
+* Completed Watchdog summaries are now clickable and persist an expandable health-routing breakdown with per-account probe coverage, bulk article allocation, share, misses, failures, and STAT rate.
+* New Watchdog entries also persist an expandable prep breakdown: queue wait, first-segment, PAR2, RAR-mapping and file-processing timings, plus first-segment provider article/data shares and fallback count.
 * The in-app log view shows newest entries first.
 * Live prep/health-check provider attribution now converts internal stable UUIDs back to configured provider hostnames and nicknames in queue, history, and Watchdog displays. Live usage lists include only providers that actually served articles instead of padding the list with every configured provider at 0%.
 
@@ -85,7 +88,7 @@ This section records changes in this repository that are not yet present in the 
 ### Verification
 
 * Added regression coverage for settings parsing and validation, provider routing, indexer quotas, Warden behavior, Watchtower active-set rotation, path safety, proxy handling, and coalesced NZB fetches.
-* The current local change set passes all 130 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
+* The current local change set passes all 140 backend tests, frontend type generation and TypeScript checks, the frontend production build, container entrypoint syntax checking, workflow YAML parsing, and `git diff --check`.
 
 ## [1.2.0](https://github.com/qooode/nzbdavex/compare/v1.1.0...v1.2.0) (2026-06-17)
 

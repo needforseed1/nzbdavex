@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using NzbWebDAV.Config;
 using NzbWebDAV.Services;
@@ -26,6 +27,10 @@ public partial class GetWatchdogEntriesController(
             .Where(p => !string.IsNullOrWhiteSpace(p.Nickname))
             .GroupBy(p => p.Host, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Nickname, StringComparer.OrdinalIgnoreCase);
+        var providersById = configManager.GetUsenetProviderConfig().Providers
+            .Where(p => !string.IsNullOrWhiteSpace(p.Id))
+            .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         var recent = await watchdogLog.GetRecentAsync(limit, HttpContext.RequestAborted).ConfigureAwait(false);
         var dtos = recent.Select(a => new GetWatchdogEntriesResponse.EntryDto
@@ -43,6 +48,8 @@ public partial class GetWatchdogEntriesController(
             DurationMs = a.DurationMs,
             PrepDurationMs = a.PrepDurationMs,
             HealthDurationMs = a.HealthDurationMs,
+            PrepStats = BuildPrepStats(a.PrepStatsJson, providersById),
+            HealthStats = BuildHealthStats(a.HealthStatsJson, providersById),
             IsWinner = a.IsWinner,
             ProviderHost = a.ProviderHost,
             ProviderNickname = ResolveNickname(a.ProviderHost, nicknamesByHost),
@@ -53,6 +60,91 @@ public partial class GetWatchdogEntriesController(
             Status = true,
             Entries = dtos,
         });
+    }
+
+    private static GetWatchdogEntriesResponse.PrepStatsDto? BuildPrepStats(
+        string? json,
+        IReadOnlyDictionary<string, UsenetProviderConfig.ConnectionDetails> providersById)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        PrepUsageSnapshot? snapshot;
+        try
+        {
+            snapshot = JsonSerializer.Deserialize<PrepUsageSnapshot>(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (snapshot is null) return null;
+
+        return new GetWatchdogEntriesResponse.PrepStatsDto
+        {
+            FileCount = snapshot.FileCount,
+            Connections = snapshot.Connections,
+            QueueWaitMs = snapshot.QueueWaitMs,
+            FirstSegmentsMs = snapshot.FirstSegmentsMs,
+            Par2Ms = snapshot.Par2Ms,
+            RarMs = snapshot.RarMs,
+            ProcessorsMs = snapshot.ProcessorsMs,
+            LazyRarMounted = snapshot.LazyRarMounted,
+            FirstSegmentFallbacks = snapshot.FirstSegmentFallbacks,
+            Providers = snapshot.Providers.Select(stat =>
+            {
+                providersById.TryGetValue(stat.ProviderId, out var configured);
+                return new GetWatchdogEntriesResponse.PrepProviderDto
+                {
+                    ProviderId = stat.ProviderId,
+                    Host = configured?.Host ?? stat.ProviderId,
+                    Nickname = configured?.Nickname,
+                    Articles = stat.Articles,
+                    Bytes = stat.Bytes,
+                };
+            }).OrderByDescending(x => x.Articles).ThenBy(x => x.Nickname ?? x.Host).ToList(),
+        };
+    }
+
+    private static GetWatchdogEntriesResponse.HealthStatsDto? BuildHealthStats(
+        string? json,
+        IReadOnlyDictionary<string, UsenetProviderConfig.ConnectionDetails> providersById)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        HealthCheckUsageSnapshot? snapshot;
+        try
+        {
+            snapshot = JsonSerializer.Deserialize<HealthCheckUsageSnapshot>(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (snapshot is null) return null;
+
+        return new GetWatchdogEntriesResponse.HealthStatsDto
+        {
+            TotalArticles = snapshot.TotalArticles,
+            Providers = snapshot.Providers.Select(stat =>
+            {
+                providersById.TryGetValue(stat.ProviderId, out var configured);
+                return new GetWatchdogEntriesResponse.HealthProviderDto
+                {
+                    ProviderId = stat.ProviderId,
+                    Host = configured?.Host ?? stat.Host,
+                    Nickname = configured?.Nickname,
+                    Preferred = stat.Preferred,
+                    ProbeFound = stat.ProbeFound,
+                    ProbeReceived = stat.ProbeReceived,
+                    Batches = stat.Batches,
+                    Attempted = stat.Attempted,
+                    Received = stat.Received,
+                    Found = stat.Found,
+                    Missing = stat.Missing,
+                    Failures = stat.Failures,
+                    WorkMs = stat.WorkMs,
+                    Rate = stat.Rate,
+                };
+            }).OrderByDescending(x => x.Found).ThenBy(x => x.Nickname ?? x.Host).ToList(),
+        };
     }
 
     // ProviderHost can be a single host, or a comma-separated formatted string

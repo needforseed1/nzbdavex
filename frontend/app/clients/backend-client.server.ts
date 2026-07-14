@@ -462,9 +462,54 @@ export type WatchdogEntry = {
     durationMs: number,
     prepDurationMs?: number | null,
     healthDurationMs?: number | null,
+    prepStats?: WatchdogPrepStats | null,
+    healthStats?: WatchdogHealthStats | null,
     isWinner: boolean,
     providerHost?: string | null,
     providerNickname?: string | null,
+}
+
+export type WatchdogPrepStats = {
+    fileCount: number,
+    connections: number,
+    queueWaitMs: number,
+    firstSegmentsMs: number,
+    par2Ms: number,
+    rarMs: number,
+    processorsMs: number,
+    lazyRarMounted: boolean,
+    firstSegmentFallbacks: number,
+    providers: WatchdogPrepProvider[],
+}
+
+export type WatchdogPrepProvider = {
+    providerId: string,
+    host: string,
+    nickname?: string | null,
+    articles: number,
+    bytes: number,
+}
+
+export type WatchdogHealthStats = {
+    totalArticles: number,
+    providers: WatchdogHealthProvider[],
+}
+
+export type WatchdogHealthProvider = {
+    providerId: string,
+    host: string,
+    nickname?: string | null,
+    preferred: boolean,
+    probeFound: number,
+    probeReceived: number,
+    batches: number,
+    attempted: number,
+    received: number,
+    found: number,
+    missing: number,
+    failures: number,
+    workMs: number,
+    rate: number,
 }
 
 export type DirectoryItem = {

@@ -95,6 +95,11 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient, IQueueCo
             ? warmer.PrewarmQueueAsync(targetConnections, cancellationToken)
             : Task.CompletedTask;
 
+    public Task PrewarmHealthCheckAsync(CancellationToken cancellationToken) =>
+        _usenetClient is IQueueConnectionWarmer warmer
+            ? warmer.PrewarmHealthCheckAsync(cancellationToken)
+            : Task.CompletedTask;
+
     protected void ReplaceUnderlyingClient(INntpClient usenetClient)
     {
         var old = _usenetClient;

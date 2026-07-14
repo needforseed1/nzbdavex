@@ -13,6 +13,7 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public class UsenetStreamingClient : WrappingNntpClient
 {
+    internal const bool HealthProviderPrewarmEnabled = true;
     private const int WarmConnectionsPerProvider = 16;
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan WarmConnectionRefreshInterval = TimeSpan.FromSeconds(15);
@@ -99,11 +100,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
     {
-        var keepWarm = connectionDetails.Type is ProviderType.Pooled
-            or ProviderType.BackupAndStats
-            or ProviderType.HealthChecksOnly
-            ? Math.Min(connectionDetails.MaxConnections, WarmConnectionsPerProvider)
-            : 0;
+        var keepWarm = GetWarmConnectionTarget(connectionDetails.Type, connectionDetails.MaxConnections);
         var connectionPool = CreateNewConnectionPool(
             maxConnections: connectionDetails.MaxConnections,
             connectionFactory: ct => CreateNewConnection(connectionDetails, ct),
@@ -128,6 +125,22 @@ public class UsenetStreamingClient : WrappingNntpClient
             connectionDetails.HealthPipeliningDepth,
             connectionDetails.Id
         );
+    }
+
+    internal static int GetWarmConnectionTarget(ProviderType providerType, int maxConnections)
+    {
+        if (maxConnections <= 0) return 0;
+
+        // Providers participating explicitly in bulk health checks benefit from
+        // having their full allowance authenticated before a job arrives. Idle
+        // sessions cost no article quota; backup+STAT providers may still serve
+        // BODY/ARTICLE later when normal failover requires them.
+        if (providerType is ProviderType.HealthChecksOnly or ProviderType.BackupAndStats)
+            return HealthProviderPrewarmEnabled ? maxConnections : 0;
+
+        return providerType == ProviderType.Pooled
+            ? Math.Min(maxConnections, WarmConnectionsPerProvider)
+            : 0;
     }
 
     private static ConnectionPool<INntpClient> CreateNewConnectionPool

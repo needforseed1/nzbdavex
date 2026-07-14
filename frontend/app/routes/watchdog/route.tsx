@@ -2,7 +2,13 @@ import { redirect } from "react-router";
 import type { Route } from "./+types/route";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./route.module.css";
-import { backendClient, type WatchdogEntry, type WatchdogOutcome } from "~/clients/backend-client.server";
+import {
+    backendClient,
+    type WatchdogEntry,
+    type WatchdogHealthStats,
+    type WatchdogOutcome,
+    type WatchdogPrepStats,
+} from "~/clients/backend-client.server";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -169,6 +175,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
 }
 
 function ClickCard({ group }: { group: ClickGroup }) {
+    const [detailsOpen, setDetailsOpen] = useState(false);
     const status: "win" | "loss" | "inflight" =
         group.hasWinner ? "win" : group.allResolved ? "loss" : "inflight";
     const winner = group.attempts.find(a => a.isWinner);
@@ -190,9 +197,16 @@ function ClickCard({ group }: { group: ClickGroup }) {
             </div>
 
             {winner && (
-                <div className={styles.winnerLine}>
-                    Resolved via <span className={styles.winnerIndexer}>{winner.indexerName}</span>
-                    <div className={styles.timingBoxes}>
+                <>
+                <button
+                    type="button"
+                    className={`${styles.winnerLine} ${detailsOpen ? styles.winnerLineOpen : ""}`}
+                    onClick={() => setDetailsOpen(open => !open)}
+                    aria-expanded={detailsOpen}
+                    aria-controls={`watchdog-stats-${group.clickId}`}
+                    title="Show prep and health-check statistics">
+                    <span>Resolved via <span className={styles.winnerIndexer}>{winner.indexerName}</span></span>
+                    <span className={styles.timingBoxes}>
                         {winner.prepDurationMs != null || winner.healthDurationMs != null ? <>
                             <TimingBox label="Prep" value={formatDuration(winner.prepDurationMs)} />
                             <TimingBox
@@ -204,12 +218,26 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         </> : (
                             <TimingBox label="Total" value={formatDuration(winner.durationMs)} />
                         )}
-                    </div>
+                    </span>
                     {winner.size > 0 && <>
                         <span className={styles.winnerDot}>·</span>
                         <span>{formatBytes(winner.size)}</span>
                     </>}
-                </div>
+                    <span className={styles.detailsHint}>
+                        Stats
+                        <svg className={`${styles.detailsChevron} ${detailsOpen ? styles.detailsChevronOpen : ""}`} viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    </span>
+                </button>
+                {detailsOpen && (
+                    <WinnerStats
+                        id={`watchdog-stats-${group.clickId}`}
+                        prepStats={winner.prepStats}
+                        healthStats={winner.healthStats}
+                    />
+                )}
+                </>
             )}
 
             <div className={styles.attemptTableWrap}>
@@ -265,6 +293,143 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     ))}
                 </div>
             </div>
+        </div>
+    );
+}
+
+function WinnerStats({
+    id,
+    prepStats,
+    healthStats,
+}: {
+    id: string,
+    prepStats?: WatchdogPrepStats | null,
+    healthStats?: WatchdogHealthStats | null,
+}) {
+    const firstSegments = prepStats?.providers.reduce((sum, provider) => sum + provider.articles, 0) ?? 0;
+    const bulkFound = healthStats?.providers.reduce((sum, provider) => sum + provider.found, 0) ?? 0;
+
+    return (
+        <div id={id} className={styles.winnerDetails}>
+            {!prepStats ? (
+                <div className={styles.detailsEmpty}>Prep breakdown was not recorded for this older entry.</div>
+            ) : (
+                <section className={styles.detailsSection}>
+                    <div className={styles.detailsSectionHeader}>
+                        <span className={styles.detailsSectionTitle}>Prep breakdown</span>
+                        <span className={styles.detailsSectionMeta}>
+                            {formatCount(prepStats.fileCount)} files · {formatCount(prepStats.connections)} connections
+                            {prepStats.firstSegmentFallbacks > 0
+                                ? ` · ${formatCount(prepStats.firstSegmentFallbacks)} fallbacks`
+                                : " · no fallbacks"}
+                        </span>
+                    </div>
+                    <div className={styles.prepStageGrid}>
+                        <PrepStage label="Queue wait" value={formatDuration(prepStats.queueWaitMs)} />
+                        <PrepStage label="First segments" value={formatDuration(prepStats.firstSegmentsMs)} />
+                        <PrepStage label="PAR2 inspection" value={formatDuration(prepStats.par2Ms)} />
+                        <PrepStage
+                            label="RAR mapping"
+                            value={formatDuration(prepStats.rarMs)}
+                            note={prepStats.lazyRarMounted ? "lazy mount" : undefined}
+                        />
+                        <PrepStage label="File processing" value={formatDuration(prepStats.processorsMs)} />
+                    </div>
+                    {prepStats.providers.length > 0 && (
+                        <div className={styles.prepProviderList}>
+                            <div className={styles.prepProviderHeader}>
+                                <span>First-segment provider</span>
+                                <span>Articles</span>
+                                <span>Downloaded</span>
+                                <span>Share</span>
+                            </div>
+                            {prepStats.providers.map(provider => {
+                                const share = firstSegments > 0
+                                    ? Math.round(provider.articles * 100 / firstSegments)
+                                    : 0;
+                                const label = provider.nickname?.trim() || stripHost(provider.host);
+                                return (
+                                    <div className={styles.prepProviderRow} key={provider.providerId}>
+                                        <span className={styles.healthProviderIdentity}>
+                                            <span className={styles.healthProviderName}>{label}</span>
+                                            <span className={styles.healthProviderHost}>{provider.host}</span>
+                                        </span>
+                                        <span className={styles.prepProviderCell} data-label="Articles">
+                                            {formatCount(provider.articles)}
+                                        </span>
+                                        <span className={styles.prepProviderCell} data-label="Downloaded">
+                                            {formatBytes(provider.bytes)}
+                                        </span>
+                                        <span className={styles.prepProviderCell} data-label="Share">{share}%</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </section>
+            )}
+
+            <section className={styles.detailsSection}>
+                <div className={styles.detailsSectionHeader}>
+                    <span className={styles.detailsSectionTitle}>Health routing</span>
+                    {healthStats && (
+                        <span className={styles.detailsSectionMeta}>
+                            {formatCount(healthStats.totalArticles)} articles checked
+                        </span>
+                    )}
+                </div>
+                {!healthStats ? (
+                    <div className={styles.detailsEmpty}>Provider-level health statistics were not recorded for this older entry.</div>
+                ) : healthStats.providers.length === 0 ? (
+                    <div className={styles.detailsEmpty}>This health check did not use the multi-provider bulk routing path.</div>
+                ) : (
+                    <div className={styles.healthProviderList}>
+                        <div className={styles.healthProviderHeader}>
+                        <span>Provider</span>
+                        <span>Probe</span>
+                        <span>Bulk articles</span>
+                        <span>Share</span>
+                        <span>Rate</span>
+                        </div>
+                        {healthStats.providers.map(provider => {
+                            const share = bulkFound > 0 ? Math.round(provider.found * 100 / bulkFound) : 0;
+                            const label = provider.nickname?.trim() || stripHost(provider.host);
+                            return (
+                                <div className={styles.healthProviderRow} key={provider.providerId}>
+                                    <span className={styles.healthProviderIdentity}>
+                                        <span className={styles.healthProviderName}>{label}</span>
+                                        <span className={styles.healthProviderHost}>{provider.host}</span>
+                                    </span>
+                                    <span className={styles.healthProviderCell} data-label="Probe">
+                                        {provider.probeFound}/{provider.probeReceived}
+                                    </span>
+                                    <span className={styles.healthProviderCell} data-label="Bulk articles">
+                                        {formatCount(provider.found)}
+                                        {(provider.missing > 0 || provider.failures > 0) && (
+                                            <span className={styles.healthProviderWarning}>
+                                                {provider.missing > 0 ? ` · ${formatCount(provider.missing)} missing` : ""}
+                                                {provider.failures > 0 ? ` · ${formatCount(provider.failures)} failed batches` : ""}
+                                            </span>
+                                        )}
+                                    </span>
+                                    <span className={styles.healthProviderCell} data-label="Share">{share}%</span>
+                                    <span className={styles.healthProviderCell} data-label="Rate">{formatCount(provider.rate)}/s</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
+        </div>
+    );
+}
+
+function PrepStage({ label, value, note }: { label: string, value: string, note?: string }) {
+    return (
+        <div className={styles.prepStage}>
+            <span className={styles.prepStageLabel}>{label}</span>
+            <span className={styles.prepStageValue}>{value}</span>
+            {note && <span className={styles.prepStageNote}>{note}</span>}
         </div>
     );
 }
@@ -372,10 +537,16 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
         if (x.durationMs !== y.durationMs) return false;
         if (x.prepDurationMs !== y.prepDurationMs) return false;
         if (x.healthDurationMs !== y.healthDurationMs) return false;
+        if (JSON.stringify(x.prepStats) !== JSON.stringify(y.prepStats)) return false;
+        if (JSON.stringify(x.healthStats) !== JSON.stringify(y.healthStats)) return false;
         if (x.size !== y.size) return false;
         if (x.failReason !== y.failReason) return false;
     }
     return true;
+}
+
+function formatCount(value: number): string {
+    return Math.max(0, value).toLocaleString();
 }
 
 function groupByClick(list: WatchdogEntry[]): ClickGroup[] {

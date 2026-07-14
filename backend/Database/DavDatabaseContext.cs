@@ -571,6 +571,8 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.DurationMs).IsRequired();
             e.Property(i => i.PrepDurationMs).IsRequired(false);
             e.Property(i => i.HealthDurationMs).IsRequired(false);
+            e.Property(i => i.PrepStatsJson).IsRequired(false);
+            e.Property(i => i.HealthStatsJson).IsRequired(false);
             e.Property(i => i.IsWinner).IsRequired();
             e.Property(i => i.ProviderHost).IsRequired(false);
             e.Property(i => i.QueueItemId).IsRequired(false);

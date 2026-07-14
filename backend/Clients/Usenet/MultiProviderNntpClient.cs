@@ -107,6 +107,43 @@ public class MultiProviderNntpClient(
             })).ConfigureAwait(false);
     }
 
+    public async Task PrewarmHealthCheckAsync(CancellationToken cancellationToken)
+    {
+        // Pool providers are already warmed by queue prewarm and then exercised by
+        // BODY/ARTICLE prep. Health-only and backup+STAT providers otherwise sit
+        // outside that path, so establish their full configured capacity while
+        // prep is busy instead of paying connection/authentication latency when
+        // the health phase begins.
+        var eligible = providers
+            .Where(x => x.ProviderType == ProviderType.BackupAndStats ||
+                        (UsenetStreamingClient.HealthProviderPrewarmEnabled &&
+                         x.ProviderType == ProviderType.HealthChecksOnly))
+            .Where(x => !x.IsTripped)
+            .Where(x => !IsOverLimit(x))
+            .ToList();
+
+        await Task.WhenAll(eligible.Select(async provider =>
+        {
+            try
+            {
+                await provider.PrewarmAsync(provider.MaxConnections, cancellationToken).ConfigureAwait(false);
+                Log.Debug(
+                    "Health prewarm provider={Provider} target={Target} live={Live} idle={Idle}",
+                    provider.Host, provider.MaxConnections,
+                    provider.LiveConnections, provider.IdleConnections);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                Log.Debug(e, "Health prewarm failed for provider={Provider} target={Target}",
+                    provider.Host, provider.MaxConnections);
+            }
+        })).ConfigureAwait(false);
+    }
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");
@@ -343,9 +380,17 @@ public class MultiProviderNntpClient(
         return result switch
         {
             UsenetDecodedBodyResponse b
-                => (T)(object)(b with { Stream = new CountingYencStream(b.Stream, bytesTracker, host) }),
+                => (T)(object)(b with
+                {
+                    Stream = new CountingYencStream(
+                        b.Stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes))
+                }),
             UsenetDecodedArticleResponse a
-                => (T)(object)(a with { Stream = new CountingYencStream(a.Stream, bytesTracker, host) }),
+                => (T)(object)(a with
+                {
+                    Stream = new CountingYencStream(
+                        a.Stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes))
+                }),
             _ => result,
         };
     }
@@ -656,6 +701,7 @@ public class MultiProviderNntpClient(
         IProgress<int>? progress,
         CancellationToken cancellationToken)
     {
+        usageTracker.BeginHealthCheck(segmentIds.Count);
         if (segmentIds.Count < BulkStatProbeThreshold || fallbackConcurrency <= 1)
         {
             await base.CheckAllSegmentsPipelinedAsync(
@@ -1226,13 +1272,21 @@ public class MultiProviderNntpClient(
     private PipelinedBodyResult WrapPipelinedBody(PipelinedBodyResult result, string host)
     {
         if (bytesTracker == null || result.Stream == null) return result;
-        return result with { Stream = new CountingYencStream(result.Stream, bytesTracker, host) };
+        return result with
+        {
+            Stream = new CountingYencStream(
+                result.Stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes))
+        };
     }
 
     private PipelinedArticleResult WrapPipelinedArticle(PipelinedArticleResult result, string host)
     {
         if (bytesTracker == null || result.Stream == null) return result;
-        return result with { Stream = new CountingYencStream(result.Stream, bytesTracker, host) };
+        return result with
+        {
+            Stream = new CountingYencStream(
+                result.Stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes))
+        };
     }
 
     private sealed record BulkStatQualification(BulkStatPlan? Plan, HashSet<int> VerifiedIndexes)
@@ -1387,8 +1441,31 @@ public class MultiProviderNntpClient(
                     probe.Provider.Host, IsPreferred(probe.Provider), probe.Found, probe.Received,
                     snapshot.Batches, snapshot.Attempted, snapshot.Received, snapshot.Found, snapshot.Missing,
                     snapshot.Failures, snapshot.ElapsedMs, rate);
+                Owner.RecordHealthProviderStat(probe, snapshot, rate, IsPreferred(probe.Provider));
             }
         }
+    }
+
+    private void RecordHealthProviderStat(
+        BulkStatProbe probe,
+        BulkStatAttemptSnapshot snapshot,
+        long rate,
+        bool preferred)
+    {
+        usageTracker.RecordHealthProviderStat(new HealthProviderStat(
+            probe.Provider.Id,
+            probe.Provider.Host,
+            preferred,
+            probe.Found,
+            probe.Received,
+            snapshot.Batches,
+            snapshot.Attempted,
+            snapshot.Received,
+            snapshot.Found,
+            snapshot.Missing,
+            snapshot.Failures,
+            snapshot.ElapsedMs,
+            rate));
     }
 
     private sealed class BulkStatAttemptStats

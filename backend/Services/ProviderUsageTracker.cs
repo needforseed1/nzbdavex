@@ -12,7 +12,12 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
 {
     private static readonly AsyncLocal<Guid?> CurrentScope = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _usage = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _bytes = new();
+    private readonly ConcurrentDictionary<Guid, byte> _byteCaptureScopes = new();
     private readonly ConcurrentDictionary<Guid, long> _failoverSaves = new();
+    private readonly ConcurrentDictionary<Guid, PrepUsageSnapshot> _prepStats = new();
+    private readonly ConcurrentDictionary<Guid, int> _healthCheckTotals = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, HealthProviderStat>> _healthStats = new();
 
     public IDisposable BeginScope(Guid queueItemId)
     {
@@ -39,12 +44,69 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         _failoverSaves.AddOrUpdate(id.Value, 1, (_, v) => v + 1);
     }
 
+    public void RecordBytes(string providerId, int bytes)
+    {
+        var id = CurrentScope.Value;
+        if (id is null || !_byteCaptureScopes.ContainsKey(id.Value) ||
+            bytes <= 0 || string.IsNullOrWhiteSpace(providerId)) return;
+        var counts = _bytes.GetOrAdd(id.Value, _ => new ConcurrentDictionary<string, long>());
+        counts.AddOrUpdate(providerId, bytes, (_, value) => value + bytes);
+    }
+
+    public IDisposable BeginByteCapture()
+    {
+        var id = CurrentScope.Value;
+        if (id is null) return new Releaser(static () => { });
+        _byteCaptureScopes[id.Value] = 0;
+        return new Releaser(() => _byteCaptureScopes.TryRemove(id.Value, out _));
+    }
+
     public long GetFailoverSaves(Guid scopeId)
         => _failoverSaves.TryGetValue(scopeId, out var v) ? v : 0;
+
+    public void RecordPrepStats(PrepUsageSnapshot stats)
+    {
+        var id = CurrentScope.Value;
+        if (id is null) return;
+        _prepStats[id.Value] = stats;
+    }
+
+    public PrepUsageSnapshot? SnapshotPrep(Guid scopeId) =>
+        _prepStats.GetValueOrDefault(scopeId);
+
+    public void BeginHealthCheck(int totalArticles)
+    {
+        var id = CurrentScope.Value;
+        if (id is null) return;
+        _healthCheckTotals[id.Value] = Math.Max(0, totalArticles);
+    }
+
+    public void RecordHealthProviderStat(HealthProviderStat stat)
+    {
+        var id = CurrentScope.Value;
+        if (id is null || string.IsNullOrWhiteSpace(stat.ProviderId)) return;
+        var stats = _healthStats.GetOrAdd(id.Value, _ => new ConcurrentDictionary<string, HealthProviderStat>());
+        stats[stat.ProviderId] = stat;
+    }
+
+    public HealthCheckUsageSnapshot? SnapshotHealthCheck(Guid scopeId)
+    {
+        if (!_healthCheckTotals.TryGetValue(scopeId, out var totalArticles)) return null;
+        var providers = _healthStats.TryGetValue(scopeId, out var stats)
+            ? stats.Values.OrderByDescending(x => x.Found).ThenBy(x => x.Host).ToArray()
+            : [];
+        return new HealthCheckUsageSnapshot(totalArticles, providers);
+    }
 
     public IReadOnlyDictionary<string, long> Snapshot(Guid queueItemId)
     {
         if (!_usage.TryGetValue(queueItemId, out var d)) return new Dictionary<string, long>();
+        return d.ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    public IReadOnlyDictionary<string, long> SnapshotBytes(Guid queueItemId)
+    {
+        if (!_bytes.TryGetValue(queueItemId, out var d)) return new Dictionary<string, long>();
         return d.ToDictionary(kv => kv.Key, kv => kv.Value);
     }
 
@@ -84,7 +146,12 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     public void Clear(Guid queueItemId)
     {
         _usage.TryRemove(queueItemId, out _);
+        _bytes.TryRemove(queueItemId, out _);
+        _byteCaptureScopes.TryRemove(queueItemId, out _);
         _failoverSaves.TryRemove(queueItemId, out _);
+        _prepStats.TryRemove(queueItemId, out _);
+        _healthCheckTotals.TryRemove(queueItemId, out _);
+        _healthStats.TryRemove(queueItemId, out _);
     }
 
     private sealed class Releaser(Action onDispose) : IDisposable
@@ -92,3 +159,39 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         public void Dispose() => onDispose();
     }
 }
+
+public sealed record PrepUsageSnapshot(
+    int FileCount,
+    int Connections,
+    long QueueWaitMs,
+    long FirstSegmentsMs,
+    long Par2Ms,
+    long RarMs,
+    long ProcessorsMs,
+    bool LazyRarMounted,
+    long FirstSegmentFallbacks,
+    IReadOnlyList<PrepProviderStat> Providers);
+
+public sealed record PrepProviderStat(
+    string ProviderId,
+    long Articles,
+    long Bytes);
+
+public sealed record HealthCheckUsageSnapshot(
+    int TotalArticles,
+    IReadOnlyList<HealthProviderStat> Providers);
+
+public sealed record HealthProviderStat(
+    string ProviderId,
+    string Host,
+    bool Preferred,
+    int ProbeFound,
+    int ProbeReceived,
+    long Batches,
+    long Attempted,
+    long Received,
+    long Found,
+    long Missing,
+    long Failures,
+    long WorkMs,
+    long Rate);

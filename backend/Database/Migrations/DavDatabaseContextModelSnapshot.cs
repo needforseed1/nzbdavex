@@ -381,6 +381,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<int?>("HealthDurationMs")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("HealthStatsJson")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("IndexerName")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -389,6 +392,9 @@ namespace NzbWebDAV.Database.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("ProviderHost")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PrepStatsJson")
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("PrepDurationMs")

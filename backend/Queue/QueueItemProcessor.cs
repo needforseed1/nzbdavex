@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.SabControllers.GetHistory;
 using NzbWebDAV.Clients.RadarrSonarr;
@@ -146,6 +147,10 @@ public class QueueItemProcessor(
         // read the nzb document
         var nzb = await NzbDocument.LoadAsync(queueNzbStream).ConfigureAwait(false);
         var nzbFiles = nzb.Files.Where(x => x.Segments.Count > 0).ToList();
+        var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
+        var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
+        if (shouldCheckHealth && usenetClient is IQueueConnectionWarmer connectionWarmer)
+            _ = PrewarmHealthConnectionsDuringPrepAsync(connectionWarmer, queueItem, ct);
 
         // Look for a password in filename and nzb document
         // The file name's password takes priority, as an easy override
@@ -164,20 +169,42 @@ public class QueueItemProcessor(
             .ToPercentage(nzbFiles.Count);
         var prepConnections = Math.Min(nzbFiles.Count, configManager.GetMaxQueueConnections());
         var queuedMs = Math.Max(0, (long)(DateTime.Now - queueItem.CreatedAt).TotalMilliseconds);
+        var usageBeforeFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
+        var bytesBeforeFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
+        var failoversBeforeFirstSegments = providerUsageTracker.GetFailoverSaves(queueItem.Id);
         Log.Information(
             "queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files} connections={Connections} queuedMs={QueuedMs}",
             queueItem.Id, queueItem.JobName, nzbFiles.Count, prepConnections, queuedMs);
         List<FetchFirstSegmentsStep.NzbFileWithFirstSegment> segments;
-        try
+        using (providerUsageTracker.BeginByteCapture())
         {
-            segments = await FetchFirstSegmentsStep.FetchFirstSegments(
-                nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
-        }
-        finally
-        {
-            firstSegmentsCompleted();
+            try
+            {
+                segments = await FetchFirstSegmentsStep.FetchFirstSegments(
+                    nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
+            }
+            finally
+            {
+                firstSegmentsCompleted();
+            }
         }
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
+        var usageAfterFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
+        var bytesAfterFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
+        var firstSegmentProviders = usageAfterFirstSegments.Keys
+            .Union(bytesAfterFirstSegments.Keys)
+            .Select(providerId => new PrepProviderStat(
+                providerId,
+                Math.Max(0, usageAfterFirstSegments.GetValueOrDefault(providerId) -
+                            usageBeforeFirstSegments.GetValueOrDefault(providerId)),
+                Math.Max(0, bytesAfterFirstSegments.GetValueOrDefault(providerId) -
+                            bytesBeforeFirstSegments.GetValueOrDefault(providerId))))
+            .Where(stat => stat.Articles > 0 || stat.Bytes > 0)
+            .OrderByDescending(stat => stat.Articles)
+            .ThenBy(stat => stat.ProviderId)
+            .ToArray();
+        var firstSegmentFallbacks = Math.Max(0,
+            providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments done ms={ElapsedMs}",
             queueItem.Id, queueItem.JobName, msFirstSeg);
         stepTimer.Restart();
@@ -237,8 +264,6 @@ public class QueueItemProcessor(
         Stopwatch? healthTimer = null;
         DeferredProgress? deferredHealthProgress = null;
         using var healthCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
-        var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
         var articlesToCheck = shouldCheckHealth
             ? fileInfos
                 .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
@@ -335,6 +360,17 @@ public class QueueItemProcessor(
         var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
         _prepDurationMs = ToDurationMs(msFirstSeg + msPar2 + msRar + msProcessors);
         _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : null;
+        providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
+            nzbFiles.Count,
+            prepConnections,
+            queuedMs,
+            msFirstSeg,
+            msPar2,
+            msRar,
+            msProcessors,
+            lazyRarResult is not null,
+            firstSegmentFallbacks,
+            firstSegmentProviders));
         if (checkedFullHealth)
         {
             var statRate = msHealth > 0
@@ -382,6 +418,31 @@ public class QueueItemProcessor(
         }).ConfigureAwait(false);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database done",
             queueItem.Id, queueItem.JobName);
+    }
+
+    private static async Task PrewarmHealthConnectionsDuringPrepAsync(
+        IQueueConnectionWarmer connectionWarmer,
+        QueueItem queueItem,
+        CancellationToken cancellationToken)
+    {
+        var timer = Stopwatch.StartNew();
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=health-prewarm start",
+            queueItem.Id, queueItem.JobName);
+        try
+        {
+            await connectionWarmer.PrewarmHealthCheckAsync(cancellationToken).ConfigureAwait(false);
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health-prewarm done ms={ElapsedMs}",
+                queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log.Debug("Health connection prewarm cancelled for {JobName}.", queueItem.JobName);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Health connection prewarm failed for {JobName}.", queueItem.JobName);
+        }
     }
 
     private IEnumerable<BaseProcessor> GetFileProcessors
@@ -604,6 +665,8 @@ public class QueueItemProcessor(
             DurationMs = durationMs,
             PrepDurationMs = _prepDurationMs,
             HealthDurationMs = _healthDurationMs,
+            PrepStatsJson = SerializePrepStats(providerUsageTracker.SnapshotPrep(queueItem.Id)),
+            HealthStatsJson = SerializeHealthStats(providerUsageTracker.SnapshotHealthCheck(queueItem.Id)),
             IsWinner = error == null,
             ProviderHost = providerHost,
             QueueItemId = queueItem.Id,
@@ -613,6 +676,12 @@ public class QueueItemProcessor(
 
     private static int ToDurationMs(long durationMs) =>
         (int)Math.Clamp(durationMs, 0, int.MaxValue);
+
+    private static string? SerializeHealthStats(HealthCheckUsageSnapshot? stats) =>
+        stats is null ? null : JsonSerializer.Serialize(stats);
+
+    private static string? SerializePrepStats(PrepUsageSnapshot? stats) =>
+        stats is null ? null : JsonSerializer.Serialize(stats);
 
     private static Task StopTimerWhenCompleted(Task task, Stopwatch timer)
     {
