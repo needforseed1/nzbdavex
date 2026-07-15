@@ -13,7 +13,7 @@ This release substantially reduces cold-start preparation and health-check time 
 ### Fixes and diagnostics
 
 * Preparation skips known non-media and blocklisted files before first-segment work, removing large delays from sample, metadata, and other irrelevant payloads.
-* Health-check-only remains readable as a legacy role, while the provider editor presents Primary and Backup + health checks as the supported operational choices. Plain Backup remains missing-article recovery only.
+* Health-check-only remains readable as a legacy role, while the provider editor presents Primary and Backup + health checks as the supported operational choices. Plain Backup stays out of normal bulk health lanes but remains available as the final fallback for articles missing from the health-capable providers.
 * Added an optional warm-validation concurrency control. Blank selects an automatic provider-aware value; manual values remain available for unusually large installations.
 * The navigation connection bar now reports genuinely warm sockets—active or recently authenticated, validated, or used—instead of treating every open idle socket as immediately ready.
 * Queue and Watchdog provider summaries stay within their columns, expose complete details on hover, and use clearer Found, Missing, Share, and Rate labels.
