@@ -294,6 +294,73 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task SharedBudgetWaitersReuseReturnedIdleConnection()
+    {
+        var budget = new ConnectionLifetimeBudget(1, 1);
+        var twoPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            3,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionBudget: budget);
+        pool.OnConnectionPoolChanged += (_, args) =>
+        {
+            if (args.Pending >= 2) twoPending.TrySetResult();
+        };
+
+        var borrowed = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var firstWaiter = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var secondWaiter = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await twoPending.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        borrowed.Dispose();
+        var firstReused = await Task.WhenAny(firstWaiter, secondWaiter)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        using (var lease = await firstReused)
+            Assert.Equal(1, lease.Connection.Id);
+
+        var remainingWaiter = firstReused == firstWaiter ? secondWaiter : firstWaiter;
+        using var secondReused = await remainingWaiter.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, secondReused.Connection.Id);
+        Assert.Equal(1, pool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task ReplacementWaitingOnSharedBudgetYieldsToReturnedIdleConnection()
+    {
+        var budget = new ConnectionLifetimeBudget(2, 2);
+        var created = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                Interlocked.Increment(ref created), () => { })),
+            connectionValidator: (connection, _) => ValueTask.FromResult(connection.Healthy),
+            validateAfterIdle: TimeSpan.Zero,
+            connectionBudget: budget);
+        await using var competingPool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(100, () => { })),
+            connectionBudget: budget);
+
+        var held = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var unhealthy = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        unhealthy.Connection.Healthy = false;
+        unhealthy.Dispose();
+
+        var competingWarmup = competingPool.PrewarmAsync(1);
+        var replacement = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await competingWarmup.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(replacement.IsCompleted);
+
+        var heldId = held.Connection.Id;
+        held.Dispose();
+        using var reused = await replacement.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(heldId, reused.Connection.Id);
+        Assert.Equal(1, pool.LiveConnections);
+        Assert.Equal(2, Volatile.Read(ref created));
+    }
+
+    [Fact]
     public async Task SynchronousDisposeCancelsAndDrainsActivePrewarm()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

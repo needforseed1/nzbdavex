@@ -56,6 +56,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _capacityCts = new();
     private readonly Task _sweeperTask; // keeps timer alive
     private TaskCompletionSource _operationsDrained = CompletedTaskSource();
+    private TaskCompletionSource? _nextConnectionReturn;
 
     private int _live; // number of connections currently alive
     private int _inFlightCreations;
@@ -145,6 +146,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
             T conn;
             var replaceDiscardedConnection = false;
+            Task? replacementIdleTask = null;
             while (true)
             {
                 // Try to reuse an existing idle connection.
@@ -159,6 +161,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                                             && _idleConnections.Count < _minimumIdleConnections;
                     if (idleExpired && !preserveWarmFloor)
                     {
+                        replacementIdleTask = GetNextConnectionReturnTask();
                         DiscardConnection(item.Connection);
                         replaceDiscardedConnection = true;
                         break;
@@ -180,6 +183,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
                         if (!healthy)
                         {
+                            replacementIdleTask = GetNextConnectionReturnTask();
                             DiscardConnection(item.Connection);
                             replaceDiscardedConnection = true;
                             break;
@@ -226,30 +230,19 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 {
                     try
                     {
-                        if (replaceDiscardedConnection)
+                        var speculative = await CreateUnlessIdleReturnsAsync(
+                            linked.Token,
+                            replaceDiscardedConnection ? replacementIdleTask : null).ConfigureAwait(false);
+                        if (!speculative.Created)
                         {
-                            conn = await CreateConnectionAsync(linked.Token).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            var speculative = await CreateUnlessIdleReturnsAsync(linked.Token).ConfigureAwait(false);
-                            if (!speculative.Created)
-                            {
-                                ReleaseConnectionCreationReservation();
-                                creationReservationHeld = false;
-                                if (speculative.ReusedIdle)
-                                {
-                                    conn = speculative.Connection;
-                                    break;
-                                }
-
-                                replaceDiscardedConnection = false;
-                                continue;
-                            }
-
-                            conn = speculative.Connection;
+                            ReleaseConnectionCreationReservation();
+                            creationReservationHeld = false;
+                            replaceDiscardedConnection = false;
+                            replacementIdleTask = null;
+                            continue;
                         }
 
+                        conn = speculative.Connection;
                         RegisterCreatedConnection();
                         creationReservationHeld = false;
                     }
@@ -315,6 +308,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private void Return(T connection)
     {
         var destroy = false;
+        TaskCompletionSource? returnedSignal = null;
         lock (_idleLock)
         {
             if (Volatile.Read(ref _disposed) == 1)
@@ -323,6 +317,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
                 _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
                 _gate.Release();
+                returnedSignal = _nextConnectionReturn;
+                _nextConnectionReturn = null;
             }
         }
 
@@ -333,6 +329,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
 
         SignalIdleAvailable();
+        returnedSignal?.TrySetResult();
         TriggerConnectionPoolChangedEvent();
     }
 
@@ -421,6 +418,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         return completed;
     }
 
+    private static TaskCompletionSource NewSignalTaskSource() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private Task GetNextConnectionReturnTask()
+    {
+        lock (_idleLock)
+            return (_nextConnectionReturn ??= NewSignalTaskSource()).Task;
+    }
+
     private void RegisterCreatedConnection()
     {
         lock (_idleLock)
@@ -448,13 +454,16 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         return connection;
     }
 
-    private async Task<(bool Created, bool ReusedIdle, T Connection)> CreateUnlessIdleReturnsAsync(
-        CancellationToken cancellationToken)
+    private async Task<(bool Created, T Connection)> CreateUnlessIdleReturnsAsync(
+        CancellationToken cancellationToken,
+        Task? replacementIdleTask)
     {
         using var creationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var creationTask = CreateConnectionAsync(creationCts.Token).AsTask();
-        var idleTask = _idleSignal.WaitAsync(idleCts.Token);
+        var idleTask = replacementIdleTask is null
+            ? _idleSignal.WaitAsync(idleCts.Token)
+            : replacementIdleTask.WaitAsync(idleCts.Token);
         var completed = await Task.WhenAny(creationTask, idleTask).ConfigureAwait(false);
 
         if (completed == creationTask)
@@ -469,39 +478,30 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
             }
 
-            return (true, false, await creationTask.ConfigureAwait(false));
+            return (true, await creationTask.ConfigureAwait(false));
         }
 
         await idleTask.ConfigureAwait(false);
-        if (!IdleConnectionsCanSatisfyPendingAcquisitions())
-        {
-            // Under sustained load the pool still needs to grow. Preserve this
-            // handshake and pass the idle notification to another waiter.
-            SignalIdleAvailable();
-            return (true, false, await creationTask.ConfigureAwait(false));
-        }
-
+        // A reusable socket is always the shortest path forward. In particular,
+        // creation may be waiting on the shared lifetime budget and cannot make
+        // progress until another socket is destroyed. Let one returned socket
+        // satisfy one waiter; later acquisitions can still grow the pool.
         creationCts.Cancel();
         try
         {
             // The handshake may have won the race just after the idle signal.
             var connection = await creationTask.ConfigureAwait(false);
             SignalIdleAvailable();
-            return (true, false, connection);
+            return (true, connection);
         }
         catch (OperationCanceledException) when (
             creationCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            return TryTakeIdle(out var idle)
-                ? (false, true, idle.Connection)
-                : (false, false, default!);
+            // Re-enter the normal acquisition loop so the returned connection is
+            // subject to the same expiry and health validation as any other idle
+            // connection. Another waiter may win it first, which is harmless.
+            return (false, default!);
         }
-    }
-
-    private bool IdleConnectionsCanSatisfyPendingAcquisitions()
-    {
-        lock (_idleLock)
-            return _idleConnections.Count >= Math.Max(1, Volatile.Read(ref _pendingAcquisitions));
     }
 
     private void RaiseEffectiveCapacityToLive()
