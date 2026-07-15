@@ -236,6 +236,81 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthWaitsForLateCoverageUntilPreferredCapacityCanFillLanes()
+    {
+        var lateProbeCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var bulkStartedTooSoon = 0;
+        var firstClient = new CoveragePipelineClient(
+            _ => true,
+            (batch, _) =>
+            {
+                if (batch > 1 && !lateProbeCompleted.Task.IsCompleted)
+                    Volatile.Write(ref bulkStartedTooSoon, 1);
+                return Task.CompletedTask;
+            });
+        var lateClient = new CoveragePipelineClient(
+            _ => true,
+            async (batch, cancellationToken) =>
+            {
+                if (batch != 1) return;
+                await Task.Delay(200, cancellationToken);
+                lateProbeCompleted.TrySetResult();
+            });
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstClient, ProviderType.Pooled, "first", 0, maxConnections: 2),
+            CreateProvider(lateClient, ProviderType.Pooled, "late", 1, maxConnections: 6),
+        ], new ProviderUsageTracker(), applicationConnectionLimit: 8);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 8, progress: null, CancellationToken.None);
+
+        Assert.True(lateProbeCompleted.Task.IsCompletedSuccessfully);
+        Assert.Equal(0, Volatile.Read(ref bulkStartedTooSoon));
+    }
+
+    [Fact]
+    public async Task BulkHealthReclaimsIdleSocketsFromNonContributorsAndRestoresThemAfterward()
+    {
+        var bulkStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBulk = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var missingClient = new CoveragePipelineClient(_ => false);
+        var completeClient = new CoveragePipelineClient(
+            _ => true,
+            async (batch, cancellationToken) =>
+            {
+                if (batch <= 1) return;
+                bulkStarted.TrySetResult();
+                await releaseBulk.Task.WaitAsync(cancellationToken);
+            });
+        using var missing = CreateProvider(
+            missingClient, ProviderType.HealthChecksOnly, "missing", 0, maxConnections: 8);
+        using var complete = CreateProvider(
+            completeClient, ProviderType.HealthChecksOnly, "complete", 1, maxConnections: 8);
+        using var multiProvider = new MultiProviderNntpClient(
+            [missing, complete], new ProviderUsageTracker(), applicationConnectionLimit: 12);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await missing.PrewarmAsync(8, CancellationToken.None);
+        await complete.PrewarmAsync(4, CancellationToken.None);
+        var check = multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 16, progress: null, CancellationToken.None);
+
+        await bulkStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(4, missing.LiveConnections);
+        Assert.Equal(4, missing.IdleConnections);
+
+        releaseBulk.TrySetResult();
+        await check.WaitAsync(TimeSpan.FromSeconds(1));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (missing.LiveConnections < 8)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(8, missing.IdleConnections);
+    }
+
+    [Fact]
     public async Task BulkHealthSummaryIncludesUnprobedBackupThatRescuesAMiss()
     {
         static bool PrimaryCoverage(string segmentId) => segmentId != "segment-318";
@@ -283,12 +358,14 @@ public class PipelinedFallbackTests
         using var requestCts = new CancellationTokenSource();
         var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
 
+        var timer = System.Diagnostics.Stopwatch.StartNew();
         await multiProvider.CheckAllSegmentsPipelinedAsync(
-                segments, depth: 8, fallbackConcurrency: 4, progress: null, requestCts.Token)
-            .WaitAsync(TimeSpan.FromSeconds(1));
+                segments, depth: 8, fallbackConcurrency: 12, progress: null, requestCts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.False(stalledClient.ProbeCancelled);
         Assert.True(completeClient.Batches.Count > 1);
+        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(1.5));
         await requestCts.CancelAsync();
         await stalledClient.ProbeCancellation.Task.WaitAsync(TimeSpan.FromSeconds(1));
     }

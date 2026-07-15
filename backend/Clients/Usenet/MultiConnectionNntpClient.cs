@@ -69,6 +69,9 @@ public class MultiConnectionNntpClient(
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 
+    internal IDisposable SuspendPrewarming(int retainedIdleConnections, out int closedConnections) =>
+        connectionPool.SuspendPrewarming(retainedIdleConnections, out closedConnections);
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");

@@ -12,6 +12,7 @@ using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Streams;
+using NzbWebDAV.Utils;
 using Serilog;
 using UsenetSharp.Models;
 
@@ -22,13 +23,16 @@ public class MultiProviderNntpClient(
     ProviderUsageTracker usageTracker,
     MetricsWriter? metricsWriter = null,
     ProviderBytesTracker? bytesTracker = null,
-    Func<bool>? cascadeEnabled = null
+    Func<bool>? cascadeEnabled = null,
+    int applicationConnectionLimit = UsenetStreamingClient.ApplicationConnectionLimit
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
+    private const int HealthReclamationIdleFloor = 4;
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
     private static readonly AsyncLocal<BulkStatPlan?> BulkStatPlanContext = new();
@@ -60,6 +64,8 @@ public class MultiProviderNntpClient(
 
     private readonly object _selectLock = new();
     private int _prepSpreadCursor;
+    private int TotalLiveConnections => providers.Sum(provider => provider.LiveConnections);
+    private int ApplicationConnectionLimit => applicationConnectionLimit;
 
     public async Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken)
     {
@@ -724,7 +730,7 @@ public class MultiProviderNntpClient(
         }
 
         var qualification = await QualifyBulkStatProvidersAsync(
-            segmentIds, depth, cancellationToken).ConfigureAwait(false);
+            segmentIds, depth, fallbackConcurrency, cancellationToken).ConfigureAwait(false);
         if (qualification.Plan is null)
         {
             await base.CheckAllSegmentsPipelinedAsync(
@@ -740,6 +746,7 @@ public class MultiProviderNntpClient(
 
         var previousPlan = BulkStatPlanContext.Value;
         BulkStatPlanContext.Value = qualification.Plan;
+        using var connectionAllocation = qualification.Plan.BeginConnectionAllocation(fallbackConcurrency);
         try
         {
             if (remaining.Length == 0) return;
@@ -757,6 +764,7 @@ public class MultiProviderNntpClient(
     private async Task<BulkStatQualification> QualifyBulkStatProvidersAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
+        int connectionDemand,
         CancellationToken cancellationToken)
     {
         List<MultiConnectionNntpClient> candidates;
@@ -789,6 +797,9 @@ public class MultiProviderNntpClient(
             .ToList();
         var probes = new List<BulkStatProbe>(pendingProbes.Count);
         var endedEarly = false;
+        var capacityTarget = Math.Min(
+            Math.Max(1, connectionDemand),
+            ApplicationConnectionLimit);
 
         while (pendingProbes.Count > 0)
         {
@@ -802,20 +813,54 @@ public class MultiProviderNntpClient(
             if (!hasCompletePrimary) continue;
 
             // A full-coverage result cannot be beaten. Give similarly fast peers a
-            // brief chance to join the plan, then stop waiting on slow or stalled
-            // providers and begin the bulk pass.
+            // brief chance to join the plan. If those completed providers cannot
+            // supply the requested lane capacity, keep accepting completed probes
+            // for a short bounded settle window. This prevents hundreds of lanes
+            // from queueing behind the first small provider set while full-coverage
+            // peers finish probes a few hundred milliseconds later.
+            var settleTimer = Stopwatch.StartNew();
             if (pendingProbes.Count > 0)
                 await Task.Delay(BulkStatProbeJoinWindow, cancellationToken).ConfigureAwait(false);
 
-            var joinedProbes = pendingProbes.Where(x => x.IsCompleted).ToList();
-            foreach (var joinedTask in joinedProbes)
+            await CollectCompletedProbesAsync().ConfigureAwait(false);
+            while (pendingProbes.Count > 0 &&
+                   GetPreferredCapacity() < capacityTarget &&
+                   settleTimer.Elapsed < BulkStatProbeCapacitySettleWindow)
             {
-                pendingProbes.Remove(joinedTask);
-                probes.Add(await joinedTask.ConfigureAwait(false));
+                var remaining = BulkStatProbeCapacitySettleWindow - settleTimer.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                    break;
+                var timeoutTask = Task.Delay(remaining, cancellationToken);
+                var completed = await Task.WhenAny(
+                    pendingProbes.Cast<Task>().Append(timeoutTask)).ConfigureAwait(false);
+                if (ReferenceEquals(completed, timeoutTask))
+                {
+                    await timeoutTask.ConfigureAwait(false);
+                    break;
+                }
+
+                var joinedProbe = (Task<BulkStatProbe>)completed;
+                pendingProbes.Remove(joinedProbe);
+                probes.Add(await joinedProbe.ConfigureAwait(false));
+                await CollectCompletedProbesAsync().ConfigureAwait(false);
             }
 
             endedEarly = pendingProbes.Count > 0;
             break;
+
+            async Task CollectCompletedProbesAsync()
+            {
+                var joinedProbes = pendingProbes.Where(x => x.IsCompleted).ToList();
+                foreach (var joinedTask in joinedProbes)
+                {
+                    pendingProbes.Remove(joinedTask);
+                    probes.Add(await joinedTask.ConfigureAwait(false));
+                }
+            }
+
+            int GetPreferredCapacity() => SelectPreferredStatProviders(
+                    probes.Where(x => x.Success))
+                .Sum(provider => provider.MaxConnections);
         }
 
         foreach (var probe in probes)
@@ -831,10 +876,13 @@ public class MultiProviderNntpClient(
 
         Log.Information(
             "health-stat plan sample={Sample} preferred={Preferred} bestCoverage={BestCoverage}/{Sample} " +
+            "preferredCapacity={PreferredCapacity}/{CapacityTarget} " +
             "qualificationMs={QualificationMs} endedEarly={EndedEarly}",
             sample.Length,
             preferred.Count == 0 ? "default-routing" : string.Join(',', preferred.Select(x => x.Host)),
-            bestCoverage, sample.Length, qualificationTimer.ElapsedMilliseconds, endedEarly);
+            bestCoverage, sample.Length,
+            preferred.Sum(provider => provider.MaxConnections), capacityTarget,
+            qualificationTimer.ElapsedMilliseconds, endedEarly);
 
         var verified = new HashSet<int>();
         for (var sampleIndex = 0; sampleIndex < sampleIndexes.Count; sampleIndex++)
@@ -1329,6 +1377,7 @@ public class MultiProviderNntpClient(
         private readonly Dictionary<MultiConnectionNntpClient, int> _probeRanks;
         private readonly HashSet<MultiConnectionNntpClient> _preferred;
         private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatAttemptStats> _attempts = new();
+        private HealthConnectionAllocation? _connectionAllocation;
 
         public BulkStatPlan(
             MultiProviderNntpClient owner,
@@ -1349,6 +1398,21 @@ public class MultiProviderNntpClient(
         }
 
         public MultiProviderNntpClient Owner { get; }
+
+        public IDisposable BeginConnectionAllocation(int connectionDemand)
+        {
+            var allocation = new HealthConnectionAllocation(Owner, this, connectionDemand);
+            var existing = Interlocked.CompareExchange(
+                ref _connectionAllocation, allocation, null);
+            if (existing is not null)
+            {
+                allocation.Dispose();
+                return existing;
+            }
+
+            allocation.Reconcile();
+            return allocation;
+        }
 
         public void ObserveLateProbes(
             IReadOnlyList<Task<BulkStatProbe>> probeTasks,
@@ -1384,6 +1448,15 @@ public class MultiProviderNntpClient(
                 _preferred.Clear();
                 _preferred.UnionWith(preferred);
             }
+            Volatile.Read(ref _connectionAllocation)?.Reconcile();
+        }
+
+        public (MultiConnectionNntpClient[] Probed, HashSet<MultiConnectionNntpClient> Preferred)
+            SnapshotAllocationState()
+        {
+            var probed = _probes.Keys.ToArray();
+            lock (_preferred)
+                return (probed, new HashSet<MultiConnectionNntpClient>(_preferred));
         }
 
         public bool IsPreferred(MultiConnectionNntpClient provider)
@@ -1466,6 +1539,121 @@ public class MultiProviderNntpClient(
                     snapshot.Batches, snapshot.Attempted, snapshot.Received, snapshot.Found, snapshot.Missing,
                     snapshot.Failures, snapshot.ElapsedMs, rate);
                 Owner.RecordHealthProviderStat(provider, probe, snapshot, rate, IsPreferred(provider));
+            }
+        }
+    }
+
+    private sealed class HealthConnectionAllocation(
+        MultiProviderNntpClient owner,
+        BulkStatPlan plan,
+        int connectionDemand) : IDisposable
+    {
+        private readonly object _lock = new();
+        private readonly Dictionary<MultiConnectionNntpClient, IDisposable> _suspensions = [];
+        private int _reclaimed;
+        private bool _disposed;
+
+        public void Reconcile()
+        {
+            lock (_lock)
+            {
+                if (_disposed) return;
+
+                var (probed, preferred) = plan.SnapshotAllocationState();
+                // With no confirmed coverage, retain every provider for the
+                // normal fallback search rather than guessing which pool to cut.
+                if (preferred.Count == 0) return;
+
+                foreach (var provider in probed.Where(preferred.Contains))
+                {
+                    if (_suspensions.Remove(provider, out var suspension))
+                    {
+                        suspension.Dispose();
+                        _ = RestoreWarmProviderAsync(provider);
+                    }
+                }
+
+                var usefulTarget = Math.Min(
+                    Math.Max(1, connectionDemand),
+                    preferred.Sum(provider => provider.MaxConnections));
+                var preferredLive = preferred.Sum(provider => provider.LiveConnections);
+                var totalLive = owner.TotalLiveConnections;
+                var globalHeadroom = Math.Max(0, owner.ApplicationConnectionLimit - totalLive);
+                var reclaimNeeded = Math.Max(0, usefulTarget - preferredLive - globalHeadroom);
+
+                foreach (var provider in probed
+                             .Where(provider => !preferred.Contains(provider))
+                             .OrderByDescending(provider => provider.IdleConnections))
+                {
+                    if (_suspensions.ContainsKey(provider)) continue;
+                    try
+                    {
+                        var reclaimable = Math.Max(
+                            0, provider.IdleConnections - HealthReclamationIdleFloor);
+                        var requested = Math.Min(reclaimNeeded, reclaimable);
+                        var retained = provider.IdleConnections - requested;
+                        var suspension = provider.SuspendPrewarming(retained, out var reclaimed);
+                        _suspensions.Add(provider, suspension);
+                        _reclaimed += reclaimed;
+                        reclaimNeeded = Math.Max(0, reclaimNeeded - reclaimed);
+                        Log.Information(
+                            "health-stat allocation provider={Provider} action=reclaim retained={Retained} " +
+                            "reclaimed={Reclaimed} remainingDemand={RemainingDemand} live={Live} idle={Idle}",
+                            provider.Host, retained, reclaimed, reclaimNeeded,
+                            provider.LiveConnections, provider.IdleConnections);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Provider reload can retire this graph while a late
+                        // probe joins it. The replacement graph owns new pools.
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            MultiConnectionNntpClient[] restore;
+            int reclaimed;
+            lock (_lock)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                restore = _suspensions.Keys.ToArray();
+                foreach (var suspension in _suspensions.Values)
+                    suspension.Dispose();
+                _suspensions.Clear();
+                reclaimed = _reclaimed;
+            }
+
+            foreach (var provider in restore)
+                _ = RestoreWarmProviderAsync(provider);
+
+            Log.Information(
+                "health-stat allocation action=restore providers={Providers} reclaimed={Reclaimed} blocking=False",
+                restore.Length, reclaimed);
+        }
+
+        private static async Task RestoreWarmProviderAsync(MultiConnectionNntpClient provider)
+        {
+            var target = UsenetStreamingClient.GetWarmConnectionTarget(
+                provider.ProviderType, provider.MaxConnections);
+            if (target == 0) return;
+
+            try
+            {
+                await provider.PrewarmAsync(target, SigtermUtil.GetCancellationToken())
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                SigtermUtil.GetCancellationToken().IsCancellationRequested)
+            {
+            }
+            catch (Exception e)
+            {
+                Log.Debug(e,
+                    "Could not restore warm NNTP connections for provider={Provider} target={Target}",
+                    provider.Host, target);
             }
         }
     }

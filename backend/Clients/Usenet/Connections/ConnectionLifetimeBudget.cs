@@ -9,6 +9,7 @@ public sealed class ConnectionLifetimeBudget
 {
     private readonly SemaphoreSlim _connectionSlots;
     private readonly SemaphoreSlim _creationSlots;
+    private int _foregroundWaiters;
 
     public ConnectionLifetimeBudget(int maxConnections, int maxConcurrentCreations)
     {
@@ -23,17 +24,46 @@ public sealed class ConnectionLifetimeBudget
 
     internal async ValueTask<CreationReservation> ReserveCreationAsync(CancellationToken cancellationToken)
     {
-        await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _foregroundWaiters);
         try
         {
-            await _creationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return new CreationReservation(this);
+            await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _creationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return new CreationReservation(this);
+            }
+            catch
+            {
+                _connectionSlots.Release();
+                throw;
+            }
         }
-        catch
+        finally
+        {
+            Interlocked.Decrement(ref _foregroundWaiters);
+        }
+    }
+
+    /// <summary>
+    /// Reserves immediately available capacity for speculative background work.
+    /// Prewarming must never queue ahead of a real acquisition or wait for a
+    /// provider that is already using the application-wide socket budget.
+    /// </summary>
+    internal bool TryReserveCreation(out CreationReservation reservation)
+    {
+        reservation = null!;
+        if (Volatile.Read(ref _foregroundWaiters) > 0 || !_connectionSlots.Wait(0))
+            return false;
+
+        if (Volatile.Read(ref _foregroundWaiters) > 0 || !_creationSlots.Wait(0))
         {
             _connectionSlots.Release();
-            throw;
+            return false;
         }
+
+        reservation = new CreationReservation(this);
+        return true;
     }
 
     public void ReleaseConnection() => _connectionSlots.Release();
