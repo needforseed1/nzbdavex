@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.4](https://github.com/needforseed1/nzbdavex/compare/v1.3.3...v1.3.4) (2026-07-15)
+
+This release substantially reduces cold-start preparation and health-check time on multi-provider installations while putting firm bounds around NNTP connection creation and cleanup.
+
+### Highlights
+
+* Queue imports now establish and validate health-capable connections during preparation, then prime a bounded set with real `STAT` traffic before the full health check starts. Primary providers receive the same handoff after BODY preparation, avoiding the previous cold transition into health work.
+* Bulk health checks qualify providers by sampled release coverage, wait briefly for enough useful capacity, and direct lanes toward providers that can contribute. Idle sockets held by non-contributors can be reclaimed temporarily and are restored after the check.
+* A shared lifetime budget caps the application at 512 live NNTP sockets and 32 simultaneous handshakes across every provider pool and provider-graph reload. Connection creation, cancellation, maintenance, and disposal now drain safely instead of allowing overlapping speculative work to accumulate.
+
+### Fixes and diagnostics
+
+* Preparation skips known non-media and blocklisted files before first-segment work, removing large delays from sample, metadata, and other irrelevant payloads.
+* Health-check-only remains readable as a legacy role, while the provider editor presents Primary and Backup + health checks as the supported operational choices. Plain Backup remains missing-article recovery only.
+* Added an optional warm-validation concurrency control. Blank selects an automatic provider-aware value; manual values remain available for unusually large installations.
+* The navigation connection bar now reports genuinely warm sockets—active or recently authenticated, validated, or used—instead of treating every open idle socket as immediately ready.
+* Queue and Watchdog provider summaries stay within their columns, expose complete details on hover, and use clearer Found, Missing, Share, and Rate labels.
+* Provider routing diagnostics now record sampled coverage, useful capacity, reclaimed sockets, restored pools, provider contribution, and end-to-end health throughput.
+
 ## [1.3.3](https://github.com/needforseed1/nzbdavex/compare/v1.3.2...v1.3.3) (2026-07-14)
 
 ### Fixes
