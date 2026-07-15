@@ -9,6 +9,10 @@ import {
     type WatchdogOutcome,
     type WatchdogPrepStats,
 } from "~/clients/backend-client.server";
+import {
+    ProviderSummary,
+    type ProviderSummaryItem,
+} from "~/components/provider-summary/provider-summary";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -204,7 +208,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     onClick={() => setDetailsOpen(open => !open)}
                     aria-expanded={detailsOpen}
                     aria-controls={`watchdog-stats-${group.clickId}`}
-                    title="Show prep and health-check statistics">
+                    title="Show health-check statistics">
                     <span>Resolved via <span className={styles.winnerIndexer}>{winner.indexerName}</span></span>
                     <span className={styles.timingBoxes}>
                         {winner.prepDurationMs != null || winner.healthDurationMs != null ? <>
@@ -235,6 +239,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         id={`watchdog-stats-${group.clickId}`}
                         prepStats={winner.prepStats}
                         healthStats={winner.healthStats}
+                        healthDurationMs={winner.healthDurationMs}
                     />
                 )}
                 </>
@@ -260,7 +265,12 @@ function ClickCard({ group }: { group: ClickGroup }) {
                                 <td className={styles.colRank}>{a.rankIndex + 1}</td>
                                 <td className={styles.colCandidate} title={a.candidateTitle}>{a.candidateTitle || "—"}</td>
                                 <td className={styles.colIndexer}>{a.indexerName || "—"}</td>
-                                <td className={styles.colProvider} title={a.providerHost ?? undefined}>{a.providerNickname?.trim() || formatProviderShort(a.providerHost)}</td>
+                                <td className={styles.colProvider}>
+                                    <WatchdogProviderSummary
+                                        providerHost={a.providerHost}
+                                        providerNickname={a.providerNickname}
+                                    />
+                                </td>
                                 <td className={styles.colSize}>{formatBytes(a.size)}</td>
                                 <td className={styles.colOutcome}>
                                     <OutcomeBadge outcome={a.outcome} winner={a.isWinner} />
@@ -282,7 +292,13 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             </div>
                             <div className={styles.attemptCardTitle} title={a.candidateTitle}>{a.candidateTitle || "—"}</div>
                             <div className={styles.attemptCardMeta}>
-                                <span title={a.providerHost ?? undefined}>📡 {a.providerNickname?.trim() || formatProviderShort(a.providerHost)}</span>
+                                <span className={styles.attemptCardProvider}>
+                                    <span aria-hidden="true">📡</span>
+                                    <WatchdogProviderSummary
+                                        providerHost={a.providerHost}
+                                        providerNickname={a.providerNickname}
+                                    />
+                                </span>
                                 <span className={styles.attemptCardMetaDot}>·</span>
                                 <span>{formatBytes(a.size)}</span>
                                 <span className={styles.attemptCardMetaDot}>·</span>
@@ -301,22 +317,29 @@ function WinnerStats({
     id,
     prepStats,
     healthStats,
+    healthDurationMs,
 }: {
     id: string,
     prepStats?: WatchdogPrepStats | null,
     healthStats?: WatchdogHealthStats | null,
+    healthDurationMs?: number | null,
 }) {
     const firstSegments = prepStats?.providers.reduce((sum, provider) => sum + provider.articles, 0) ?? 0;
-    const bulkFound = healthStats?.providers.reduce((sum, provider) => sum + provider.found, 0) ?? 0;
+    const workShares = allocateWholePercentShares(
+        healthStats?.providers.map(provider => ({ key: provider.providerId, value: provider.found })) ?? []);
+    const foundArticles = healthStats?.foundArticles;
+    const missingArticles = healthStats?.missingArticles;
+    const outcomeKnown = foundArticles != null && missingArticles != null;
+    const healthRate = outcomeKnown && healthDurationMs != null && healthDurationMs > 0
+        ? Math.round(foundArticles * 1000 / healthDurationMs)
+        : null;
 
     return (
         <div id={id} className={styles.winnerDetails}>
-            {!prepStats ? (
-                <div className={styles.detailsEmpty}>Prep breakdown was not recorded for this older entry.</div>
-            ) : (
+            {prepStats && prepStats.providers.length > 0 && (
                 <section className={styles.detailsSection}>
                     <div className={styles.detailsSectionHeader}>
-                        <span className={styles.detailsSectionTitle}>Prep breakdown</span>
+                        <span className={styles.detailsSectionTitle}>First-segment routing</span>
                         <span className={styles.detailsSectionMeta}>
                             {formatCount(prepStats.fileCount)} files · {formatCount(prepStats.connections)} connections
                             {prepStats.firstSegmentFallbacks > 0
@@ -324,48 +347,35 @@ function WinnerStats({
                                 : " · no fallbacks"}
                         </span>
                     </div>
-                    <div className={styles.prepStageGrid}>
-                        <PrepStage label="Queue wait" value={formatDuration(prepStats.queueWaitMs)} />
-                        <PrepStage label="First segments" value={formatDuration(prepStats.firstSegmentsMs)} />
-                        <PrepStage label="PAR2 inspection" value={formatDuration(prepStats.par2Ms)} />
-                        <PrepStage
-                            label="RAR mapping"
-                            value={formatDuration(prepStats.rarMs)}
-                            note={prepStats.lazyRarMounted ? "lazy mount" : undefined}
-                        />
-                        <PrepStage label="File processing" value={formatDuration(prepStats.processorsMs)} />
-                    </div>
-                    {prepStats.providers.length > 0 && (
-                        <div className={styles.prepProviderList}>
-                            <div className={styles.prepProviderHeader}>
-                                <span>First-segment provider</span>
-                                <span>Articles</span>
-                                <span>Downloaded</span>
-                                <span>Share</span>
-                            </div>
-                            {prepStats.providers.map(provider => {
-                                const share = firstSegments > 0
-                                    ? Math.round(provider.articles * 100 / firstSegments)
-                                    : 0;
-                                const label = provider.nickname?.trim() || stripHost(provider.host);
-                                return (
-                                    <div className={styles.prepProviderRow} key={provider.providerId}>
-                                        <span className={styles.healthProviderIdentity}>
-                                            <span className={styles.healthProviderName}>{label}</span>
-                                            <span className={styles.healthProviderHost}>{provider.host}</span>
-                                        </span>
-                                        <span className={styles.prepProviderCell} data-label="Articles">
-                                            {formatCount(provider.articles)}
-                                        </span>
-                                        <span className={styles.prepProviderCell} data-label="Downloaded">
-                                            {formatBytes(provider.bytes)}
-                                        </span>
-                                        <span className={styles.prepProviderCell} data-label="Share">{share}%</span>
-                                    </div>
-                                );
-                            })}
+                    <div className={styles.prepProviderList}>
+                        <div className={styles.prepProviderHeader}>
+                            <span>First-segment provider</span>
+                            <span>Articles</span>
+                            <span>Downloaded</span>
+                            <span>Share</span>
                         </div>
-                    )}
+                        {prepStats.providers.map(provider => {
+                            const share = firstSegments > 0
+                                ? Math.round(provider.articles * 100 / firstSegments)
+                                : 0;
+                            const label = provider.nickname?.trim() || stripHost(provider.host);
+                            return (
+                                <div className={styles.prepProviderRow} key={provider.providerId}>
+                                    <span className={styles.healthProviderIdentity}>
+                                        <span className={styles.healthProviderName}>{label}</span>
+                                        <span className={styles.healthProviderHost}>{provider.host}</span>
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Articles">
+                                        {formatCount(provider.articles)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Downloaded">
+                                        {formatBytes(provider.bytes)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Share">{share}%</span>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </section>
             )}
 
@@ -374,7 +384,14 @@ function WinnerStats({
                     <span className={styles.detailsSectionTitle}>Health routing</span>
                     {healthStats && (
                         <span className={styles.detailsSectionMeta}>
-                            {formatCount(healthStats.totalArticles)} articles checked
+                            {outcomeKnown
+                                ? `${formatCount(foundArticles)} / ${formatCount(healthStats.totalArticles)} available`
+                                : `${formatCount(healthStats.totalArticles)} articles checked`}
+                            {outcomeKnown && (missingArticles === 0
+                                ? " · complete"
+                                : ` · ${formatCount(missingArticles)} unavailable`)}
+                            {healthDurationMs != null ? ` · ${formatDuration(healthDurationMs)}` : ""}
+                            {healthRate != null ? ` · ${formatCount(healthRate)}/s` : ""}
                         </span>
                     )}
                 </div>
@@ -385,15 +402,25 @@ function WinnerStats({
                 ) : (
                     <div className={styles.healthProviderList}>
                         <div className={styles.healthProviderHeader}>
-                        <span>Provider</span>
-                        <span>Probe</span>
-                        <span>Bulk articles</span>
-                        <span>Share</span>
-                        <span>Rate</span>
+                            <span>Provider</span>
+                            <span>Probe</span>
+                            <span>Found</span>
+                            <span>Missing</span>
+                            <span>Share</span>
+                            <span title="Bulk articles contributed by this provider per second of total health-check time.">
+                                Rate
+                            </span>
                         </div>
                         {healthStats.providers.map(provider => {
-                            const share = bulkFound > 0 ? Math.round(provider.found * 100 / bulkFound) : 0;
+                            const share = provider.found === 0
+                                ? "—"
+                                : `${workShares.get(provider.providerId) ?? 0}%`;
+                            const probe = formatProbeResult(
+                                provider.probeStatus, provider.probeFound, provider.probeReceived);
                             const label = provider.nickname?.trim() || stripHost(provider.host);
+                            const contributionRate = healthDurationMs != null && healthDurationMs > 0 && provider.found > 0
+                                ? Math.round(provider.found * 1000 / healthDurationMs)
+                                : null;
                             return (
                                 <div className={styles.healthProviderRow} key={provider.providerId}>
                                     <span className={styles.healthProviderIdentity}>
@@ -401,19 +428,29 @@ function WinnerStats({
                                         <span className={styles.healthProviderHost}>{provider.host}</span>
                                     </span>
                                     <span className={styles.healthProviderCell} data-label="Probe">
-                                        {provider.probeFound}/{provider.probeReceived}
+                                        {probe}
                                     </span>
-                                    <span className={styles.healthProviderCell} data-label="Bulk articles">
+                                    <span className={styles.healthProviderCell} data-label="Found">
                                         {formatCount(provider.found)}
-                                        {(provider.missing > 0 || provider.failures > 0) && (
+                                    </span>
+                                    <span className={styles.healthProviderCell} data-label="Missing">
+                                        {formatCount(provider.missing)}
+                                        {provider.failures > 0 && (
                                             <span className={styles.healthProviderWarning}>
-                                                {provider.missing > 0 ? ` · ${formatCount(provider.missing)} missing` : ""}
-                                                {provider.failures > 0 ? ` · ${formatCount(provider.failures)} failed batches` : ""}
+                                                {formatCount(provider.failures)} failed batch{provider.failures === 1 ? "" : "es"}
                                             </span>
                                         )}
                                     </span>
-                                    <span className={styles.healthProviderCell} data-label="Share">{share}%</span>
-                                    <span className={styles.healthProviderCell} data-label="Rate">{formatCount(provider.rate)}/s</span>
+                                    <span className={styles.healthProviderCell} data-label="Share">{share}</span>
+                                    <span
+                                        className={styles.healthProviderCell}
+                                        data-label="Rate"
+                                        title="Bulk articles contributed by this provider per second of total health-check time."
+                                    >
+                                        {contributionRate != null
+                                            ? `${formatCount(contributionRate)}/s`
+                                            : "—"}
+                                    </span>
                                 </div>
                             );
                         })}
@@ -424,14 +461,30 @@ function WinnerStats({
     );
 }
 
-function PrepStage({ label, value, note }: { label: string, value: string, note?: string }) {
-    return (
-        <div className={styles.prepStage}>
-            <span className={styles.prepStageLabel}>{label}</span>
-            <span className={styles.prepStageValue}>{value}</span>
-            {note && <span className={styles.prepStageNote}>{note}</span>}
-        </div>
-    );
+function allocateWholePercentShares(items: { key: string, value: number }[]): Map<string, number> {
+    const positive = items.filter(item => item.value > 0);
+    const total = positive.reduce((sum, item) => sum + item.value, 0);
+    if (total === 0) return new Map();
+
+    const allocations = positive.map((item, index) => {
+        const exact = item.value * 100 / total;
+        const whole = Math.floor(exact);
+        return { ...item, index, whole, remainder: exact - whole };
+    });
+    const pointsLeft = 100 - allocations.reduce((sum, item) => sum + item.whole, 0);
+    const byRemainder = [...allocations].sort((a, b) =>
+        b.remainder - a.remainder || b.value - a.value || a.index - b.index);
+    for (let index = 0; index < pointsLeft; index++)
+        byRemainder[index].whole++;
+
+    return new Map(allocations.map(item => [item.key, item.whole]));
+}
+
+function formatProbeResult(status: string | null | undefined, found: number, received: number): string {
+    if (status === "timeout") return received > 0 ? `${found}/${received} · timed out` : "Timed out";
+    if (status === "failed") return received > 0 ? `${found}/${received} · failed` : "Failed";
+    if (received > 0) return `${found}/${received}`;
+    return status === "ok" ? "0/0" : "Not recorded";
 }
 
 function TimingBox({ label, value }: { label: string, value: string }) {
@@ -621,9 +674,56 @@ function computeStats(groups: ClickGroup[]) {
     return { total: groups.length, resolved, failed, inFlight, excluded };
 }
 
-function formatProviderShort(raw: string | null | undefined): string {
-    if (!raw) return "—";
-    return raw.split(",").map(h => stripHost(h.trim())).filter(Boolean).join(" · ");
+function WatchdogProviderSummary({
+    providerHost,
+    providerNickname,
+}: {
+    providerHost?: string | null,
+    providerNickname?: string | null,
+}) {
+    const items = parseWatchdogProviders(providerHost, providerNickname);
+    if (items.length === 0) return <span className={styles.emptyProvider}>—</span>;
+
+    return (
+        <ProviderSummary
+            items={items}
+            meta={`${items.length} provider${items.length === 1 ? "" : "s"}`}
+        />
+    );
+}
+
+function parseWatchdogProviders(
+    providerHost?: string | null,
+    providerNickname?: string | null,
+): ProviderSummaryItem[] {
+    if (!providerHost?.trim()) return [];
+
+    const hosts = providerHost.split(",").map(part => parseProviderPart(part));
+    const nicknames = providerNickname
+        ?.split(",")
+        .map(part => parseProviderPart(part)) ?? [];
+
+    return hosts.map((host, index) => {
+        const nickname = nicknames[index];
+        const label = nickname?.value || stripHost(host.value) || host.value;
+        const percentage = host.percentage ?? nickname?.percentage;
+        return {
+            key: `${host.value}-${index}`,
+            label,
+            host: host.value,
+            share: percentage == null ? undefined : `${percentage}%`,
+        };
+    });
+}
+
+function parseProviderPart(raw: string): { value: string, percentage?: number } {
+    const trimmed = raw.trim();
+    const match = trimmed.match(/\s*\((\d+)%\)\s*$/);
+    if (!match || match.index == null) return { value: trimmed };
+    return {
+        value: trimmed.slice(0, match.index).trim(),
+        percentage: Number(match[1]),
+    };
 }
 
 const GENERIC_HOST_PREFIXES = new Set(["news", "reader", "premium", "secure", "ssl", "nntp", "usenet", "block"]);

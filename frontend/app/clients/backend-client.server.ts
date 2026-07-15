@@ -492,6 +492,8 @@ export type WatchdogPrepProvider = {
 
 export type WatchdogHealthStats = {
     totalArticles: number,
+    foundArticles?: number | null,
+    missingArticles?: number | null,
     providers: WatchdogHealthProvider[],
 }
 
@@ -502,6 +504,7 @@ export type WatchdogHealthProvider = {
     preferred: boolean,
     probeFound: number,
     probeReceived: number,
+    probeStatus?: string | null,
     batches: number,
     attempted: number,
     received: number,

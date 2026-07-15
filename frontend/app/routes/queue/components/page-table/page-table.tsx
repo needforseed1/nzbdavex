@@ -7,6 +7,7 @@ import { StatusBadge } from "../status-badge/status-badge";
 import { formatFileSize } from "~/utils/file-size";
 import { classNames } from "~/utils/styling";
 import type { ProviderUsage } from "~/clients/backend-client.server";
+import { ProviderSummary } from "~/components/provider-summary/provider-summary";
 
 export type PageTableProps = {
     children?: ReactNode,
@@ -117,58 +118,29 @@ export function IndexerBadge({ indexer }: { indexer: string }) {
     return <div className={styles.indexerBadge} title={`Indexer: ${indexer}`}>via {indexer}</div>
 }
 
-const MAX_INLINE_PROVIDERS = 3;
-
 export function ProvidersBadge({ providers }: { providers: ProviderUsage[] }) {
     if (providers.length === 0) return null;
     const total = providers.reduce((acc, p) => acc + p.segments, 0);
-    const visible = providers.slice(0, MAX_INLINE_PROVIDERS);
-    const hidden = providers.length - visible.length;
     const activeCount = providers.filter(p => p.segments > 0).length;
     const labelOf = (p: ProviderUsage) => p.nickname?.trim() || stripHost(p.host);
-    const tooltip = providers
-        .map(p => total > 0
-            ? `${labelOf(p)} (${p.host}): ${p.segments} segments (${Math.round((p.segments / total) * 100)}%)`
-            : `${labelOf(p)} (${p.host}): idle`)
-        .join("\n");
+    const items = providers.map((provider, index) => {
+        const percentage = total > 0
+            ? `${Math.round((provider.segments / total) * 100)}%`
+            : "idle";
+        return {
+            key: `${provider.host}-${index}`,
+            label: labelOf(provider),
+            host: provider.host,
+            amount: `${provider.segments} article${provider.segments === 1 ? "" : "s"}`,
+            share: percentage,
+        };
+    });
+
     return (
-        <details className={styles.providersBadge} title={tooltip} onClick={e => e.stopPropagation()}>
-            <summary className={styles.providersSummary}>
-                {visible.map((p, i) => (
-                    <span key={p.host} className={styles.providersEntry}>
-                        {i > 0 && <span className={styles.providersSep}>·</span>}
-                        <span className={styles.providersHost}>{labelOf(p)}</span>
-                        {total > 0 && (
-                            <span className={styles.providersPct}>
-                                {Math.round((p.segments / total) * 100)}%
-                            </span>
-                        )}
-                    </span>
-                ))}
-                {hidden > 0 && <span className={styles.providersMore}>+{hidden}</span>}
-            </summary>
-            <div className={styles.providersPanel}>
-                <div className={styles.providersPanelHeader}>
-                    <span>Provider usage</span>
-                    <span>{total} articles · {activeCount}/{providers.length} active</span>
-                </div>
-                {providers.map(p => {
-                    const pct = total > 0 ? Math.round((p.segments / total) * 100) : 0;
-                    return (
-                        <div key={p.host} className={styles.providersPanelRow}>
-                            <div className={styles.providersPanelName}>
-                                <span>{labelOf(p)}</span>
-                                <span>{p.host}</span>
-                            </div>
-                            <div className={styles.providersPanelStats}>
-                                <span>{p.segments}</span>
-                                <span>{total > 0 ? `${pct}%` : "idle"}</span>
-                            </div>
-                        </div>
-                    );
-                })}
-            </div>
-        </details>
+        <ProviderSummary
+            items={items}
+            meta={`${total} articles · ${activeCount}/${providers.length} active`}
+        />
     );
 }
 

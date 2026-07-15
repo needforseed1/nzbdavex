@@ -522,45 +522,6 @@
     text-align: right;
 }
 
-.prepStageGrid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 6px;
-    margin-bottom: 8px;
-}
-
-.prepStage {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    padding: 7px 9px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-}
-
-.prepStageLabel {
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: 9px;
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.prepStageValue {
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.prepStageNote {
-    color: var(--text-muted);
-    font-size: 9px;
-}
-
 .prepProviderList {
     overflow: hidden;
     border: 1px solid var(--border-subtle);
@@ -605,7 +566,13 @@
 .healthProviderHeader,
 .healthProviderRow {
     display: grid;
-    grid-template-columns: minmax(150px, 1.7fr) minmax(64px, .6fr) minmax(105px, 1fr) minmax(54px, .5fr) minmax(68px, .6fr);
+    grid-template-columns:
+        minmax(150px, 1.6fr)
+        minmax(92px, .8fr)
+        minmax(74px, .65fr)
+        minmax(78px, .7fr)
+        minmax(68px, .6fr)
+        minmax(76px, .65fr);
     gap: 10px;
     align-items: center;
     padding: 7px 10px;
@@ -724,7 +691,8 @@
 .colRank      { width: 32px; color: var(--text-muted); font-variant-numeric: tabular-nums; font-weight: 600; }
 .colCandidate { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
 .colIndexer   { white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
-.colProvider  { white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
+.colProvider  { white-space: nowrap; width: 160px; max-width: 160px; overflow: hidden; color: var(--text-secondary); }
+.colProvider > * { max-width: 100%; }
 .colSize      { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-muted); width: 72px; }
 .colOutcome   { white-space: nowrap; width: 120px; }
 .colReason    { color: var(--text-muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -825,10 +793,28 @@
 
 .attemptCardMeta {
     display: flex;
+    align-items: center;
     gap: 6px;
     color: var(--text-muted);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
+}
+
+.attemptCardProvider {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 260px;
+}
+
+.attemptCardProvider > :last-child {
+    min-width: 0;
+}
+
+.emptyProvider {
+    color: var(--text-faint);
 }
 
 .attemptCardMetaDot {
@@ -889,10 +875,6 @@
 
     .detailsSectionMeta {
         text-align: left;
-    }
-
-    .prepStageGrid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .prepProviderHeader {

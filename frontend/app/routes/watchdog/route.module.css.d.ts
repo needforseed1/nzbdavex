@@ -96,7 +96,9 @@ declare const styles: {
   readonly "attemptIndexer": string;
   readonly "attemptCardTitle": string;
   readonly "attemptCardMeta": string;
+  readonly "attemptCardProvider": string;
   readonly "attemptCardMetaDot": string;
   readonly "attemptCardReason": string;
+  readonly "emptyProvider": string;
 };
 export = styles;
