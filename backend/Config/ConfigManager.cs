@@ -130,18 +130,35 @@ public class ConfigManager
         return GetBoolean("warden.backbone-scope", true);
     }
 
-    public void UpdateValues(List<ConfigItem> configItems)
+    public void UpdateValues(List<ConfigItem> configItems) =>
+        ApplyChanges(configItems.ToDictionary(
+            x => x.ConfigName, x => (string?)x.ConfigValue, StringComparer.Ordinal));
+
+    public void ApplyChanges(IReadOnlyDictionary<string, string?> changes)
     {
+        var changedConfig = new Dictionary<string, string>(StringComparer.Ordinal);
         lock (_config)
         {
-            foreach (var configItem in configItems)
+            foreach (var (key, value) in changes)
             {
-                _config[configItem.ConfigName] = configItem.ConfigValue;
-                _invalidConfigWarnings.Remove(configItem.ConfigName);
+                if (value is null)
+                {
+                    if (!_config.Remove(key)) continue;
+                    changedConfig[key] = "";
+                }
+                else
+                {
+                    if (_config.TryGetValue(key, out var current) &&
+                        string.Equals(current, value, StringComparison.Ordinal)) continue;
+                    _config[key] = value;
+                    changedConfig[key] = value;
+                }
+
+                _invalidConfigWarnings.Remove(key);
             }
         }
 
-        var changedConfig = configItems.ToDictionary(x => x.ConfigName, x => x.ConfigValue);
+        if (changedConfig.Count == 0) return;
         OnConfigChanged?.Invoke(this, new ConfigEventArgs { ChangedConfig = changedConfig });
     }
 

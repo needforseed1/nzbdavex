@@ -12,7 +12,10 @@ public class TestUsenetConnectionController() : BaseApiController
     {
         try
         {
-            await UsenetStreamingClient.CreateNewConnection(request.ToConnectionDetails(), HttpContext.RequestAborted).ConfigureAwait(false);
+            var details = request.ToConnectionDetails();
+            await ConnectAndDisposeAsync(
+                ct => UsenetStreamingClient.CreateNewConnection(details, ct),
+                HttpContext.RequestAborted).ConfigureAwait(false);
             return new TestUsenetConnectionResponse { Status = true, Connected = true };
         }
         catch (CouldNotConnectToUsenetException)
@@ -23,6 +26,14 @@ public class TestUsenetConnectionController() : BaseApiController
         {
             return new TestUsenetConnectionResponse { Status = true, Connected = false };
         }
+    }
+
+    internal static async Task ConnectAndDisposeAsync<TConnection>(
+        Func<CancellationToken, ValueTask<TConnection>> connectionFactory,
+        CancellationToken cancellationToken)
+        where TConnection : IDisposable
+    {
+        using var connection = await connectionFactory(cancellationToken).ConfigureAwait(false);
     }
 
     protected override async Task<IActionResult> HandleRequest()

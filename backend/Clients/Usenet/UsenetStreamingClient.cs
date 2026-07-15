@@ -1,4 +1,6 @@
-﻿using NzbWebDAV.Clients.Usenet.Connections;
+﻿using System.Security.Cryptography;
+using System.Text.Json;
+using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -25,6 +27,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     private readonly object _reloadLock = new();
     private readonly ConfigManager _configManager;
     private readonly EventHandler<ConfigManager.ConfigEventArgs> _configChangedHandler;
+    private string _providerConfigFingerprint;
     private bool _disposed;
 
     public UsenetStreamingClient(
@@ -51,6 +54,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     {
         _drainingClient = drainingClient;
         _configManager = configManager;
+        _providerConfigFingerprint = GetProviderConfigFingerprint(configManager);
         _configChangedHandler = (_, configEventArgs) =>
         {
             if (!configEventArgs.ChangedConfig.ContainsKey("usenet.providers")) return;
@@ -60,12 +64,21 @@ public class UsenetStreamingClient : WrappingNntpClient
             lock (_reloadLock)
             {
                 if (_disposed) return;
+                var nextFingerprint = GetProviderConfigFingerprint(configManager);
+                if (string.Equals(_providerConfigFingerprint, nextFingerprint, StringComparison.Ordinal)) return;
                 var newUsenetClient = CreateDownloadingNntpClient(
                     configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
                 _drainingClient.Replace(newUsenetClient);
+                _providerConfigFingerprint = nextFingerprint;
             }
         };
         _configManager.OnConfigChanged += _configChangedHandler;
+    }
+
+    internal static string GetProviderConfigFingerprint(ConfigManager configManager)
+    {
+        var canonical = JsonSerializer.SerializeToUtf8Bytes(configManager.GetUsenetProviderConfig());
+        return Convert.ToHexString(SHA256.HashData(canonical));
     }
 
     public override void Dispose()
@@ -174,12 +187,11 @@ public class UsenetStreamingClient : WrappingNntpClient
     {
         if (maxConnections <= 0) return 0;
 
-        // Keep half of each health-capable provider authenticated. This preserves
-        // a useful warm floor without making large provider allowances consume
-        // excessive memory and sockets while idle. Real work can still grow the
-        // pool to its configured maximum on demand.
+        // Keep 90% of each health-capable provider authenticated. Round up so
+        // small pools retain at least the requested proportion while leaving
+        // capacity for on-demand growth whenever the configured limit allows it.
         if (providerType is ProviderType.HealthChecksOnly or ProviderType.BackupAndStats)
-            return HealthProviderPrewarmEnabled ? Math.Max(1, maxConnections / 2) : 0;
+            return HealthProviderPrewarmEnabled ? maxConnections - maxConnections / 10 : 0;
 
         return providerType == ProviderType.Pooled
             ? Math.Min(maxConnections, WarmConnectionsPerProvider)

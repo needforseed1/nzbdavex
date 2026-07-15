@@ -27,6 +27,8 @@ public class UpdateConfigController(DavDatabaseClient dbClient, ConfigManager co
         {
             if (existingItemsDict.TryGetValue(item.ConfigName, out ConfigItem? existingItem))
             {
+                if (string.Equals(existingItem.ConfigValue, item.ConfigValue, StringComparison.Ordinal))
+                    continue;
                 existingItem.ConfigValue = item.ConfigValue;
                 itemsToUpdate.Add(existingItem);
             }
@@ -44,7 +46,7 @@ public class UpdateConfigController(DavDatabaseClient dbClient, ConfigManager co
         await dbClient.Ctx.SaveChangesAsync(HttpContext.RequestAborted).ConfigureAwait(false);
 
         // 5. Update the ConfigManager
-        configManager.UpdateValues(request.ConfigItems);
+        configManager.UpdateValues(itemsToUpdate.Concat(itemsToInsert).ToList());
 
         // return
         return new UpdateConfigResponse { Status = true };

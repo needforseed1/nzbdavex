@@ -1,4 +1,5 @@
 using NzbWebDAV.Config;
+using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Database.Models;
 
 namespace NzbWebDAV.Tests.Config;
@@ -112,6 +113,73 @@ public class ConfigManagerTests
             ("watchtower.keepfresh-max-seconds", "600"));
 
         Assert.Equal(7200, config.GetWatchtowerKeepFreshMaxSeconds());
+    }
+
+    [Fact]
+    public void UpdateValuesEmitsOnlySettingsWhoseStoredValueChanged()
+    {
+        var config = new ConfigManager();
+        var events = new List<IReadOnlyDictionary<string, string>>();
+        config.OnConfigChanged += (_, args) => events.Add(args.ChangedConfig);
+
+        config.UpdateValues([
+            new ConfigItem { ConfigName = "one", ConfigValue = "same" },
+            new ConfigItem { ConfigName = "two", ConfigValue = "before" },
+        ]);
+        config.UpdateValues([
+            new ConfigItem { ConfigName = "one", ConfigValue = "same" },
+            new ConfigItem { ConfigName = "two", ConfigValue = "after" },
+        ]);
+        config.UpdateValues([
+            new ConfigItem { ConfigName = "one", ConfigValue = "same" },
+            new ConfigItem { ConfigName = "two", ConfigValue = "after" },
+        ]);
+
+        Assert.Equal(2, events.Count);
+        Assert.Equal(2, events[0].Count);
+        Assert.Single(events[1]);
+        Assert.Equal("after", events[1]["two"]);
+    }
+
+    [Fact]
+    public void ApplyChangesEmitsOnlyEffectiveRemovals()
+    {
+        var config = WithValues(("present", "value"));
+        var events = new List<IReadOnlyDictionary<string, string>>();
+        config.OnConfigChanged += (_, args) => events.Add(args.ChangedConfig);
+
+        config.ApplyChanges(new Dictionary<string, string?>
+        {
+            ["missing"] = null,
+            ["present"] = null,
+        });
+        config.ApplyChanges(new Dictionary<string, string?> { ["present"] = null });
+
+        Assert.Single(events);
+        Assert.Single(events[0]);
+        Assert.Equal("", events[0]["present"]);
+    }
+
+    [Fact]
+    public void ProviderFingerprintIgnoresJsonFormattingAndPropertyOrder()
+    {
+        const string first =
+            """{"Providers":[{"Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"user","Pass":"pass","MaxConnections":10}]}""";
+        const string equivalent =
+            """{ "Providers": [ { "MaxConnections": 10, "Pass": "pass", "User": "user", "UseSsl": true, "Port": 563, "Host": "news.example", "Type": 0 } ] }""";
+        const string changed =
+            """{"Providers":[{"Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"user","Pass":"pass","MaxConnections":11}]}""";
+
+        var firstConfig = WithValues(("usenet.providers", first));
+        var equivalentConfig = WithValues(("usenet.providers", equivalent));
+        var changedConfig = WithValues(("usenet.providers", changed));
+
+        Assert.Equal(
+            UsenetStreamingClient.GetProviderConfigFingerprint(firstConfig),
+            UsenetStreamingClient.GetProviderConfigFingerprint(equivalentConfig));
+        Assert.NotEqual(
+            UsenetStreamingClient.GetProviderConfigFingerprint(firstConfig),
+            UsenetStreamingClient.GetProviderConfigFingerprint(changedConfig));
     }
 
     private static ConfigManager WithValues(params (string Key, string Value)[] values)
