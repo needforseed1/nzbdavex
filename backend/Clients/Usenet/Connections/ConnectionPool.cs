@@ -20,6 +20,8 @@ namespace NzbWebDAV.Clients.Usenet.Connections;
 /// </summary>
 public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 {
+    private const int WarmValidationBatchSize = 4;
+
     /* -------------------------------- configuration -------------------------------- */
 
     public TimeSpan IdleTimeout { get; }
@@ -40,6 +42,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly int _minimumIdleConnections;
     private readonly Func<Exception, bool>? _connectionCapacityRejected;
     private readonly Action<int, Exception>? _onConnectionCapacityReduced;
+    private readonly ConnectionLifetimeBudget? _connectionBudget;
 
     /* --------------------------------- state --------------------------------------- */
 
@@ -47,10 +50,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly object _idleLock = new();
     private readonly PrioritizedSemaphore _gate;
     private readonly SemaphoreSlim _creationGate;
+    private readonly SemaphoreSlim _maintenanceGate = new(1, 1);
     private readonly SemaphoreSlim _idleSignal = new(0, 1);
     private readonly CancellationTokenSource _sweepCts = new();
     private readonly CancellationTokenSource _capacityCts = new();
     private readonly Task _sweeperTask; // keeps timer alive
+    private TaskCompletionSource _operationsDrained = CompletedTaskSource();
 
     private int _live; // number of connections currently alive
     private int _inFlightCreations;
@@ -59,6 +64,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private Exception? _capacityUnavailableException;
     private int _capacityUnavailable;
     private int _disposed; // 0 == false, 1 == true
+    private int _activeOperations;
 
     /* ------------------------------------------------------------------------------ */
 
@@ -71,7 +77,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         int minimumIdleConnections = 0,
         TimeSpan? warmConnectionRefreshInterval = null,
         Func<Exception, bool>? connectionCapacityRejected = null,
-        Action<int, Exception>? onConnectionCapacityReduced = null)
+        Action<int, Exception>? onConnectionCapacityReduced = null,
+        ConnectionLifetimeBudget? connectionBudget = null)
     {
         if (maxConnections <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxConnections));
@@ -89,6 +96,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _warmConnectionRefreshInterval = warmConnectionRefreshInterval;
         _connectionCapacityRejected = connectionCapacityRejected;
         _onConnectionCapacityReduced = onConnectionCapacityReduced;
+        _connectionBudget = connectionBudget;
 
         _maxConnections = maxConnections;
         _effectiveMaxConnections = maxConnections;
@@ -220,7 +228,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     {
                         if (replaceDiscardedConnection)
                         {
-                            conn = await _factory(linked.Token).ConfigureAwait(false);
+                            conn = await CreateConnectionAsync(linked.Token).ConfigureAwait(false);
                         }
                         else
                         {
@@ -376,10 +384,41 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     {
         lock (_idleLock)
         {
+            if (Volatile.Read(ref _disposed) == 1 || CapacityUnavailable) return false;
             if (_live + _inFlightCreations >= _effectiveMaxConnections) return false;
             _inFlightCreations++;
             return true;
         }
+    }
+
+    private void BeginOperation()
+    {
+        lock (_idleLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed == 1, this);
+            if (_activeOperations++ == 0)
+                _operationsDrained = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    private void EndOperation()
+    {
+        TaskCompletionSource? drained = null;
+        lock (_idleLock)
+        {
+            if (--_activeOperations == 0)
+                drained = _operationsDrained;
+        }
+
+        drained?.TrySetResult();
+    }
+
+    private static TaskCompletionSource CompletedTaskSource()
+    {
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        completed.SetResult();
+        return completed;
     }
 
     private void RegisterCreatedConnection()
@@ -397,12 +436,24 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             _inFlightCreations--;
     }
 
+    private async ValueTask<T> CreateConnectionAsync(CancellationToken cancellationToken)
+    {
+        if (_connectionBudget is null)
+            return await _factory(cancellationToken).ConfigureAwait(false);
+
+        using var reservation = await _connectionBudget
+            .ReserveCreationAsync(cancellationToken).ConfigureAwait(false);
+        var connection = await _factory(cancellationToken).ConfigureAwait(false);
+        reservation.Commit();
+        return connection;
+    }
+
     private async Task<(bool Created, bool ReusedIdle, T Connection)> CreateUnlessIdleReturnsAsync(
         CancellationToken cancellationToken)
     {
         using var creationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var creationTask = _factory(creationCts.Token).AsTask();
+        var creationTask = CreateConnectionAsync(creationCts.Token).AsTask();
         var idleTask = _idleSignal.WaitAsync(idleCts.Token);
         var completed = await Task.WhenAny(creationTask, idleTask).ConfigureAwait(false);
 
@@ -559,21 +610,71 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public async Task PrewarmAsync(int count, CancellationToken cancellationToken = default)
     {
-        var target = Math.Clamp(count, 0, _maxConnections);
-        var connectionsNeeded = Math.Max(0, target - LiveConnections - Volatile.Read(ref _inFlightCreations));
-        if (connectionsNeeded == 0) return;
+        BeginOperation();
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, _sweepCts.Token, _capacityCts.Token);
+            await _maintenanceGate.WaitAsync(linked.Token).ConfigureAwait(false);
+            try
+            {
+                var target = Math.Clamp(count, 0, _maxConnections);
+                var connectionsNeeded = Math.Max(
+                    0, target - LiveConnections - Volatile.Read(ref _inFlightCreations));
+                if (connectionsNeeded == 0) return;
 
-        var creations = Enumerable.Range(0, connectionsNeeded)
-            .Select(_ => CreatePrewarmedConnectionAsync(target, cancellationToken))
-            .ToArray();
-        await Task.WhenAll(creations).ConfigureAwait(false);
+                var workerCount = Math.Min(connectionsNeeded, Math.Min(_maxConnections, 8));
+                var workers = Enumerable.Range(0, workerCount)
+                    .Select(_ => PrewarmWorkerAsync(target, linked.Token))
+                    .ToArray();
+                await Task.WhenAll(workers).ConfigureAwait(false);
+            }
+            finally
+            {
+                _maintenanceGate.Release();
+            }
+        }
+        finally
+        {
+            EndOperation();
+        }
     }
 
     public async Task RefreshWarmConnectionsAsync(CancellationToken cancellationToken = default)
     {
         if (_minimumIdleConnections == 0 || _validator == null) return;
-        var count = Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections));
-        await AcquireIdleConnectionsAsync(count, true, cancellationToken).ConfigureAwait(false);
+
+        BeginOperation();
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, _sweepCts.Token, _capacityCts.Token);
+            await _maintenanceGate.WaitAsync(linked.Token).ConfigureAwait(false);
+            try
+            {
+                // Keep maintenance cheap and staggered. Real borrowers still
+                // validate any connection that exceeded validateAfterIdle.
+                var count = Math.Min(
+                    WarmValidationBatchSize,
+                    Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
+                await AcquireIdleConnectionsAsync(count, true, linked.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _maintenanceGate.Release();
+            }
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
+    private async Task PrewarmWorkerAsync(int target, CancellationToken cancellationToken)
+    {
+        while (await CreatePrewarmedConnectionAsync(target, cancellationToken).ConfigureAwait(false))
+        {
+        }
     }
 
     private async Task AcquireIdleConnectionsAsync(
@@ -600,7 +701,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task CreatePrewarmedConnectionAsync(int target, CancellationToken cancellationToken)
+    private async Task<bool> CreatePrewarmedConnectionAsync(int target, CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _sweepCts.Token, _capacityCts.Token);
@@ -608,13 +709,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         var reservationHeld = false;
         try
         {
-            if (!TryReservePrewarmCreation(target)) return;
+            if (!TryReservePrewarmCreation(target)) return false;
             reservationHeld = true;
 
             T connection;
             try
             {
-                connection = await _factory(linked.Token).ConfigureAwait(false);
+                connection = await CreateConnectionAsync(linked.Token).ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -626,13 +727,14 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             if (!TryPublishPrewarmedConnection(connection))
             {
                 DisposeConnection(connection);
-                return;
+                return false;
             }
 
             reservationHeld = false;
             RaiseEffectiveCapacityToLive();
             SignalIdleAvailable();
             TriggerConnectionPoolChangedEvent();
+            return true;
         }
         finally
         {
@@ -645,6 +747,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     {
         lock (_idleLock)
         {
+            if (Volatile.Read(ref _disposed) == 1 || CapacityUnavailable) return false;
             var effectiveTarget = Math.Min(target, _effectiveMaxConnections);
             if (_live + _inFlightCreations >= effectiveTarget) return false;
             _inFlightCreations++;
@@ -669,6 +772,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken,
         bool forceIdleValidation)
     {
+        BeginOperation();
         Interlocked.Increment(ref _pendingAcquisitions);
         TriggerConnectionPoolChangedEvent();
         try
@@ -688,6 +792,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             Interlocked.Decrement(ref _pendingAcquisitions);
             TriggerConnectionPoolChangedEvent();
+            EndOperation();
         }
     }
 
@@ -768,20 +873,29 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     /* ------------------------- dispose helpers ------------------------------------ */
 
-    private static void DisposeConnection(T conn)
+    private void DisposeConnection(T conn)
     {
-        if (conn is IDisposable d)
-            d.Dispose();
+        try
+        {
+            if (conn is IDisposable d)
+                d.Dispose();
+        }
+        finally
+        {
+            _connectionBudget?.ReleaseConnection();
+        }
     }
 
     /* -------------------------- IAsyncDisposable ---------------------------------- */
 
     public async ValueTask DisposeAsync()
     {
+        Task operationsDrained;
         lock (_idleLock)
         {
             if (_disposed == 1) return;
             _disposed = 1;
+            operationsDrained = _operationsDrained.Task;
         }
 
         await _sweepCts.CancelAsync();
@@ -794,6 +908,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             /* ignore */
         }
+
+        // All acquisition, prewarm and validation work observes _sweepCts. Wait
+        // for it to unwind before disposing the synchronization primitives it uses.
+        await operationsDrained.ConfigureAwait(false);
 
         // Drain and dispose cached items.
         List<T> idle;
@@ -813,6 +931,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _sweepCts.Dispose();
         _capacityCts.Dispose();
         _idleSignal.Dispose();
+        _maintenanceGate.Dispose();
+        _creationGate.Dispose();
         _gate.Dispose();
         GC.SuppressFinalize(this);
     }
@@ -821,6 +941,6 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public void Dispose()
     {
-        _ = DisposeAsync().AsTask(); // fire-and-forget synchronous path
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 }

@@ -205,6 +205,126 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task WarmRefreshValidatesOnlyABoundedMaintenanceBatch()
+    {
+        var validated = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            20,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                return ValueTask.FromResult(true);
+            },
+            minimumIdleConnections: 20);
+
+        await pool.PrewarmAsync(20);
+        await pool.RefreshWarmConnectionsAsync();
+
+        Assert.Equal(4, Volatile.Read(ref validated));
+        Assert.Equal(20, pool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task SharedBudgetCapsConnectionsAcrossPoolsAndReleasesIdleSlots()
+    {
+        var budget = new ConnectionLifetimeBudget(2, 2);
+        await using var firstPool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionBudget: budget);
+        await using var secondPool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(2, () => { })),
+            connectionBudget: budget);
+
+        await firstPool.PrewarmAsync(2);
+        var waiting = secondPool.PrewarmAsync(1);
+        await Task.Delay(30);
+        Assert.False(waiting.IsCompleted);
+
+        firstPool.CloseIdleConnections();
+        await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(0, firstPool.LiveConnections);
+        Assert.Equal(1, secondPool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task SharedBudgetCapsConcurrentHandshakesAcrossPools()
+    {
+        var budget = new ConnectionLifetimeBudget(4, 1);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = 0;
+        var active = 0;
+        var maxActive = 0;
+        ValueTask<TrackedConnection> Factory(CancellationToken cancellationToken) => Create(cancellationToken);
+
+        async ValueTask<TrackedConnection> Create(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref started);
+            var current = Interlocked.Increment(ref active);
+            UpdateMaximum(ref maxActive, current);
+            try
+            {
+                await release.Task.WaitAsync(cancellationToken);
+                return new TrackedConnection(1, () => { });
+            }
+            finally
+            {
+                Interlocked.Decrement(ref active);
+            }
+        }
+
+        await using var firstPool = new ConnectionPool<TrackedConnection>(
+            2, Factory, connectionBudget: budget);
+        await using var secondPool = new ConnectionPool<TrackedConnection>(
+            2, Factory, connectionBudget: budget);
+
+        var warming = Task.WhenAll(firstPool.PrewarmAsync(2), secondPool.PrewarmAsync(2));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (Volatile.Read(ref started) == 0)
+            await Task.Delay(5, timeout.Token);
+        await Task.Delay(30, timeout.Token);
+
+        Assert.Equal(1, Volatile.Read(ref started));
+        release.TrySetResult();
+        await warming.WaitAsync(timeout.Token);
+        Assert.Equal(1, Volatile.Read(ref maxActive));
+    }
+
+    [Fact]
+    public async Task SynchronousDisposeCancelsAndDrainsActivePrewarm()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            async cancellationToken =>
+            {
+                started.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    throw new InvalidOperationException("Factory should have been cancelled.");
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    cancelled.TrySetResult();
+                    throw;
+                }
+            });
+
+        var warming = pool.PrewarmAsync(1);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        pool.Dispose();
+
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => warming);
+    }
+
+    [Fact]
     public async Task CloseIdleConnectionsReleasesCachedProviderSlots()
     {
         var disposed = 0;
