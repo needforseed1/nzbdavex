@@ -452,6 +452,7 @@ public class QueueItemProcessor(
         bool skipRarGroup = false
     )
     {
+        var blocklistedFiles = configManager.GetBlocklistedFiles();
         var groups = fileInfos
             .GroupBy(GetGroupName);
 
@@ -472,8 +473,21 @@ public class QueueItemProcessor(
 
             else if (group.Key == "other")
                 foreach (var fileInfo in group)
-                    yield return new FileProcessor(fileInfo, usenetClient, ct);
+                    if (ShouldProcessNonArchiveFile(fileInfo.FileName, blocklistedFiles))
+                        yield return new FileProcessor(fileInfo, usenetClient, ct);
         }
+    }
+
+    internal static bool ShouldProcessNonArchiveFile(
+        string fileName,
+        HashSet<string> blocklistedFiles)
+    {
+        // Important files retain their existing processing path. For everything
+        // else, avoid fetching metadata for files that would be removed by the
+        // blocklist immediately after aggregation. PAR2 inspection/deobfuscation
+        // has already completed before this method is reached.
+        return FilenameUtil.IsImportantFileType(fileName)
+               || !BlocklistedFilePostProcessor.MatchesAnyPattern(fileName, blocklistedFiles);
     }
 
     private static string GetGroupName(GetFileInfosStep.FileInfo x) =>
