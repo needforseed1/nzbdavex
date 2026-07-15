@@ -180,7 +180,7 @@ public class QueueItemProcessor(
                 healthPrimeSegmentIds,
                 healthPrimeDepth,
                 queueItem,
-                ct);
+                healthConnectionWarmupCts.Token);
 
         // step 1 -- get name and size of each nzb file
         var stepTimer = Stopwatch.StartNew();
@@ -216,7 +216,7 @@ public class QueueItemProcessor(
                     healthPrimeSegmentIds,
                     healthPrimeDepth,
                     queueItem,
-                    ct));
+                    healthConnectionWarmupCts.Token));
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
         var usageAfterFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesAfterFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
@@ -530,6 +530,17 @@ public class QueueItemProcessor(
             {
                 onGraceExpired?.Invoke();
                 await warmupCancellation.CancelAsync().ConfigureAwait(false);
+                if (!warmupTask.IsCompleted)
+                {
+                    // Foreground health must never remain behind a provider operation
+                    // that is slow to observe cancellation. The shared connection
+                    // budget still bounds the late cleanup while foreground lanes get
+                    // priority for any capacity that is already available.
+                    _ = ObserveLateWarmupCompletionAsync(warmupTask);
+                    operationCancellation.ThrowIfCancellationRequested();
+                    await runHealthCheck().ConfigureAwait(false);
+                    return;
+                }
             }
         }
 
@@ -547,6 +558,22 @@ public class QueueItemProcessor(
 
         operationCancellation.ThrowIfCancellationRequested();
         await runHealthCheck().ConfigureAwait(false);
+    }
+
+    private static async Task ObserveLateWarmupCompletionAsync(Task warmupTask)
+    {
+        try
+        {
+            await warmupTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected after the foreground handoff.
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Late health connection warmup cleanup failed.");
+        }
     }
 
     private static async Task PrewarmPrimaryHealthConnectionsAfterPrepAsync(

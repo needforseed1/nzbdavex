@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.6](https://github.com/needforseed1/nzbdavex/compare/v1.3.5...v1.3.6) (2026-07-15)
+
+### Fixes
+
+* The bounded prep-to-health handoff now propagates cancellation through dedicated connection priming and primary-provider warmup. Foreground health lanes start immediately after the grace period even when a provider operation is slow to cancel, instead of remaining idle until the primer's five-second timeout.
+* Late speculative cleanup is observed in the background and remains constrained by the shared connection budget. Regression coverage verifies that a warmup operation which ignores cancellation cannot block foreground health work.
+
 ## [1.3.5](https://github.com/needforseed1/nzbdavex/compare/v1.3.4...v1.3.5) (2026-07-15)
 
 ### Fixes

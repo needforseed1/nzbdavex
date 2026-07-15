@@ -117,6 +117,32 @@ public class QueueItemProcessorTests
         Assert.True(healthStarted);
     }
 
+    [Fact]
+    public async Task WarmupThatIgnoresCancellationCannotBlockForegroundHealth()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var warmupCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var healthStarted = false;
+
+        await QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
+            warmupCompletion.Task,
+            warmupCancellation,
+            CancellationToken.None,
+            () =>
+            {
+                healthStarted = true;
+                return Task.CompletedTask;
+            },
+            handoffGrace: TimeSpan.Zero);
+
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.True(healthStarted);
+        Assert.False(warmupCompletion.Task.IsCompleted);
+
+        warmupCompletion.SetResult();
+    }
+
     private static NzbFile NzbFile(string subject, int start, int count)
     {
         var file = new NzbFile { Subject = subject };
