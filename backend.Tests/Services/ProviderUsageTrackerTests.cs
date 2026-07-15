@@ -1,3 +1,4 @@
+using System.Text.Json;
 using NzbWebDAV.Config;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
@@ -53,17 +54,34 @@ public class ProviderUsageTrackerTests
         using (tracker.BeginScope(queueId))
         {
             tracker.BeginHealthCheck(113_377);
-            tracker.RecordHealthProviderStat(HealthStat("farm-1", 32_937));
+            tracker.RecordHealthProviderStat(HealthStat("farm-1", 32_937) with { ProbeStatus = "timeout" });
             tracker.RecordHealthProviderStat(HealthStat("farm-2", 34_183));
             tracker.RecordHealthProviderStat(HealthStat("farm-3", 33_554));
+            tracker.CompleteHealthCheck(113_377, 0);
         }
 
         var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(tracker.SnapshotHealthCheck(queueId));
 
         Assert.Equal(113_377, snapshot.TotalArticles);
+        Assert.Equal(113_377, snapshot.FoundArticles);
+        Assert.Equal(0, snapshot.MissingArticles);
         Assert.Equal(3, snapshot.Providers.Count);
         Assert.Equal(new[] { "farm-2", "farm-3", "farm-1" }, snapshot.Providers.Select(x => x.ProviderId));
         Assert.All(snapshot.Providers, stat => Assert.Equal("news.usenet.farm", stat.Host));
+        Assert.Equal("timeout", snapshot.Providers.Single(x => x.ProviderId == "farm-1").ProbeStatus);
+    }
+
+    [Fact]
+    public void HealthSnapshot_OlderJsonKeepsUnknownOutcomeNullable()
+    {
+        const string json = """{"TotalArticles":42,"Providers":[]}""";
+
+        var snapshot = JsonSerializer.Deserialize<HealthCheckUsageSnapshot>(json);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(42, snapshot.TotalArticles);
+        Assert.Null(snapshot.FoundArticles);
+        Assert.Null(snapshot.MissingArticles);
     }
 
     [Fact]

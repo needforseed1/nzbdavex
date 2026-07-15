@@ -27,7 +27,7 @@ public class MultiProviderNntpClient(
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
-    private const double PartialStatAdmissionMargin = 0.90;
+    private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -596,19 +596,13 @@ public class MultiProviderNntpClient(
             or ProviderType.BackupAndStats
             or ProviderType.HealthChecksOnly);
 
-    internal static bool IsPartialStatProviderWorthwhile(
-        int found,
-        int received,
-        double statRate,
-        double fallbackRate)
+    internal static bool IsPartialStatProviderEligible(int found, int received)
     {
-        if (found <= 0 || received <= 0 || found >= received || statRate <= 0 || fallbackRate <= 0)
+        if (found <= 0 || received <= 0 || found >= received)
             return false;
 
         var coverage = found / (double)received;
-        var expectedSecondsPerArticle = 1d / statRate + (1d - coverage) / fallbackRate;
-        var fallbackSecondsPerArticle = 1d / fallbackRate;
-        return expectedSecondsPerArticle <= fallbackSecondsPerArticle * PartialStatAdmissionMargin;
+        return coverage >= PartialStatMinimumCoverage;
     }
 
     private HashSet<MultiConnectionNntpClient> SelectPreferredStatProviders(
@@ -620,15 +614,10 @@ public class MultiProviderNntpClient(
         if (successful.Count == 0) return [];
 
         var bestCoverage = successful.Max(x => x.Found);
-        var fallbackRate = successful
-            .Where(x => x.Found == bestCoverage)
-            .Select(x => x.Rate)
-            .DefaultIfEmpty(0)
-            .Max();
 
         return successful
             .Where(x => x.Found == bestCoverage ||
-                        IsPartialStatProviderWorthwhile(x.Found, x.Received, x.Rate, fallbackRate))
+                        IsPartialStatProviderEligible(x.Found, x.Received))
             .Select(x => x.Provider)
             .ToHashSet();
     }
@@ -704,6 +693,29 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken)
     {
         usageTracker.BeginHealthCheck(segmentIds.Count);
+        try
+        {
+            await CheckAllSegmentsPipelinedCoreAsync(
+                segmentIds, depth, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
+            usageTracker.CompleteHealthCheck(segmentIds.Count, 0);
+        }
+        catch (UsenetArticleNotFoundException)
+        {
+            // The health checker stops at the first globally unresolved article,
+            // so the exact found total is unknown on failure but at least one
+            // unique article is confirmed missing.
+            usageTracker.CompleteHealthCheck(null, 1);
+            throw;
+        }
+    }
+
+    private async Task CheckAllSegmentsPipelinedCoreAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken)
+    {
         if (segmentIds.Count < BulkStatProbeThreshold || fallbackConcurrency <= 1)
         {
             await base.CheckAllSegmentsPipelinedAsync(
@@ -1429,37 +1441,48 @@ public class MultiProviderNntpClient(
 
         public void LogSummary()
         {
-            foreach (var probe in _probes.Values.OrderBy(x => ProbeRank(x.Provider)))
+            var attemptedProviders = _probes.Keys
+                .Concat(_attempts.Keys)
+                .Distinct()
+                .OrderBy(ProbeRank)
+                .ThenBy(x => x.Priority)
+                .ToArray();
+            foreach (var provider in attemptedProviders)
             {
-                _attempts.TryGetValue(probe.Provider, out var attempts);
+                _probes.TryGetValue(provider, out var probe);
+                _attempts.TryGetValue(provider, out var attempts);
                 var snapshot = attempts?.Snapshot() ?? default;
-                var rate = snapshot.ElapsedMs > 0
+                var rate = snapshot.Received > 0 && snapshot.ElapsedMs > 0
                     ? (int)Math.Round(snapshot.Received * 1000d / snapshot.ElapsedMs)
-                    : snapshot.Received;
+                    : probe is { Received: > 0, ElapsedMs: > 0 }
+                        ? (int)Math.Round(probe.Received * 1000d / probe.ElapsedMs)
+                        : 0;
                 Log.Information(
                     "health-stat provider-summary provider={Provider} preferred={Preferred} " +
                     "probeFound={ProbeFound}/{ProbeReceived} batches={Batches} attempted={Attempted} received={Received} " +
-                    "found={Found} missing={Missing} failures={Failures} workMs={WorkMs} rate={StatRate}stat/s",
-                    probe.Provider.Host, IsPreferred(probe.Provider), probe.Found, probe.Received,
+                    "found={Found} missing={Missing} failures={Failures} laneMs={LaneMs} " +
+                    "laneRate={StatRate}stat/s",
+                    provider.Host, IsPreferred(provider), probe?.Found ?? 0, probe?.Received ?? 0,
                     snapshot.Batches, snapshot.Attempted, snapshot.Received, snapshot.Found, snapshot.Missing,
                     snapshot.Failures, snapshot.ElapsedMs, rate);
-                Owner.RecordHealthProviderStat(probe, snapshot, rate, IsPreferred(probe.Provider));
+                Owner.RecordHealthProviderStat(provider, probe, snapshot, rate, IsPreferred(provider));
             }
         }
     }
 
     private void RecordHealthProviderStat(
-        BulkStatProbe probe,
+        MultiConnectionNntpClient provider,
+        BulkStatProbe? probe,
         BulkStatAttemptSnapshot snapshot,
         long rate,
         bool preferred)
     {
         usageTracker.RecordHealthProviderStat(new HealthProviderStat(
-            probe.Provider.Id,
-            probe.Provider.Host,
+            provider.Id,
+            provider.Host,
             preferred,
-            probe.Found,
-            probe.Received,
+            probe?.Found ?? 0,
+            probe?.Received ?? 0,
             snapshot.Batches,
             snapshot.Attempted,
             snapshot.Received,
@@ -1467,10 +1490,11 @@ public class MultiProviderNntpClient(
             snapshot.Missing,
             snapshot.Failures,
             snapshot.ElapsedMs,
-            rate));
+            rate,
+            probe?.Status));
     }
 
-    private sealed class BulkStatAttemptStats
+    internal sealed class BulkStatAttemptStats
     {
         private long _attempted;
         private long _batches;
@@ -1480,7 +1504,13 @@ public class MultiProviderNntpClient(
         private long _missing;
         private long _received;
 
-        public void Record(int attempted, int received, int found, int missing, long elapsedMs, bool failed)
+        public void Record(
+            int attempted,
+            int received,
+            int found,
+            int missing,
+            long elapsedMs,
+            bool failed)
         {
             Interlocked.Increment(ref _batches);
             Interlocked.Add(ref _attempted, attempted);
@@ -1501,7 +1531,7 @@ public class MultiProviderNntpClient(
             Interlocked.Read(ref _elapsedMs));
     }
 
-    private readonly record struct BulkStatAttemptSnapshot(
+    internal readonly record struct BulkStatAttemptSnapshot(
         long Batches,
         long Attempted,
         long Received,

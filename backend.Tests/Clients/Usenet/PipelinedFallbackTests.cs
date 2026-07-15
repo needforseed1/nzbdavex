@@ -236,6 +236,38 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthSummaryIncludesUnprobedBackupThatRescuesAMiss()
+    {
+        static bool PrimaryCoverage(string segmentId) => segmentId != "segment-318";
+
+        var firstPrimary = new CoveragePipelineClient(PrimaryCoverage);
+        var secondPrimary = new CoveragePipelineClient(PrimaryCoverage);
+        var backup = new CoveragePipelineClient(_ => true);
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstPrimary, ProviderType.Pooled, "primary-1", 0, maxConnections: 8),
+            CreateProvider(secondPrimary, ProviderType.Pooled, "primary-2", 1, maxConnections: 8),
+            CreateProvider(backup, ProviderType.BackupOnly, "rescue", 2, maxConnections: 1),
+        ], tracker);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        using (tracker.BeginScope(queueId))
+            await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 12, progress: null, CancellationToken.None);
+
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(tracker.SnapshotHealthCheck(queueId));
+        var rescue = Assert.Single(snapshot.Providers, provider => provider.Host == "rescue");
+        Assert.Equal(segments.Length, snapshot.FoundArticles);
+        Assert.Equal(0, snapshot.MissingArticles);
+        Assert.False(rescue.Preferred);
+        Assert.Equal(0, rescue.ProbeReceived);
+        Assert.Equal(1, rescue.Attempted);
+        Assert.Equal(1, rescue.Found);
+        Assert.Equal(0, rescue.Missing);
+    }
+
+    [Fact]
     public async Task BulkHealthQualificationDoesNotWaitForStalledProbe()
     {
         var stalledClient = new CoveragePipelineClient(

@@ -123,6 +123,8 @@ public partial class GetWatchdogEntriesController(
         return new GetWatchdogEntriesResponse.HealthStatsDto
         {
             TotalArticles = snapshot.TotalArticles,
+            FoundArticles = snapshot.FoundArticles,
+            MissingArticles = snapshot.MissingArticles,
             Providers = snapshot.Providers.Select(stat =>
             {
                 providersById.TryGetValue(stat.ProviderId, out var configured);
@@ -134,6 +136,7 @@ public partial class GetWatchdogEntriesController(
                     Preferred = stat.Preferred,
                     ProbeFound = stat.ProbeFound,
                     ProbeReceived = stat.ProbeReceived,
+                    ProbeStatus = stat.ProbeStatus,
                     Batches = stat.Batches,
                     Attempted = stat.Attempted,
                     Received = stat.Received,

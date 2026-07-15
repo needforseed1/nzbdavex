@@ -58,6 +58,8 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
     public class HealthStatsDto
     {
         [JsonPropertyName("totalArticles")] public required int TotalArticles { get; init; }
+        [JsonPropertyName("foundArticles")] public int? FoundArticles { get; init; }
+        [JsonPropertyName("missingArticles")] public int? MissingArticles { get; init; }
         [JsonPropertyName("providers")] public required List<HealthProviderDto> Providers { get; init; }
     }
 
@@ -69,6 +71,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("preferred")] public required bool Preferred { get; init; }
         [JsonPropertyName("probeFound")] public required int ProbeFound { get; init; }
         [JsonPropertyName("probeReceived")] public required int ProbeReceived { get; init; }
+        [JsonPropertyName("probeStatus")] public string? ProbeStatus { get; init; }
         [JsonPropertyName("batches")] public required long Batches { get; init; }
         [JsonPropertyName("attempted")] public required long Attempted { get; init; }
         [JsonPropertyName("received")] public required long Received { get; init; }

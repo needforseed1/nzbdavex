@@ -17,6 +17,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     private readonly ConcurrentDictionary<Guid, long> _failoverSaves = new();
     private readonly ConcurrentDictionary<Guid, PrepUsageSnapshot> _prepStats = new();
     private readonly ConcurrentDictionary<Guid, int> _healthCheckTotals = new();
+    private readonly ConcurrentDictionary<Guid, HealthCheckOutcome> _healthCheckOutcomes = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, HealthProviderStat>> _healthStats = new();
 
     public IDisposable BeginScope(Guid queueItemId)
@@ -79,6 +80,16 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         var id = CurrentScope.Value;
         if (id is null) return;
         _healthCheckTotals[id.Value] = Math.Max(0, totalArticles);
+        _healthCheckOutcomes.TryRemove(id.Value, out _);
+    }
+
+    public void CompleteHealthCheck(int? foundArticles, int missingArticles)
+    {
+        var id = CurrentScope.Value;
+        if (id is null) return;
+        _healthCheckOutcomes[id.Value] = new HealthCheckOutcome(
+            foundArticles is null ? null : Math.Max(0, foundArticles.Value),
+            Math.Max(0, missingArticles));
     }
 
     public void RecordHealthProviderStat(HealthProviderStat stat)
@@ -95,7 +106,12 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         var providers = _healthStats.TryGetValue(scopeId, out var stats)
             ? stats.Values.OrderByDescending(x => x.Found).ThenBy(x => x.Host).ToArray()
             : [];
-        return new HealthCheckUsageSnapshot(totalArticles, providers);
+        var outcome = _healthCheckOutcomes.GetValueOrDefault(scopeId);
+        return new HealthCheckUsageSnapshot(
+            totalArticles,
+            providers,
+            outcome?.FoundArticles,
+            outcome?.MissingArticles);
     }
 
     public IReadOnlyDictionary<string, long> Snapshot(Guid queueItemId)
@@ -151,6 +167,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         _failoverSaves.TryRemove(queueItemId, out _);
         _prepStats.TryRemove(queueItemId, out _);
         _healthCheckTotals.TryRemove(queueItemId, out _);
+        _healthCheckOutcomes.TryRemove(queueItemId, out _);
         _healthStats.TryRemove(queueItemId, out _);
     }
 
@@ -158,6 +175,8 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     {
         public void Dispose() => onDispose();
     }
+
+    private sealed record HealthCheckOutcome(int? FoundArticles, int MissingArticles);
 }
 
 public sealed record PrepUsageSnapshot(
@@ -179,7 +198,9 @@ public sealed record PrepProviderStat(
 
 public sealed record HealthCheckUsageSnapshot(
     int TotalArticles,
-    IReadOnlyList<HealthProviderStat> Providers);
+    IReadOnlyList<HealthProviderStat> Providers,
+    int? FoundArticles = null,
+    int? MissingArticles = null);
 
 public sealed record HealthProviderStat(
     string ProviderId,
@@ -194,4 +215,5 @@ public sealed record HealthProviderStat(
     long Missing,
     long Failures,
     long WorkMs,
-    long Rate);
+    long Rate,
+    string? ProbeStatus = null);
