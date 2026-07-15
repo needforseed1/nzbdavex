@@ -72,6 +72,51 @@ public class QueueItemProcessorTests
         Assert.Equal(["segment-0", "segment-3", "segment-6", "segment-9"], selected);
     }
 
+    [Fact]
+    public async Task HealthStartsImmediatelyWhenWarmupAlreadyCompleted()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var healthStarted = false;
+
+        await QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
+            Task.CompletedTask,
+            warmupCancellation,
+            CancellationToken.None,
+            () =>
+            {
+                healthStarted = true;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(healthStarted);
+        Assert.False(warmupCancellation.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task StalledWarmupIsCancelledAtForegroundHandoff()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var warmup = Task.Delay(Timeout.InfiniteTimeSpan, warmupCancellation.Token);
+        var healthStarted = false;
+        var graceExpired = false;
+
+        await QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
+            warmup,
+            warmupCancellation,
+            CancellationToken.None,
+            () =>
+            {
+                healthStarted = true;
+                return Task.CompletedTask;
+            },
+            () => graceExpired = true,
+            TimeSpan.Zero);
+
+        Assert.True(graceExpired);
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.True(healthStarted);
+    }
+
     private static NzbFile NzbFile(string subject, int start, int count)
     {
         var file = new NzbFile { Subject = subject };

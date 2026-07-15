@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5](https://github.com/needforseed1/nzbdavex/compare/v1.3.4...v1.3.5) (2026-07-15)
+
+### Fixes
+
+* Health checks no longer wait indefinitely for speculative connection warmup to finish. Preparation retains its warmup head start, but foreground health work takes over after a bounded 250 ms handoff, removing the slow first run seen with cold multi-provider pools without reducing health lanes, sampled coverage, or article verification.
+* Added regression coverage for both an already-complete warmup and a stalled warmup cancelled at the foreground handoff.
+
 ## [1.3.4](https://github.com/needforseed1/nzbdavex/compare/v1.3.3...v1.3.4) (2026-07-15)
 
 This release substantially reduces cold-start preparation and health-check time on multi-provider installations while putting firm bounds around NNTP connection creation and cleanup.

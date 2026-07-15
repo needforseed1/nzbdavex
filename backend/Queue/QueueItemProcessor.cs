@@ -42,6 +42,7 @@ public class QueueItemProcessor(
 {
     private const int MaxProviderRetryAttempts = 20;
     private const int HealthPrimeSegmentCount = 16;
+    private static readonly TimeSpan HealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
     private int? _prepDurationMs;
     private int? _healthDurationMs;
 
@@ -148,8 +149,10 @@ public class QueueItemProcessor(
         var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
         var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
         var connectionWarmer = shouldCheckHealth ? usenetClient as IQueueConnectionWarmer : null;
+        using var healthConnectionWarmupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task healthConnectionWarmupTask = connectionWarmer is not null
-            ? PrewarmHealthConnectionsDuringPrepAsync(connectionWarmer, queueItem, ct)
+            ? PrewarmHealthConnectionsDuringPrepAsync(
+                connectionWarmer, queueItem, healthConnectionWarmupCts.Token)
             : Task.CompletedTask;
 
         // read the nzb document while dedicated health pools validate in parallel
@@ -331,11 +334,17 @@ public class QueueItemProcessor(
             healthTimer = Stopwatch.StartNew();
             var healthWorkTask = RunHealthCheckAfterWarmupAsync(
                 healthConnectionWarmupTask,
+                healthConnectionWarmupCts,
+                ct,
                 () => configManager.IsHealthPipeliningEnabled()
                     ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
                         healthPipelineLanes, deferredHealthProgress, healthCts.Token)
                     : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
-                        deferredHealthProgress, healthCts.Token));
+                        deferredHealthProgress, healthCts.Token),
+                () => Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health-warmup " +
+                    "handoff=grace-expired graceMs={GraceMs}",
+                    queueItem.Id, queueItem.JobName, HealthWarmupHandoffGrace.TotalMilliseconds));
             healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
         }
 
@@ -482,6 +491,7 @@ public class QueueItemProcessor(
         CancellationToken cancellationToken)
     {
         await prewarmTask.ConfigureAwait(false);
+        if (cancellationToken.IsCancellationRequested) return;
         var timer = Stopwatch.StartNew();
         Log.Information(
             "queue-stage nzo={NzoId} job={JobName} stage=health-prime start segments={Segments} depth={Depth}",
@@ -504,11 +514,38 @@ public class QueueItemProcessor(
         }
     }
 
-    private static async Task RunHealthCheckAfterWarmupAsync(
+    internal static async Task RunHealthCheckAfterWarmupAsync(
         Task warmupTask,
-        Func<Task> runHealthCheck)
+        CancellationTokenSource warmupCancellation,
+        CancellationToken operationCancellation,
+        Func<Task> runHealthCheck,
+        Action? onGraceExpired = null,
+        TimeSpan? handoffGrace = null)
     {
-        await warmupTask.ConfigureAwait(false);
+        if (!warmupTask.IsCompleted)
+        {
+            var grace = handoffGrace ?? HealthWarmupHandoffGrace;
+            var graceTask = Task.Delay(grace, operationCancellation);
+            if (await Task.WhenAny(warmupTask, graceTask).ConfigureAwait(false) != warmupTask)
+            {
+                onGraceExpired?.Invoke();
+                await warmupCancellation.CancelAsync().ConfigureAwait(false);
+            }
+        }
+
+        try
+        {
+            await warmupTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            warmupCancellation.IsCancellationRequested &&
+            !operationCancellation.IsCancellationRequested)
+        {
+            // Prep already produced useful capacity. Stop speculative warmup
+            // cleanly and hand the remaining growth to foreground health lanes.
+        }
+
+        operationCancellation.ThrowIfCancellationRequested();
         await runHealthCheck().ConfigureAwait(false);
     }
 
@@ -528,7 +565,7 @@ public class QueueItemProcessor(
             Log.Information(
                 "queue-stage nzo={NzoId} job={JobName} stage=primary-health-prewarm done ms={ElapsedMs}",
                 queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
-            if (primeSegmentIds.Count == 0) return;
+            if (primeSegmentIds.Count == 0 || cancellationToken.IsCancellationRequested) return;
 
             timer.Restart();
             Log.Information(
