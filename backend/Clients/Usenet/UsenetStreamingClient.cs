@@ -18,7 +18,6 @@ public class UsenetStreamingClient : WrappingNntpClient
     internal const bool HealthProviderPrewarmEnabled = true;
     internal const int ApplicationConnectionLimit = 512;
     internal const int ConcurrentConnectionAttemptLimit = 32;
-    private const int WarmConnectionsPerProvider = 16;
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan WarmConnectionRefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly ConnectionLifetimeBudget ConnectionBudget = new(
@@ -147,7 +146,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             ))
             .ToList();
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
-            cascadeEnabled: configManager.IsCascadeEnabled);
+            cascadeEnabled: configManager.IsCascadeEnabled,
+            warmValidationConcurrency: configManager.GetWarmValidationConcurrencyPerProvider);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient
@@ -193,8 +193,23 @@ public class UsenetStreamingClient : WrappingNntpClient
         if (providerType is ProviderType.HealthChecksOnly or ProviderType.BackupAndStats)
             return HealthProviderPrewarmEnabled ? maxConnections - maxConnections / 10 : 0;
 
+        // Primary providers serve prep, playback, and health checks. Keeping half
+        // their pool authenticated avoids a cold prep-to-STAT transition while
+        // leaving the remaining capacity available for demand-driven growth.
         return providerType == ProviderType.Pooled
-            ? Math.Min(maxConnections, WarmConnectionsPerProvider)
+            ? (maxConnections + 1) / 2
+            : 0;
+    }
+
+    internal static int GetHealthCheckWarmConnectionTarget(
+        ProviderType providerType,
+        int maxConnections)
+    {
+        if (maxConnections <= 0) return 0;
+        return providerType is ProviderType.Pooled
+            or ProviderType.BackupAndStats
+            or ProviderType.HealthChecksOnly
+            ? maxConnections - maxConnections / 10
             : 0;
     }
 

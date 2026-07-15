@@ -10,7 +10,7 @@ public static class SettingsRegistry
       "api.ensure-importable-video":"true","api.ensure-article-existence-categories":"","api.ignore-history-limit":"true",
       "api.download-file-blocklist":"*.nfo, *.par2, *.sfv, *sample.mkv","api.duplicate-nzb-behavior":"increment",
       "api.import-strategy":"symlinks","api.completed-downloads-dir":"/data/completed-downloads","api.user-agent":"","api.search-user-agent":"",
-      "usenet.providers":"","usenet.max-download-connections":"15","usenet.max-queue-connections":"","usenet.streaming-priority":"80",
+      "usenet.providers":"","usenet.max-download-connections":"15","usenet.max-queue-connections":"","usenet.warm-validation-concurrency":"","usenet.streaming-priority":"80",
       "usenet.article-buffer-size":"40","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
       "usenet.segment-cache.max-gb":"10","usenet.pipelining.playback.enabled":"false","usenet.pipelining.health.enabled":"true",
       "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64",
@@ -59,6 +59,7 @@ public static class SettingsRegistry
     {
         ["usenet.max-download-connections"] = (1, int.MaxValue),
         ["usenet.max-queue-connections"] = (1, int.MaxValue),
+        ["usenet.warm-validation-concurrency"] = (1, 256),
         ["usenet.streaming-priority"] = (0, 100),
         ["usenet.article-buffer-size"] = (1, int.MaxValue),
         ["usenet.segment-cache.max-gb"] = (1, long.MaxValue / (1024L * 1024L * 1024L)),

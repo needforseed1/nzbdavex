@@ -286,6 +286,23 @@ internal sealed class DrainingNntpClient : NntpClient, IQueueConnectionWarmer
             ? warmer.PrewarmHealthCheckAsync(cancellationToken)
             : Task.CompletedTask);
 
+    public Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken) =>
+        UseAsync(client => client is IQueueConnectionWarmer warmer
+            ? warmer.PrewarmPrimaryHealthCheckAsync(cancellationToken)
+            : Task.CompletedTask);
+
+    public Task PrimeHealthCheckAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken) =>
+        UseAsync(client => client is IQueueConnectionWarmer warmer
+            ? warmer.PrimeHealthCheckAsync(segmentIds, depth, cancellationToken)
+            : Task.CompletedTask);
+
+    public Task PrimePrimaryHealthCheckAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken) =>
+        UseAsync(client => client is IQueueConnectionWarmer warmer
+            ? warmer.PrimePrimaryHealthCheckAsync(segmentIds, depth, cancellationToken)
+            : Task.CompletedTask);
+
     public override void Dispose()
     {
         INntpClient? dispose = null;

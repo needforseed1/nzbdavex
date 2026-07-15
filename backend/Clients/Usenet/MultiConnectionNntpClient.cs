@@ -69,6 +69,38 @@ public class MultiConnectionNntpClient(
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 
+    public Task RefreshWarmConnectionsAsync(
+        int count, int maxConcurrency, CancellationToken cancellationToken) =>
+        connectionPool.RefreshWarmConnectionsAsync(count, maxConcurrency, cancellationToken);
+
+    public Task PrimeHealthConnectionsAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int count,
+        int maxConcurrency,
+        CancellationToken cancellationToken) =>
+        connectionPool.PrimeWarmConnectionsAsync(
+            count,
+            maxConcurrency,
+            (connection, token) => PrimeStatConnectionAsync(connection, segmentIds, depth, token),
+            cancellationToken);
+
+    private static async ValueTask PrimeStatConnectionAsync(
+        INntpClient connection,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        var received = 0;
+        await foreach (var _ in connection.StatsPipelinedAsync(segmentIds, depth, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+            received++;
+
+        if (received != segmentIds.Count)
+            throw new IOException(
+                $"Health connection primer ended after {received} of {segmentIds.Count} STAT responses.");
+    }
+
     internal IDisposable SuspendPrewarming(int retainedIdleConnections, out int closedConnections) =>
         connectionPool.SuspendPrewarming(retainedIdleConnections, out closedConnections);
 

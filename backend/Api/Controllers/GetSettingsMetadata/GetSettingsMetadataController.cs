@@ -15,7 +15,8 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
     [
         "general.base-url", "api.key", "api.ensure-article-existence-categories",
         "api.download-file-blocklist", "api.nzb-backup-location", "usenet.providers",
-        "usenet.max-queue-connections", "rclone.host", "rclone.user", "rclone.pass",
+        "usenet.max-queue-connections", "usenet.warm-validation-concurrency",
+        "rclone.host", "rclone.user", "rclone.pass",
         "media.library-dir", "search.exclude-patterns", "watchtower.profile-token",
     ];
 

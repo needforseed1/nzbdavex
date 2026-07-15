@@ -248,6 +248,37 @@ public class ConfigManager
         return Math.Clamp(value, 1, pool);
     }
 
+    public int GetWarmValidationConcurrencyPerProvider()
+    {
+        var configured = StringUtil.EmptyToNull(
+            GetConfigValue("usenet.warm-validation-concurrency"));
+        if (configured != null
+            && int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            return Math.Clamp(value, 1, 256);
+        return CalculateAutomaticWarmValidationConcurrency(GetUsenetProviderConfig());
+    }
+
+    internal static int CalculateAutomaticWarmValidationConcurrency(UsenetProviderConfig config)
+    {
+        const int globalValidationTarget = 384;
+        const int minimumPerProvider = 16;
+        const int maximumPerProvider = 64;
+        var eligible = config.Providers
+            .Where(provider => provider.Type is ProviderType.Pooled
+                or ProviderType.BackupAndStats
+                or ProviderType.HealthChecksOnly)
+            .Where(provider => provider.MaxConnections > 0)
+            .ToArray();
+        if (eligible.Length == 0) return 32;
+
+        var totalHealthWarmTarget = eligible.Sum(provider =>
+            (long)provider.MaxConnections - provider.MaxConnections / 10);
+        var desiredConcurrentValidations = Math.Min(totalHealthWarmTarget, globalValidationTarget);
+        var perProvider = (int)Math.Ceiling(
+            desiredConcurrentValidations / (double)eligible.Length);
+        return Math.Clamp(perProvider, minimumPerProvider, maximumPerProvider);
+    }
+
     public bool IsPlaybackPipeliningEnabled()
     {
         return GetBoolean("usenet.pipelining.playback.enabled", false);

@@ -24,11 +24,13 @@ public class MultiProviderNntpClient(
     MetricsWriter? metricsWriter = null,
     ProviderBytesTracker? bytesTracker = null,
     Func<bool>? cascadeEnabled = null,
-    int applicationConnectionLimit = UsenetStreamingClient.ApplicationConnectionLimit
+    int applicationConnectionLimit = UsenetStreamingClient.ApplicationConnectionLimit,
+    Func<int>? warmValidationConcurrency = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
+    private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
     private const int HealthReclamationIdleFloor = 4;
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
@@ -66,6 +68,7 @@ public class MultiProviderNntpClient(
     private int _prepSpreadCursor;
     private int TotalLiveConnections => providers.Sum(provider => provider.LiveConnections);
     private int ApplicationConnectionLimit => applicationConnectionLimit;
+    private int WarmValidationConcurrency => Math.Clamp(warmValidationConcurrency?.Invoke() ?? 32, 1, 256);
 
     public async Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken)
     {
@@ -115,6 +118,7 @@ public class MultiProviderNntpClient(
 
     public async Task PrewarmHealthCheckAsync(CancellationToken cancellationToken)
     {
+        var validationConcurrency = WarmValidationConcurrency;
         // Pool providers are already warmed by queue prewarm and then exercised by
         // BODY/ARTICLE prep. Health-only and backup+STAT providers otherwise sit
         // outside that path, so establish the same bounded warm floor used at
@@ -135,9 +139,14 @@ public class MultiProviderNntpClient(
             try
             {
                 await provider.PrewarmAsync(target, cancellationToken).ConfigureAwait(false);
+                var refreshCount = Math.Min(target, provider.IdleConnections);
+                await provider.RefreshWarmConnectionsAsync(
+                        refreshCount, validationConcurrency, cancellationToken)
+                    .ConfigureAwait(false);
                 Log.Debug(
-                    "Health prewarm provider={Provider} target={Target} live={Live} idle={Idle}",
-                    provider.Host, target,
+                    "Health prewarm provider={Provider} target={Target} refreshed={Refreshed} " +
+                    "validationConcurrency={ValidationConcurrency} live={Live} idle={Idle}",
+                    provider.Host, target, refreshCount, validationConcurrency,
                     provider.LiveConnections, provider.IdleConnections);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -148,6 +157,131 @@ public class MultiProviderNntpClient(
             {
                 Log.Debug(e, "Health prewarm failed for provider={Provider} target={Target}",
                     provider.Host, target);
+            }
+        })).ConfigureAwait(false);
+    }
+
+    public async Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken)
+    {
+        var validationConcurrency = WarmValidationConcurrency;
+        // First-segment prep intentionally reads only the metadata prefix of each
+        // article. Those partially consumed BODY connections are discarded to keep
+        // the NNTP command stream synchronized, so a Primary pool can be cold at the
+        // prep-to-STAT boundary even when queue prewarm filled it beforehand.
+        // Refill opportunistically after that boundary. The pool's speculative
+        // creation path never queues ahead of foreground playback or health work.
+        var eligible = providers
+            .Where(x => x.ProviderType == ProviderType.Pooled)
+            .Where(x => !x.IsTripped)
+            .Where(x => !IsOverLimit(x))
+            .ToList();
+
+        await Task.WhenAll(eligible.Select(async provider =>
+        {
+            var target = UsenetStreamingClient.GetHealthCheckWarmConnectionTarget(
+                provider.ProviderType, provider.MaxConnections);
+            try
+            {
+                await provider.PrewarmAsync(target, cancellationToken).ConfigureAwait(false);
+                var refreshCount = Math.Min(target, provider.IdleConnections);
+                await provider.RefreshWarmConnectionsAsync(
+                        refreshCount, validationConcurrency, cancellationToken)
+                    .ConfigureAwait(false);
+                Log.Debug(
+                    "Primary health prewarm provider={Provider} target={Target} refreshed={Refreshed} " +
+                    "validationConcurrency={ValidationConcurrency} live={Live} idle={Idle}",
+                    provider.Host, target, refreshCount, validationConcurrency,
+                    provider.LiveConnections, provider.IdleConnections);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                Log.Debug(e, "Primary health prewarm failed for provider={Provider} target={Target}",
+                    provider.Host, target);
+            }
+        })).ConfigureAwait(false);
+    }
+
+    public Task PrimeHealthCheckAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        CancellationToken cancellationToken) =>
+        PrimeHealthProvidersAsync(
+            providers.Where(provider => provider.ProviderType is
+                ProviderType.HealthChecksOnly or ProviderType.BackupAndStats),
+            segmentIds,
+            depth,
+            "dedicated",
+            cancellationToken);
+
+    public Task PrimePrimaryHealthCheckAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        CancellationToken cancellationToken) =>
+        PrimeHealthProvidersAsync(
+            providers.Where(provider => provider.ProviderType == ProviderType.Pooled),
+            segmentIds,
+            depth,
+            "primary",
+            cancellationToken);
+
+    private async Task PrimeHealthProvidersAsync(
+        IEnumerable<MultiConnectionNntpClient> candidates,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        if (segmentIds.Count == 0) return;
+        var concurrency = WarmValidationConcurrency;
+        var effectiveDepth = Math.Clamp(depth, 1, segmentIds.Count);
+        var eligible = candidates
+            .Where(provider => !provider.IsTripped)
+            .Where(provider => !IsOverLimit(provider))
+            .ToArray();
+
+        await Task.WhenAll(eligible.Select(async provider =>
+        {
+            // Keep priming to one bounded wave. Auto touches up to 32 sockets;
+            // an explicit higher setting lets advanced users exercise a larger
+            // already-connected pool without adding sockets or health lanes.
+            var connectionCount = Math.Min(provider.IdleConnections, concurrency);
+            if (connectionCount == 0) return;
+            var timer = Stopwatch.StartNew();
+            using var primeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            primeCts.CancelAfter(HealthConnectionPrimeTimeout);
+            try
+            {
+                await provider.PrimeHealthConnectionsAsync(
+                        segmentIds, effectiveDepth, connectionCount, concurrency, primeCts.Token)
+                    .ConfigureAwait(false);
+                Log.Debug(
+                    "Health STAT prime phase={Phase} provider={Provider} connections={Connections} " +
+                    "depth={Depth} commands={Commands} ms={ElapsedMs}",
+                    phase, provider.Host, connectionCount, effectiveDepth,
+                    connectionCount * segmentIds.Count, timer.ElapsedMilliseconds);
+            }
+            catch (OperationCanceledException) when (
+                !cancellationToken.IsCancellationRequested && primeCts.IsCancellationRequested)
+            {
+                Log.Debug(
+                    "Health STAT prime timed out phase={Phase} provider={Provider} " +
+                    "connections={Connections} depth={Depth} ms={ElapsedMs}",
+                    phase, provider.Host, connectionCount, effectiveDepth, timer.ElapsedMilliseconds);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                Log.Debug(e,
+                    "Health STAT prime failed phase={Phase} provider={Provider} " +
+                    "connections={Connections} depth={Depth} ms={ElapsedMs}",
+                    phase, provider.Host, connectionCount, effectiveDepth, timer.ElapsedMilliseconds);
             }
         })).ConfigureAwait(false);
     }

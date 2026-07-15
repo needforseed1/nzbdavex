@@ -100,6 +100,23 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient, IQueueCo
             ? warmer.PrewarmHealthCheckAsync(cancellationToken)
             : Task.CompletedTask;
 
+    public Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken) =>
+        _usenetClient is IQueueConnectionWarmer warmer
+            ? warmer.PrewarmPrimaryHealthCheckAsync(cancellationToken)
+            : Task.CompletedTask;
+
+    public Task PrimeHealthCheckAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken) =>
+        _usenetClient is IQueueConnectionWarmer warmer
+            ? warmer.PrimeHealthCheckAsync(segmentIds, depth, cancellationToken)
+            : Task.CompletedTask;
+
+    public Task PrimePrimaryHealthCheckAsync(
+        IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken) =>
+        _usenetClient is IQueueConnectionWarmer warmer
+            ? warmer.PrimePrimaryHealthCheckAsync(segmentIds, depth, cancellationToken)
+            : Task.CompletedTask;
+
     protected void ReplaceUnderlyingClient(INntpClient usenetClient)
     {
         var old = _usenetClient;

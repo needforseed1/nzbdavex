@@ -22,6 +22,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 {
     private const int WarmValidationBatchSize = 4;
     private const int ConcurrentConnectionCreationLimit = 16;
+    private const int DefaultRapidWarmValidationConcurrencyLimit = 32;
     private static readonly TimeSpan UnderfilledWarmRetryInterval = TimeSpan.FromSeconds(2);
 
     /* -------------------------------- configuration -------------------------------- */
@@ -30,6 +31,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public int LiveConnections => _live;
     public int IdleConnections => _idleConnections.Count;
     public int ActiveConnections => _live - _idleConnections.Count;
+    public int WarmConnections => GetWarmConnectionCount();
     public int MaxConnections => _maxConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
     public bool CapacityUnavailable => Volatile.Read(ref _capacityUnavailable) == 1;
@@ -70,6 +72,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private int _capacityUnavailable;
     private int _disposed; // 0 == false, 1 == true
     private int _activeOperations;
+    private int _lastReportedWarmConnections;
     private long _nextPrewarmSuspensionId;
 
     /* ------------------------------------------------------------------------------ */
@@ -126,14 +129,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken = default
     )
     {
-        return await GetConnectionLockAsync(priority, cancellationToken, false).ConfigureAwait(false);
+        return await GetConnectionLockAsync(priority, cancellationToken, false, false).ConfigureAwait(false);
     }
 
     private async Task<ConnectionLock<T>> GetConnectionLockCoreAsync
     (
         SemaphorePriority priority,
         CancellationToken cancellationToken,
-        bool forceIdleValidation
+        bool forceIdleValidation,
+        bool oldestFirst
     )
     {
         // Make caller cancellation also cancel the wait on the gate.
@@ -157,7 +161,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             while (true)
             {
                 // Try to reuse an existing idle connection.
-                while (!replaceDiscardedConnection && TryTakeIdle(out var item))
+                while (!replaceDiscardedConnection && TryTakeIdle(oldestFirst, out var item))
                 {
                     // A borrowed idle socket is active while it is being validated.
                     // Publish that transition before awaiting provider I/O.
@@ -227,7 +231,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     _creationGate.Release();
                     ReleaseGateIfOpen();
                     returnGateOnFailure = false;
-                    return await GetConnectionLockCoreAsync(priority, cancellationToken, forceIdleValidation)
+                    return await GetConnectionLockCoreAsync(
+                            priority, cancellationToken, forceIdleValidation, oldestFirst)
                         .ConfigureAwait(false);
                 }
 
@@ -354,13 +359,47 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private void TriggerConnectionPoolChangedEvent()
     {
+        int live;
+        int idle;
+        int warm;
+        int effectiveMax;
+        lock (_idleLock)
+        {
+            live = _live;
+            idle = _idleConnections.Count;
+            warm = GetWarmConnectionCountUnsafe(Environment.TickCount64, live, idle);
+            effectiveMax = _effectiveMaxConnections;
+        }
+        Volatile.Write(ref _lastReportedWarmConnections, warm);
         OnConnectionPoolChanged?.Invoke(this, new ConnectionPoolStats.ConnectionPoolChangedEventArgs(
-            _live,
-            _idleConnections.Count,
+            live,
+            idle,
             _maxConnections,
             _pendingAcquisitions,
-            _effectiveMaxConnections
+            effectiveMax,
+            warm
         ));
+    }
+
+    private int GetWarmConnectionCount()
+    {
+        lock (_idleLock)
+        {
+            var live = _live;
+            var idle = _idleConnections.Count;
+            return GetWarmConnectionCountUnsafe(Environment.TickCount64, live, idle);
+        }
+    }
+
+    private int GetWarmConnectionCountUnsafe(long nowMillis, int live, int idle)
+    {
+        // Connections currently doing work are usable by definition. An idle
+        // connection is warm only until it reaches the same age at which the
+        // next borrower would have to validate it before use.
+        var active = Math.Max(0, live - idle);
+        var freshIdle = _idleConnections.Count(item =>
+            !item.IsExpired(_validateAfterIdle, nowMillis));
+        return Math.Min(live, active + freshIdle);
     }
 
     private void ReduceConnectionCapacity(Exception exception)
@@ -597,10 +636,32 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             _capacityUnavailableException);
     }
 
-    private bool TryTakeIdle(out Pooled item)
+    private bool TryTakeIdle(bool oldestFirst, out Pooled item)
     {
         lock (_idleLock)
-            return _idleConnections.TryPop(out item);
+        {
+            if (!oldestFirst) return _idleConnections.TryPop(out item);
+            if (!_idleConnections.TryPop(out item)) return false;
+
+            var newer = new List<Pooled>();
+            while (_idleConnections.TryPop(out var candidate))
+            {
+                // Items lower in the LIFO stack were returned earlier. Prefer
+                // the lower item when timestamps share the same millisecond.
+                if (candidate.LastTouchedMillis <= item.LastTouchedMillis)
+                {
+                    newer.Add(item);
+                    item = candidate;
+                }
+                else
+                    newer.Add(candidate);
+            }
+
+            // Restore the remaining sockets in their original LIFO order.
+            for (var i = newer.Count - 1; i >= 0; i--)
+                _idleConnections.Push(newer[i]);
+            return true;
+        }
     }
 
     private async Task<bool> WaitForCreationSlotOrIdleAsync(CancellationToken cancellationToken)
@@ -848,15 +909,56 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public async Task RefreshWarmConnectionsAsync(CancellationToken cancellationToken = default)
     {
         if (_minimumIdleConnections == 0 || _validator == null) return;
+        var count = Math.Min(
+            WarmValidationBatchSize,
+            Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
+        await RefreshWarmConnectionsAsync(count, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task RefreshWarmConnectionsAsync(
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        await RefreshWarmConnectionsAsync(
+            count, DefaultRapidWarmValidationConcurrencyLimit, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task RefreshWarmConnectionsAsync(
+        int count,
+        int maxConcurrency,
+        CancellationToken cancellationToken = default)
+    {
+        if (_minimumIdleConnections == 0 || _validator == null || count <= 0) return;
         if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
         using (maintenanceLease)
         {
-            await RefreshWarmConnectionsWithLeaseAsync(cancellationToken, maintenanceLease.Token)
+            await RefreshWarmConnectionsWithLeaseAsync(
+                    count, maxConcurrency, null, cancellationToken, maintenanceLease.Token)
+                .ConfigureAwait(false);
+        }
+    }
+
+    public async Task PrimeWarmConnectionsAsync(
+        int count,
+        int maxConcurrency,
+        Func<T, CancellationToken, ValueTask> primer,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(primer);
+        if (count <= 0) return;
+        if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
+        using (maintenanceLease)
+        {
+            await RefreshWarmConnectionsWithLeaseAsync(
+                    count, maxConcurrency, primer, cancellationToken, maintenanceLease.Token)
                 .ConfigureAwait(false);
         }
     }
 
     private async Task RefreshWarmConnectionsWithLeaseAsync(
+        int requestedCount,
+        int maxConcurrency,
+        Func<T, CancellationToken, ValueTask>? primer,
         CancellationToken cancellationToken,
         CancellationToken maintenanceToken)
     {
@@ -871,9 +973,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 // Keep maintenance cheap and staggered. Real borrowers still
                 // validate any connection that exceeded validateAfterIdle.
                 var count = Math.Min(
-                    WarmValidationBatchSize,
-                    Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
-                await AcquireIdleConnectionsAsync(count, true, linked.Token).ConfigureAwait(false);
+                    requestedCount,
+                    Volatile.Read(ref _effectiveMaxConnections));
+                await AcquireIdleConnectionsAsync(
+                    count,
+                    forceIdleValidation: primer is null,
+                    oldestFirst: true,
+                    maxConcurrency: maxConcurrency,
+                    primer: primer,
+                    cancellationToken: linked.Token).ConfigureAwait(false);
             }
             finally
             {
@@ -896,25 +1004,41 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private async Task AcquireIdleConnectionsAsync(
         int count,
         bool forceIdleValidation,
+        bool oldestFirst,
+        int maxConcurrency,
+        Func<T, CancellationToken, ValueTask>? primer,
         CancellationToken cancellationToken)
     {
         count = Math.Clamp(count, 0, _maxConnections);
         if (count == 0) return;
 
-        var acquisitions = Enumerable.Range(0, count)
-            .Select(_ => GetConnectionLockAsync(
-                SemaphorePriority.Low, cancellationToken, forceIdleValidation))
-            .ToArray();
-        try
+        var remaining = count;
+        var workerCount = Math.Min(count, Math.Clamp(maxConcurrency, 1, 256));
+        var workers = Enumerable.Range(0, workerCount).Select(async _ =>
         {
-            await Task.WhenAll(acquisitions).ConfigureAwait(false);
-        }
-        finally
-        {
-            foreach (var acquisition in acquisitions)
-                if (acquisition.IsCompletedSuccessfully)
-                    acquisition.Result.Dispose();
-        }
+            while (Interlocked.Decrement(ref remaining) >= 0)
+            {
+                using var connection = await GetConnectionLockAsync(
+                        SemaphorePriority.Low,
+                        cancellationToken,
+                        forceIdleValidation,
+                        oldestFirst)
+                    .ConfigureAwait(false);
+                if (primer is null) continue;
+                try
+                {
+                    await primer(connection.Connection, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // A cancelled or failed pipeline may leave unread replies on
+                    // the command stream. Never return that socket to the pool.
+                    connection.Replace();
+                    throw;
+                }
+            }
+        });
+        await Task.WhenAll(workers).ConfigureAwait(false);
     }
 
     private async Task<bool> CreatePrewarmedConnectionAsync(int target, CancellationToken cancellationToken)
@@ -991,14 +1115,16 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private async Task<ConnectionLock<T>> GetConnectionLockAsync(
         SemaphorePriority priority,
         CancellationToken cancellationToken,
-        bool forceIdleValidation)
+        bool forceIdleValidation,
+        bool oldestFirst)
     {
         BeginOperation();
         Interlocked.Increment(ref _pendingAcquisitions);
         TriggerConnectionPoolChangedEvent();
         try
         {
-            return await GetConnectionLockCoreAsync(priority, cancellationToken, forceIdleValidation)
+            return await GetConnectionLockCoreAsync(
+                    priority, cancellationToken, forceIdleValidation, oldestFirst)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
@@ -1109,7 +1235,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             isAnyConnectionFreed = true;
         }
 
-        if (isAnyConnectionFreed)
+        if (isAnyConnectionFreed ||
+            WarmConnections != Volatile.Read(ref _lastReportedWarmConnections))
             TriggerConnectionPoolChangedEvent();
     }
 

@@ -1,6 +1,7 @@
 using NzbWebDAV.Config;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Models;
 
 namespace NzbWebDAV.Tests.Config;
 
@@ -36,6 +37,18 @@ public class ConfigManagerTests
         Assert.Equal(1, config.GetArticleBufferSize());
         Assert.True(config.GetSegmentCacheMaxBytes() > 0);
         Assert.Equal(100, config.GetStreamingPriority().HighPriorityOdds);
+    }
+
+    [Fact]
+    public void WarmValidationConcurrencyScalesWithProviderCountAndAllowsOverride()
+    {
+        Assert.Equal(64, ConfigManager.CalculateAutomaticWarmValidationConcurrency(
+            ProviderConfig(providerCount: 4, connectionsPerProvider: 100)));
+        Assert.Equal(32, ConfigManager.CalculateAutomaticWarmValidationConcurrency(
+            ProviderConfig(providerCount: 12, connectionsPerProvider: 100)));
+
+        var overridden = WithValues(("usenet.warm-validation-concurrency", "256"));
+        Assert.Equal(256, overridden.GetWarmValidationConcurrencyPerProvider());
     }
 
     [Fact]
@@ -191,5 +204,24 @@ public class ConfigManagerTests
             ConfigValue = x.Value,
         }).ToList());
         return config;
+    }
+
+    private static UsenetProviderConfig ProviderConfig(int providerCount, int connectionsPerProvider)
+    {
+        return new UsenetProviderConfig
+        {
+            Providers = Enumerable.Range(0, providerCount).Select(index =>
+                new UsenetProviderConfig.ConnectionDetails
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Type = ProviderType.Pooled,
+                    Host = $"news-{index}.example",
+                    Port = 563,
+                    UseSsl = true,
+                    User = "user",
+                    Pass = "pass",
+                    MaxConnections = connectionsPerProvider,
+                }).ToList(),
+        };
     }
 }

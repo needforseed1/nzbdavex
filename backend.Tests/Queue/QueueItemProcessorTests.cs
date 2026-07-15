@@ -1,4 +1,5 @@
 using NzbWebDAV.Queue;
+using NzbWebDAV.Models.Nzb;
 
 namespace NzbWebDAV.Tests.Queue;
 
@@ -55,5 +56,27 @@ public class QueueItemProcessorTests
         Assert.True(QueueItemProcessor.ShouldProcessNonArchiveFile(
             "release.vol000-001.par2",
             ["*.nfo", "*.sfv"]));
+    }
+
+    [Fact]
+    public void HealthPrimerSamplesAcrossTheWholeNzbWithoutMaterializingEveryArticle()
+    {
+        var files = new[]
+        {
+            NzbFile("first", 0, 5),
+            NzbFile("second", 5, 5),
+        };
+
+        var selected = QueueItemProcessor.SelectHealthPrimeSegmentIds(files, 4);
+
+        Assert.Equal(["segment-0", "segment-3", "segment-6", "segment-9"], selected);
+    }
+
+    private static NzbFile NzbFile(string subject, int start, int count)
+    {
+        var file = new NzbFile { Subject = subject };
+        file.Segments.AddRange(Enumerable.Range(start, count).Select(index =>
+            new NzbSegment { Bytes = 1, MessageId = $"segment-{index}" }));
+        return file;
     }
 }

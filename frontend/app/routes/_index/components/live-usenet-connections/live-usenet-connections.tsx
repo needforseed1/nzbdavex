@@ -8,11 +8,12 @@ const usenetConnectionsTopic = {'cxs': 'state'};
 export function LiveUsenetConnections() {
     const navigate = useNavigate();
     const [connections, setConnections] = useState<string | null>(null);
-    const parts = (connections || "0|0|0|0|1|0").split("|");
-    const [_0, _1, _2, live, max, idle] = parts.map(x => Number(x));
+    const parts = (connections || "0|0|0|0|1|0|0").split("|");
+    const [_0, _1, _2, _live, max, idle, warm] = parts.map(x => Number(x));
+    const live = Number.isFinite(_live) ? _live : 0;
     const active = live - idle;
     const activePercent = 100 * (active / max);
-    const livePercent = 100 * (live / max);
+    const warmPercent = 100 * (warm / max);
 
     useEffect(() => {
         let ws: WebSocket;
@@ -35,16 +36,14 @@ export function LiveUsenetConnections() {
 
     return (
         <div className={styles.container}>
-            <div className={styles.title}>
-                Usenet Connections
-            </div>
+            <div className={styles.title}>Usenet Connections</div>
             <div className={styles.bar}>
                 <div className={styles.max} />
-                <div className={styles.live} style={{ width: `${livePercent}%` }} />
+                <div className={styles.warm} style={{ width: `${warmPercent}%` }} />
                 <div className={styles.active} style={{ width: `${activePercent}%` }} />
             </div>
             <div className={styles.caption}>
-                {connections && `${live} connected / ${max} max`}
+                {connections && `${warm} warm / ${max} max`}
                 {!connections && `Loading...`}
             </div>
             {connections &&

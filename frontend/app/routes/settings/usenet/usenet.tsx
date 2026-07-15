@@ -681,7 +681,8 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
             <ConcurrencyAndSchedulingSettings
                 config={config}
                 setNewConfig={setNewConfig}
-                pooledConnections={pooledConnections} />
+                pooledConnections={pooledConnections}
+                providers={providerConfig.Providers} />
 
             <StreamingAndCacheSettings config={config} setNewConfig={setNewConfig} />
 
@@ -840,7 +841,10 @@ function ConcurrencyAndSchedulingSettings({
     config,
     setNewConfig,
     pooledConnections,
-}: PerformanceSettingsProps & { pooledConnections: number }) {
+    providers,
+}: PerformanceSettingsProps & { pooledConnections: number; providers: ConnectionDetails[] }) {
+    const automaticWarmValidationConcurrency = getAutomaticWarmValidationConcurrency(providers);
+    const warmValidationConcurrency = config["usenet.warm-validation-concurrency"] ?? "";
     return (
         <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
             <div className={styles.sectionHeader}>
@@ -859,7 +863,7 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.max-download-connections"]}
                     onChange={e => setNewConfig({ ...config, "usenet.max-download-connections": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Maximum NNTP connections reserved for active playback. Provider capacity remains the physical ceiling.
+                    Maximum concurrent NNTP connections used by playback. Playback is prioritized over prep and health checks; provider capacity remains the physical ceiling.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -875,7 +879,7 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.max-queue-connections"]}
                     onChange={e => setNewConfig({ ...config, "usenet.max-queue-connections": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Leave blank for Automatic, which uses pooled Primary capacity. Enter a lower limit to reserve connections for simultaneous playback.
+                    Leave blank for Automatic, which uses pooled Primary capacity. Enter a lower limit to leave more pooled capacity available for simultaneous playback.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -892,6 +896,27 @@ function ConcurrencyAndSchedulingSettings({
                     onChange={e => setNewConfig({ ...config, "usenet.streaming-priority": e.target.value })} />
                 <div className={styles["form-hint"]}>
                     Controls how strongly playback is favored when it competes with queue preparation for NNTP capacity.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="warm-validation-concurrency-input" className={styles["form-label"]}>
+                    Warm validation concurrency per provider
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="warm-validation-concurrency-input"
+                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(warmValidationConcurrency, 1, 256) ? styles.error : ""}`}
+                    placeholder={`Automatic (${automaticWarmValidationConcurrency})`}
+                    value={warmValidationConcurrency}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "usenet.warm-validation-concurrency": e.target.value,
+                    })} />
+                <div className={styles["form-hint"]}>
+                    Leave blank for Automatic ({automaticWarmValidationConcurrency} with the current providers).
+                    Controls how many already-connected sockets per provider are revalidated and STAT-primed when an NZB starts (1–256).
+                    It does not create connections or change playback and health-check lane limits.
                 </div>
             </div>
         </div>
@@ -1527,11 +1552,15 @@ function ProviderModal({
                                 <option value="prep">Prep only</option>
                                 <option value="backup-health">Backup + health checks</option>
                                 <option value="backup">Backup</option>
-                                <option value="health">Health checks only</option>
+                                {role === "health" && (
+                                    <option value="health" disabled>Health checks only (legacy)</option>
+                                )}
                                 <option value="disabled">Disabled</option>
                             </select>
                             <div className={styles["form-hint"]}>
-                                Primary providers handle prep, playback, and health checks. Health-check traffic is shared across all eligible providers by measured speed and available capacity.
+                                {role === "health"
+                                    ? "Health checks only is a legacy role. Choose Backup + health checks to keep this provider active for health checks and missing-article recovery."
+                                    : "Primary providers handle prep, playback, and health checks. Health-check traffic is shared across all eligible providers by measured speed and available capacity."}
                             </div>
                         </div>
 
@@ -2126,6 +2155,8 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
         && isValidMaxDownloadConnections(config["usenet.max-download-connections"])
         && isValidMaxQueueConnections(
             config["usenet.max-queue-connections"], getTotalPooledConnections(config))
+        && isOptionalIntegerInRange(
+            config["usenet.warm-validation-concurrency"] ?? "", 1, 256)
         && isValidStreamingPriority(config["usenet.streaming-priority"])
         && isValidArticleBufferSize(config["usenet.article-buffer-size"])
         && segmentCacheValid
@@ -2168,6 +2199,20 @@ function getTotalPooledConnections(config: Record<string, string>): number {
     }
 }
 
+function getAutomaticWarmValidationConcurrency(providers: ConnectionDetails[]): number {
+    const eligible = providers.filter(provider =>
+        provider.MaxConnections > 0
+        && (provider.Type === ProviderType.Pooled
+            || provider.Type === ProviderType.BackupAndStats
+            || provider.Type === ProviderType.HealthChecksOnly));
+    if (eligible.length === 0) return 32;
+
+    const totalHealthWarmTarget = eligible.reduce((sum, provider) =>
+        sum + provider.MaxConnections - Math.floor(provider.MaxConnections / 10), 0);
+    const perProvider = Math.ceil(Math.min(totalHealthWarmTarget, 384) / eligible.length);
+    return Math.max(16, Math.min(64, perProvider));
+}
+
 function isValidStreamingPriority(value: string): boolean {
     if (value.trim() === "") return false;
     const num = Number(value);
@@ -2184,6 +2229,10 @@ function isIntegerInRange(value: string, min: number, max: number) {
         && num >= min
         && num <= max
         && value.trim() === num.toString();
+}
+
+function isOptionalIntegerInRange(value: string, min: number, max: number) {
+    return value.trim() === "" || isIntegerInRange(value, min, max);
 }
 
 export function isPositiveInteger(value: string) {

@@ -41,6 +41,7 @@ public class QueueItemProcessor(
 )
 {
     private const int MaxProviderRetryAttempts = 20;
+    private const int HealthPrimeSegmentCount = 16;
     private int? _prepDurationMs;
     private int? _healthDurationMs;
 
@@ -144,13 +145,16 @@ public class QueueItemProcessor(
             return;
         }
 
-        // read the nzb document
-        var nzb = await NzbDocument.LoadAsync(queueNzbStream).ConfigureAwait(false);
-        var nzbFiles = nzb.Files.Where(x => x.Segments.Count > 0).ToList();
         var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
         var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
-        if (shouldCheckHealth && usenetClient is IQueueConnectionWarmer connectionWarmer)
-            _ = PrewarmHealthConnectionsDuringPrepAsync(connectionWarmer, queueItem, ct);
+        var connectionWarmer = shouldCheckHealth ? usenetClient as IQueueConnectionWarmer : null;
+        Task healthConnectionWarmupTask = connectionWarmer is not null
+            ? PrewarmHealthConnectionsDuringPrepAsync(connectionWarmer, queueItem, ct)
+            : Task.CompletedTask;
+
+        // read the nzb document while dedicated health pools validate in parallel
+        var nzb = await NzbDocument.LoadAsync(queueNzbStream).ConfigureAwait(false);
+        var nzbFiles = nzb.Files.Where(x => x.Segments.Count > 0).ToList();
 
         // Look for a password in filename and nzb document
         // The file name's password takes priority, as an easy override
@@ -161,6 +165,19 @@ public class QueueItemProcessor(
         // https://github.com/nzbdav-dev/nzbdav/issues/101
         var articlesToPrecheck = nzbFiles.SelectMany(x => x.Segments).Select(x => x.MessageId);
         HealthCheckService.CheckCachedMissingSegmentIds(articlesToPrecheck);
+        var healthPrimeSegmentIds = shouldCheckHealth && configManager.IsHealthPipeliningEnabled()
+            ? SelectHealthPrimeSegmentIds(nzbFiles, HealthPrimeSegmentCount)
+            : [];
+        var healthPrimeDepth = Math.Min(
+            HealthPrimeSegmentCount, configManager.GetHealthPipeliningDepth());
+        if (connectionWarmer is not null && healthPrimeSegmentIds.Count > 0)
+            healthConnectionWarmupTask = PrimeHealthConnectionsDuringPrepAsync(
+                connectionWarmer,
+                healthConnectionWarmupTask,
+                healthPrimeSegmentIds,
+                healthPrimeDepth,
+                queueItem,
+                ct);
 
         // step 1 -- get name and size of each nzb file
         var stepTimer = Stopwatch.StartNew();
@@ -188,6 +205,15 @@ public class QueueItemProcessor(
                 firstSegmentsCompleted();
             }
         }
+        if (connectionWarmer is not null)
+            healthConnectionWarmupTask = Task.WhenAll(
+                healthConnectionWarmupTask,
+                PrewarmPrimaryHealthConnectionsAfterPrepAsync(
+                    connectionWarmer,
+                    healthPrimeSegmentIds,
+                    healthPrimeDepth,
+                    queueItem,
+                    ct));
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
         var usageAfterFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesAfterFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
@@ -303,11 +329,13 @@ public class QueueItemProcessor(
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
             healthTimer = Stopwatch.StartNew();
-            var healthWorkTask = configManager.IsHealthPipeliningEnabled()
-                ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
-                    healthPipelineLanes, deferredHealthProgress, healthCts.Token)
-                : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
-                    deferredHealthProgress, healthCts.Token);
+            var healthWorkTask = RunHealthCheckAfterWarmupAsync(
+                healthConnectionWarmupTask,
+                () => configManager.IsHealthPipeliningEnabled()
+                    ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
+                        healthPipelineLanes, deferredHealthProgress, healthCts.Token)
+                    : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
+                        deferredHealthProgress, healthCts.Token));
             healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
         }
 
@@ -443,6 +471,117 @@ public class QueueItemProcessor(
         {
             Log.Debug(e, "Health connection prewarm failed for {JobName}.", queueItem.JobName);
         }
+    }
+
+    private static async Task PrimeHealthConnectionsDuringPrepAsync(
+        IQueueConnectionWarmer connectionWarmer,
+        Task prewarmTask,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        QueueItem queueItem,
+        CancellationToken cancellationToken)
+    {
+        await prewarmTask.ConfigureAwait(false);
+        var timer = Stopwatch.StartNew();
+        Log.Information(
+            "queue-stage nzo={NzoId} job={JobName} stage=health-prime start segments={Segments} depth={Depth}",
+            queueItem.Id, queueItem.JobName, segmentIds.Count, depth);
+        try
+        {
+            await connectionWarmer.PrimeHealthCheckAsync(segmentIds, depth, cancellationToken)
+                .ConfigureAwait(false);
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health-prime done ms={ElapsedMs}",
+                queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log.Debug("Health connection prime cancelled for {JobName}.", queueItem.JobName);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Health connection prime failed for {JobName}.", queueItem.JobName);
+        }
+    }
+
+    private static async Task RunHealthCheckAfterWarmupAsync(
+        Task warmupTask,
+        Func<Task> runHealthCheck)
+    {
+        await warmupTask.ConfigureAwait(false);
+        await runHealthCheck().ConfigureAwait(false);
+    }
+
+    private static async Task PrewarmPrimaryHealthConnectionsAfterPrepAsync(
+        IQueueConnectionWarmer connectionWarmer,
+        IReadOnlyList<string> primeSegmentIds,
+        int primeDepth,
+        QueueItem queueItem,
+        CancellationToken cancellationToken)
+    {
+        var timer = Stopwatch.StartNew();
+        Log.Information("queue-stage nzo={NzoId} job={JobName} stage=primary-health-prewarm start",
+            queueItem.Id, queueItem.JobName);
+        try
+        {
+            await connectionWarmer.PrewarmPrimaryHealthCheckAsync(cancellationToken).ConfigureAwait(false);
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=primary-health-prewarm done ms={ElapsedMs}",
+                queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
+            if (primeSegmentIds.Count == 0) return;
+
+            timer.Restart();
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=primary-health-prime start " +
+                "segments={Segments} depth={Depth}",
+                queueItem.Id, queueItem.JobName, primeSegmentIds.Count, primeDepth);
+            await connectionWarmer.PrimePrimaryHealthCheckAsync(
+                    primeSegmentIds, primeDepth, cancellationToken)
+                .ConfigureAwait(false);
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=primary-health-prime done ms={ElapsedMs}",
+                queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log.Debug("Primary health connection prewarm cancelled for {JobName}.", queueItem.JobName);
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Primary health connection prewarm failed for {JobName}.", queueItem.JobName);
+        }
+    }
+
+    internal static IReadOnlyList<string> SelectHealthPrimeSegmentIds(
+        IReadOnlyList<NzbFile> files,
+        int targetCount)
+    {
+        var total = files.Sum(file => (long)file.Segments.Count);
+        var selectedCount = (int)Math.Min(Math.Max(0, targetCount), total);
+        if (selectedCount == 0) return [];
+
+        var selectedIndexes = selectedCount == 1
+            ? [0L]
+            : Enumerable.Range(0, selectedCount)
+                .Select(index => (long)index * (total - 1) / (selectedCount - 1))
+                .Distinct()
+                .ToArray();
+        var result = new List<string>(selectedIndexes.Length);
+        var articleIndex = 0L;
+        var selectedIndex = 0;
+        foreach (var file in files)
+        foreach (var segment in file.Segments)
+        {
+            if (articleIndex == selectedIndexes[selectedIndex])
+            {
+                result.Add(segment.MessageId);
+                selectedIndex++;
+                if (selectedIndex == selectedIndexes.Length) return result;
+            }
+            articleIndex++;
+        }
+
+        return result;
     }
 
     private IEnumerable<BaseProcessor> GetFileProcessors

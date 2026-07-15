@@ -52,6 +52,22 @@ public class UpdateConfigValidationTests
             ]));
     }
 
+    [Fact]
+    public void WarmValidationConcurrencyAcceptsAutomaticAndEnforcesRange()
+    {
+        ConfigUpdateValidator.Validate([
+            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "" },
+        ]);
+        ConfigUpdateValidator.Validate([
+            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "256" },
+        ]);
+
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "257" },
+            ]));
+    }
+
     [Theory]
     [InlineData("play.total-budget-seconds", "1")]
     [InlineData("preflight.max-attempts", "0")]

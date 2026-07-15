@@ -9,6 +9,12 @@ namespace NzbWebDAV.Api.Controllers.UpdateConfig;
 
 internal static class ConfigUpdateValidator
 {
+    private static readonly HashSet<string> OptionalIntegerSettings =
+    [
+        "usenet.max-queue-connections",
+        "usenet.warm-validation-concurrency",
+    ];
+
     public static void Validate(IReadOnlyList<ConfigItem> items)
     {
         var changed = items
@@ -38,10 +44,10 @@ internal static class ConfigUpdateValidator
         if (defaultValue is "true" or "false" && !bool.TryParse(value, out _))
             Invalid($"{key} must be true or false.");
 
-        var isInteger = key == "usenet.max-queue-connections" || long.TryParse(defaultValue, out _);
+        var isInteger = OptionalIntegerSettings.Contains(key) || long.TryParse(defaultValue, out _);
         if (isInteger)
         {
-            if (value.Length == 0 && key == "usenet.max-queue-connections") return;
+            if (value.Length == 0 && OptionalIntegerSettings.Contains(key)) return;
             if (!long.TryParse(value, out var number)) Invalid($"{key} must be an integer.");
             if (SettingsRegistry.Ranges.TryGetValue(key, out var range)
                 && (number < range.Min || number > range.Max))

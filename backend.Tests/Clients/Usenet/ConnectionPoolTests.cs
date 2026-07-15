@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 
@@ -5,6 +6,24 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class ConnectionPoolTests
 {
+    [Fact]
+    public async Task PlaybackPriorityWinsTheNextReturnedConnectionOverHealthWork()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })));
+        var activeHealth = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var waitingHealth = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var waitingPlayback = pool.GetConnectionLockAsync(SemaphorePriority.High);
+
+        activeHealth.Dispose();
+
+        var playback = await waitingPlayback.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(waitingHealth.IsCompleted);
+        playback.Dispose();
+        using var health = await waitingHealth.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     [Fact]
     public async Task DisposalLetsBorrowedConnectionFinishBeforeDestroyingIt()
     {
@@ -119,6 +138,153 @@ public class ConnectionPoolTests
         Assert.Equal(2, disposed);
         Assert.Equal(2, pool.LiveConnections);
         Assert.Equal(2, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task RapidRefreshValidatesEveryRequestedWarmConnection()
+    {
+        var validated = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            8,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                return ValueTask.FromResult(true);
+            },
+            minimumIdleConnections: 8);
+
+        await pool.PrewarmAsync(8);
+        await pool.RefreshWarmConnectionsAsync(8);
+
+        Assert.Equal(8, validated);
+        Assert.Equal(8, pool.LiveConnections);
+        Assert.Equal(8, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task WarmCountIncludesFreshIdleConnections()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })));
+
+        await pool.PrewarmAsync(2);
+
+        Assert.Equal(2, pool.LiveConnections);
+        Assert.Equal(2, pool.WarmConnections);
+    }
+
+    [Fact]
+    public async Task WarmCountExcludesIdleConnectionsThatRequireValidation()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) => ValueTask.FromResult(true),
+            validateAfterIdle: TimeSpan.Zero);
+
+        await pool.PrewarmAsync(1);
+        Assert.Equal(0, pool.WarmConnections);
+
+        using var connection = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        Assert.Equal(1, pool.WarmConnections);
+    }
+
+    [Fact]
+    public async Task RapidRefreshHonorsConfiguredConcurrency()
+    {
+        var sync = new object();
+        var active = 0;
+        var peak = 0;
+        var validated = 0;
+        var concurrencyReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            6,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: async (_, ct) =>
+            {
+                lock (sync)
+                {
+                    active++;
+                    peak = Math.Max(peak, active);
+                    if (active == 3) concurrencyReached.TrySetResult();
+                }
+                try
+                {
+                    await release.Task.WaitAsync(ct);
+                    Interlocked.Increment(ref validated);
+                    return true;
+                }
+                finally
+                {
+                    lock (sync) active--;
+                }
+            },
+            minimumIdleConnections: 6);
+
+        await pool.PrewarmAsync(6);
+        var refreshing = pool.RefreshWarmConnectionsAsync(6, 3, CancellationToken.None);
+        await concurrencyReached.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(3, peak);
+        release.TrySetResult();
+        await refreshing.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(6, validated);
+    }
+
+    [Fact]
+    public async Task HealthPrimerExercisesEveryRequestedIdleConnectionOnceAcrossWaves()
+    {
+        var created = 0;
+        var primed = new ConcurrentDictionary<int, int>();
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            6,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                Interlocked.Increment(ref created), () => { })),
+            connectionValidator: (_, _) => ValueTask.FromResult(true),
+            minimumIdleConnections: 6);
+
+        await pool.PrewarmAsync(6);
+        await pool.PrimeWarmConnectionsAsync(
+            6,
+            3,
+            (connection, _) =>
+            {
+                primed.AddOrUpdate(connection.Id, 1, static (_, count) => count + 1);
+                return ValueTask.CompletedTask;
+            });
+
+        Assert.Equal(6, primed.Count);
+        Assert.All(primed.Values, count => Assert.Equal(1, count));
+        Assert.Equal(6, pool.LiveConnections);
+        Assert.Equal(6, pool.IdleConnections);
+    }
+
+    [Fact]
+    public async Task HealthPrimerDiscardsConnectionAfterPipelineFailure()
+    {
+        var disposed = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(
+                1, () => Interlocked.Increment(ref disposed))),
+            minimumIdleConnections: 1);
+        await pool.PrewarmAsync(1);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            pool.PrimeWarmConnectionsAsync(
+                1,
+                1,
+                (_, _) => ValueTask.FromException(
+                    new InvalidOperationException("pipeline failed"))));
+
+        Assert.Equal(1, disposed);
+        Assert.Equal(0, pool.LiveConnections);
+        Assert.Equal(0, pool.IdleConnections);
     }
 
     [Fact]
