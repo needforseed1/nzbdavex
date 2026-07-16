@@ -54,6 +54,7 @@ public class MultiConnectionNntpClient(
     public long BytesUsedOffset { get; } = bytesUsedOffset;
     public bool IsTripped => circuitBreaker.IsTripped || connectionPool.CapacityUnavailable;
     public int LiveConnections => connectionPool.LiveConnections;
+    public int WarmConnections => connectionPool.WarmConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int AvailableConnections => connectionPool.AvailableConnections;

@@ -54,6 +54,12 @@ public class ContextualCancellationTokenSource : IDisposable
         return _cts.CancelAsync();
     }
 
+    public void CancelAfter(TimeSpan delay)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, nameof(ContextualCancellationTokenSource));
+        _cts.CancelAfter(delay);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, true)) return;

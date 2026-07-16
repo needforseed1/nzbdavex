@@ -25,7 +25,9 @@ public class MultiProviderNntpClient(
     ProviderBytesTracker? bytesTracker = null,
     Func<bool>? cascadeEnabled = null,
     int applicationConnectionLimit = UsenetStreamingClient.ApplicationConnectionLimit,
-    Func<int>? warmValidationConcurrency = null
+    Func<int>? warmValidationConcurrency = null,
+    TimeSpan? providerAttemptTimeout = null,
+    TimeSpan? providerOperationTimeout = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
@@ -36,6 +38,8 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DefaultProviderOperationTimeout = TimeSpan.FromSeconds(15);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
     private static readonly AsyncLocal<BulkStatPlan?> BulkStatPlanContext = new();
 
@@ -69,6 +73,8 @@ public class MultiProviderNntpClient(
     private int TotalLiveConnections => providers.Sum(provider => provider.LiveConnections);
     private int ApplicationConnectionLimit => applicationConnectionLimit;
     private int WarmValidationConcurrency => Math.Clamp(warmValidationConcurrency?.Invoke() ?? 32, 1, 256);
+    private TimeSpan ProviderAttemptTimeout => providerAttemptTimeout ?? DefaultProviderAttemptTimeout;
+    private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
 
     public async Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken)
     {
@@ -299,12 +305,15 @@ public class MultiProviderNntpClient(
     public override Task<UsenetStatResponse> StatAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         return RunFromPoolWithBackup(
-            x => x.StatAsync(segmentId, cancellationToken), cancellationToken, statOperation: true);
+            (x, attemptToken) => x.StatAsync(segmentId, attemptToken),
+            cancellationToken,
+            statOperation: true);
     }
 
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
-        return RunFromPoolWithBackup(x => x.HeadAsync(segmentId, cancellationToken), cancellationToken);
+        return RunFromPoolWithBackup(
+            (x, attemptToken) => x.HeadAsync(segmentId, attemptToken), cancellationToken);
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync
@@ -313,7 +322,8 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken
     )
     {
-        return RunFromPoolWithBackup(x => x.DecodedBodyAsync(segmentId, cancellationToken), cancellationToken);
+        return RunFromPoolWithBackup(
+            (x, attemptToken) => x.DecodedBodyAsync(segmentId, attemptToken), cancellationToken);
     }
 
     public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync
@@ -322,12 +332,14 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken
     )
     {
-        return RunFromPoolWithBackup(x => x.DecodedArticleAsync(segmentId, cancellationToken), cancellationToken);
+        return RunFromPoolWithBackup(
+            (x, attemptToken) => x.DecodedArticleAsync(segmentId, attemptToken), cancellationToken);
     }
 
     public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
     {
-        return RunFromPoolWithBackup(x => x.DateAsync(cancellationToken), cancellationToken);
+        return RunFromPoolWithBackup(
+            (x, attemptToken) => x.DateAsync(attemptToken), cancellationToken);
     }
 
     public override void CloseIdleConnections(string? host = null)
@@ -347,7 +359,7 @@ public class MultiProviderNntpClient(
         try
         {
             result = await RunFromPoolWithBackup(
-                x => x.DecodedBodyAsync(segmentId, OnConnectionReadyAgain, cancellationToken),
+                (x, attemptToken) => x.DecodedBodyAsync(segmentId, OnConnectionReadyAgain, attemptToken),
                 cancellationToken
             ).ConfigureAwait(false);
         }
@@ -380,7 +392,7 @@ public class MultiProviderNntpClient(
         try
         {
             result = await RunFromPoolWithBackup(
-                x => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, cancellationToken),
+                (x, attemptToken) => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, attemptToken),
                 cancellationToken
             ).ConfigureAwait(false);
         }
@@ -404,7 +416,7 @@ public class MultiProviderNntpClient(
 
     private async Task<T> RunFromPoolWithBackup<T>
     (
-        Func<INntpClient, Task<T>> task,
+        Func<INntpClient, CancellationToken, Task<T>> task,
         CancellationToken cancellationToken,
         bool statOperation = false
     ) where T : UsenetResponse
@@ -417,9 +429,12 @@ public class MultiProviderNntpClient(
             ? SelectOrderedProvidersForStat(cancellationToken, out var reserved)
             : SelectOrderedProviders(cancellationToken, out reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+        var operationStopwatch = Stopwatch.StartNew();
         for (var i = 0; i < orderedProviders.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
+            if (remainingOperationTime <= TimeSpan.Zero) break;
             var provider = orderedProviders[i];
             var isLastProvider = i == orderedProviders.Count - 1;
 
@@ -430,9 +445,18 @@ public class MultiProviderNntpClient(
             }
 
             var stopwatch = Stopwatch.StartNew();
+            var maximumAttemptTime = isLastProvider
+                ? ProviderOperationTimeout
+                : ProviderAttemptTimeout;
+            var attemptTimeout = maximumAttemptTime < remainingOperationTime
+                ? maximumAttemptTime
+                : remainingOperationTime;
+            var attemptCts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var attemptLifetimeTransferred = false;
+            attemptCts.CancelAfter(attemptTimeout);
             try
             {
-                var result = await task.Invoke(provider).ConfigureAwait(false);
+                var result = await task.Invoke(provider, attemptCts.Token).ConfigureAwait(false);
                 stopwatch.Stop();
 
                 // if no article with that message-id is found, try again with the next provider.
@@ -467,7 +491,22 @@ public class MultiProviderNntpClient(
                     RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
                 }
 
+                result = PreserveCallerCancellationForStreamingResult(
+                    result, attemptCts, out attemptLifetimeTransferred);
                 return result;
+            }
+            catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                var providerTimeout = new TimeoutException(
+                    $"Provider {provider.Host} did not become usable within " +
+                    $"{attemptTimeout.TotalSeconds:0.#} seconds.", e);
+                RecordFetch(provider.Id, SegmentFetch.FetchStatus.Timeout, stopwatch.ElapsedMilliseconds, i);
+                (priorMisses ??= new()).Add((provider.Id, SegmentFetch.FetchStatus.Timeout));
+                lastException = ExceptionDispatchInfo.Capture(providerTimeout);
+                Log.Debug(providerTimeout,
+                    "Timed out waiting for NNTP provider {Provider}; trying another provider.",
+                    provider.Host);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
@@ -477,8 +516,17 @@ public class MultiProviderNntpClient(
                 (priorMisses ??= new()).Add((provider.Id, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
+            finally
+            {
+                if (!attemptLifetimeTransferred) attemptCts.Dispose();
+            }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+        if (lastException?.SourceException is TimeoutException timeoutException)
+            throw new CouldNotConnectToUsenetException(
+                "No Usenet provider could complete the operation.",
+                timeoutException);
         lastException?.Throw();
         throw new Exception("There are no usenet providers configured.");
     }
@@ -537,6 +585,33 @@ public class MultiProviderNntpClient(
         };
     }
 
+    private static T PreserveCallerCancellationForStreamingResult<T>(
+        T result,
+        ContextualCancellationTokenSource attemptCts,
+        out bool lifetimeTransferred) where T : UsenetResponse
+    {
+        lifetimeTransferred = false;
+        switch (result)
+        {
+            case UsenetDecodedBodyResponse body when body.Stream is not null:
+                attemptCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                lifetimeTransferred = true;
+                return (T)(object)(body with
+                {
+                    Stream = new LifetimeYencStream(body.Stream, attemptCts),
+                });
+            case UsenetDecodedArticleResponse article when article.Stream is not null:
+                attemptCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                lifetimeTransferred = true;
+                return (T)(object)(article with
+                {
+                    Stream = new LifetimeYencStream(article.Stream, attemptCts),
+                });
+            default:
+                return result;
+        }
+    }
+
     private static SegmentFetch.FetchStatus ClassifyException(Exception ex)
     {
         if (ex is TimeoutException) return SegmentFetch.FetchStatus.Timeout;
@@ -576,36 +651,22 @@ public class MultiProviderNntpClient(
                     // soon as its first connection is published.
                     var readySpreadPool = spreadPool.Where(x => x.LiveConnections > 0).ToList();
                     if (readySpreadPool.Count > 0)
-                        spreadPool = readySpreadPool;
-
-                    var rotation = _prepSpreadCursor++ % spreadPool.Count;
-                    var spread = spreadPool
-                        .Select((provider, index) => new
-                        {
-                            Provider = provider,
-                            RotationRank = (index - rotation + spreadPool.Count) % spreadPool.Count,
-                        })
-                        .OrderBy(x => PrepSpreadScore(x.Provider))
-                        .ThenBy(x => x.RotationRank)
-                        .ThenByDescending(x => GetRemainingBytes(x.Provider))
-                        .ThenBy(x => EffectivePriority(x.Provider))
-                        .Select(x => x.Provider)
-                        .ToList();
-                    var spreadSet = spread.ToHashSet();
-                    var fallback = pool
-                        .Where(x => !spreadSet.Contains(x))
-                        .OrderBy(x => x.ProviderType)
-                        .ThenBy(EffectivePriority)
-                        .ThenByDescending(GetRemainingBytes)
-                        .ThenBy(EstimatedDeliveryScore);
-                    var spreadOrdered = spread.Concat(fallback).ToList();
-                    reserved = spreadOrdered[0];
-                    reserved.ReservePending();
-                    return spreadOrdered;
+                    {
+                        var spreadOrdered = OrderPrepSpreadProviders(readySpreadPool, pool);
+                        reserved = spreadOrdered[0];
+                        reserved.ReservePending();
+                        return spreadOrdered;
+                    }
                 }
             }
 
-            var byTier = pool.OrderBy(x => x.ProviderType);
+            // Prefer capacity that exists now over waiting on a nominally
+            // higher-tier provider with no viable sockets. Provider role still
+            // orders equally-ready candidates, so backups remain rescue-only
+            // while a pooled provider can serve the operation.
+            var byTier = pool
+                .OrderBy(ReadinessRank)
+                .ThenBy(x => x.ProviderType);
             var prioritized = cascadeEnabled?.Invoke() == true
                 ? byTier.ThenBy(EffectivePriority)
                 : byTier;
@@ -618,6 +679,34 @@ public class MultiProviderNntpClient(
             reserved?.ReservePending();
             return ordered;
         }
+    }
+
+    private List<MultiConnectionNntpClient> OrderPrepSpreadProviders(
+        IReadOnlyList<MultiConnectionNntpClient> spreadPool,
+        IReadOnlyList<MultiConnectionNntpClient> pool)
+    {
+        var rotation = _prepSpreadCursor++ % spreadPool.Count;
+        var spread = spreadPool
+            .Select((provider, index) => new
+            {
+                Provider = provider,
+                RotationRank = (index - rotation + spreadPool.Count) % spreadPool.Count,
+            })
+            .OrderBy(x => PrepSpreadScore(x.Provider))
+            .ThenBy(x => x.RotationRank)
+            .ThenByDescending(x => GetRemainingBytes(x.Provider))
+            .ThenBy(x => EffectivePriority(x.Provider))
+            .Select(x => x.Provider)
+            .ToList();
+        var spreadSet = spread.ToHashSet();
+        var fallback = pool
+            .Where(x => !spreadSet.Contains(x))
+            .OrderBy(ReadinessRank)
+            .ThenBy(x => x.ProviderType)
+            .ThenBy(EffectivePriority)
+            .ThenByDescending(GetRemainingBytes)
+            .ThenBy(EstimatedDeliveryScore);
+        return spread.Concat(fallback).ToList();
     }
 
     private List<MultiConnectionNntpClient> SelectOrderedProvidersForStat(
@@ -706,6 +795,9 @@ public class MultiProviderNntpClient(
         const int saturationDemotion = 1 << 20;
         return provider.Priority + (provider.HasSpareConnection ? 0 : saturationDemotion);
     }
+
+    private static int ReadinessRank(MultiConnectionNntpClient provider) =>
+        provider.WarmConnections > 0 ? 0 : provider.LiveConnections > 0 ? 1 : 2;
 
     private double EstimatedDeliveryScore(MultiConnectionNntpClient provider)
     {
