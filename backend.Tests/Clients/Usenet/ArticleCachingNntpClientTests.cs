@@ -28,6 +28,45 @@ public class ArticleCachingNntpClientTests
     }
 
     [Fact]
+    public async Task FirstSegmentProbeSkipsPar2RecoveryVolumesButKeepsBaseIndex()
+    {
+        using var inner = new PrefixTrackingClient(32 * 1024);
+        var files = new[]
+        {
+            File("release.rar", "rar"),
+            File("release.par2", "par-index"),
+            File("release.vol00+01.par2", "par-volume-plus"),
+            File("release.vol01-03.par2", "par-volume-hyphen"),
+        };
+
+        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
+            [.. files], inner, new ConfigManager(), CancellationToken.None);
+
+        Assert.Equal(4, results.Count);
+        Assert.Equal(2, inner.ArticleCalls);
+        Assert.False(ResultFor("release.rar").MissingFirstSegment);
+        Assert.False(ResultFor("release.par2").MissingFirstSegment);
+        Assert.True(ResultFor("release.vol00+01.par2").MissingFirstSegment);
+        Assert.True(ResultFor("release.vol01-03.par2").MissingFirstSegment);
+
+        FetchFirstSegmentsStep.NzbFileWithFirstSegment ResultFor(string subject) =>
+            Assert.Single(results, result => result.NzbFile.Subject == subject);
+    }
+
+    [Fact]
+    public async Task FirstSegmentProbeDoesNotSkipAmbiguousPar2Name()
+    {
+        using var inner = new PrefixTrackingClient(32 * 1024);
+        var file = File("obfuscated.par2", "ambiguous-par2");
+
+        var result = Assert.Single(await FetchFirstSegmentsStep.FetchFirstSegments(
+            [file], inner, new ConfigManager(), CancellationToken.None));
+
+        Assert.Equal(1, inner.ArticleCalls);
+        Assert.False(result.MissingFirstSegment);
+    }
+
+    [Fact]
     public async Task HeaderProbeBypassesFullArticleCache()
     {
         using var inner = new HeaderOnlyClient();
@@ -101,7 +140,9 @@ public class ArticleCachingNntpClientTests
     private sealed class PrefixTrackingClient(int articleSize) : NntpClient
     {
         private int _bytesRead;
+        private int _articleCalls;
         public int BytesRead => Volatile.Read(ref _bytesRead);
+        public int ArticleCalls => Volatile.Read(ref _articleCalls);
 
         public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
             SegmentId segmentId, CancellationToken cancellationToken) =>
@@ -112,6 +153,7 @@ public class ArticleCachingNntpClientTests
             Action<ArticleBodyResult>? onConnectionReadyAgain,
             CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _articleCalls);
             var header = new UsenetYencHeader
             {
                 FileName = "first.rar",
@@ -152,6 +194,13 @@ public class ArticleCachingNntpClientTests
         public override void Dispose()
         {
         }
+    }
+
+    private static NzbFile File(string subject, string messageId)
+    {
+        var file = new NzbFile { Subject = subject };
+        file.Segments.Add(new NzbSegment { Bytes = 32 * 1024, MessageId = messageId });
+        return file;
     }
 
     private sealed class CountingStream(Stream inner, Action<int> onRead) : Stream

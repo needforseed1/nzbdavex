@@ -5,6 +5,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Par2Recovery;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
@@ -46,6 +47,14 @@ public static class FetchFirstSegmentsStep
         CancellationToken cancellationToken
     )
     {
+        // Recovery volumes contain repair blocks, not metadata needed by prep.
+        // Keep the NZB file entry intact so it can still be exposed or fetched
+        // later, but do not spend a connection downloading its first article.
+        // The base/index .par2 is deliberately not skipped: it supplies the
+        // file descriptors used to recover obfuscated filenames and sizes.
+        if (Par2.IsRecoveryVolumeFileName(nzbFile.GetSubjectFileName()))
+            return BuildMissingFirstSegment(nzbFile);
+
         try
         {
             // get the first article stream

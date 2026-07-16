@@ -9,9 +9,15 @@ namespace NzbWebDAV.Par2Recovery
     public class Par2
     {
         internal static readonly Regex ParVolume = new(
-            @"(.+)\.vol[0-9]{1,10}\+[0-9]{1,10}\.par2$",
-            RegexOptions.IgnoreCase
+            @"^.+\.vol[0-9]{1,10}[+-][0-9]{1,10}\.par2$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
         );
+
+        internal static bool IsRecoveryVolumeFileName(string fileName)
+        {
+            return !string.IsNullOrWhiteSpace(fileName) &&
+                   ParVolume.IsMatch(Path.GetFileName(fileName));
+        }
 
         private const string Par2PacketHeaderMagic = "PAR2\0PKT";
 
