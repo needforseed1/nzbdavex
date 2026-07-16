@@ -18,6 +18,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     internal const bool HealthProviderPrewarmEnabled = true;
     internal const int ApplicationConnectionLimit = 512;
     internal const int ConcurrentConnectionAttemptLimit = 32;
+    internal static readonly TimeSpan ConnectionSetupTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan WarmConnectionRefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly ConnectionLifetimeBudget ConnectionBudget = new(
@@ -270,9 +271,22 @@ public class UsenetStreamingClient : WrappingNntpClient
     (
         UsenetProviderConfig.ConnectionDetails connectionDetails,
         CancellationToken ct
+    ) => await CreateNewConnection(
+        connectionDetails, ConnectionSetupTimeout, ct).ConfigureAwait(false);
+
+    internal static async ValueTask<INntpClient> CreateNewConnection
+    (
+        UsenetProviderConfig.ConnectionDetails connectionDetails,
+        TimeSpan setupTimeout,
+        CancellationToken ct
     )
     {
+        if (setupTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(setupTimeout));
+
         var connection = new BaseNntpClient();
+        using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        setupCts.CancelAfter(setupTimeout);
         try
         {
             var host = connectionDetails.Host;
@@ -280,9 +294,16 @@ public class UsenetStreamingClient : WrappingNntpClient
             var useSsl = connectionDetails.UseSsl;
             var user = connectionDetails.User;
             var pass = connectionDetails.Pass;
-            await connection.ConnectAsync(host, port, useSsl, ct).ConfigureAwait(false);
-            await connection.AuthenticateAsync(user, pass, ct).ConfigureAwait(false);
+            await connection.ConnectAsync(host, port, useSsl, setupCts.Token).ConfigureAwait(false);
+            await connection.AuthenticateAsync(user, pass, setupCts.Token).ConfigureAwait(false);
             return connection;
+        }
+        catch (OperationCanceledException e) when (
+            setupCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            connection.Dispose();
+            throw new TimeoutException(
+                $"NNTP connection setup timed out after {setupTimeout.TotalSeconds:0.#} seconds.", e);
         }
         catch
         {

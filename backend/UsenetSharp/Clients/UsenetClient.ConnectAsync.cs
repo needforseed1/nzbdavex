@@ -17,10 +17,29 @@ public partial class UsenetClient
         var operationToken = operationCts.Token;
         try
         {
-            _tcpClient = new TcpClient();
-            ConfigureTcpKeepAlive(_tcpClient);
-            await _tcpClient.ConnectAsync(host, port, operationToken);
-            _stream = _tcpClient.GetStream();
+            var tcpClient = new TcpClient();
+            _tcpClient = tcpClient;
+            ConfigureTcpKeepAlive(tcpClient);
+
+            // Some DNS/TCP/TLS implementations take longer than expected to
+            // observe cancellation. Closing the socket is the reliable escape
+            // hatch and ensures a cancelled speculative connection cannot retain
+            // a shared handshake reservation indefinitely.
+            using var abortRegistration = operationToken.Register(static state =>
+            {
+                try
+                {
+                    ((TcpClient)state!).Dispose();
+                }
+                catch
+                {
+                    // Cancellation is best-effort; the operation below still
+                    // observes the token and normal disposal runs on failure.
+                }
+            }, tcpClient);
+
+            await tcpClient.ConnectAsync(host, port, operationToken);
+            _stream = tcpClient.GetStream();
 
             if (useSsl)
             {
@@ -47,6 +66,16 @@ public partial class UsenetClient
             if (responseCode != (int)UsenetResponseType.ServerReadyPostingAllowed &&
                 responseCode != (int)UsenetResponseType.ServerReadyNoPostingAllowed)
                 throw new UsenetConnectionException(response!) { ResponseCode = responseCode };
+        }
+        catch (Exception e) when (operationToken.IsCancellationRequested &&
+                                  e is not OperationCanceledException)
+        {
+            // Socket disposal may surface as IOException/ObjectDisposedException
+            // rather than OperationCanceledException. Preserve cancellation so
+            // the pool releases its creation reservation instead of treating the
+            // abort as a provider failure.
+            throw new OperationCanceledException(
+                "NNTP connection setup was cancelled.", e, operationToken);
         }
         finally
         {

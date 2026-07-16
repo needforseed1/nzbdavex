@@ -596,6 +596,27 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task HandshakeWaiterDoesNotReserveSocketCapacityBeforeItCanCreate()
+    {
+        var budget = new ConnectionLifetimeBudget(2, 1);
+        using var activeCreation = await budget.ReserveCreationAsync(CancellationToken.None);
+        using var waiterCts = new CancellationTokenSource();
+        var waiting = budget.ReserveCreationAsync(waiterCts.Token).AsTask();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (budget.ForegroundWaiters == 0)
+            await Task.Delay(5, timeout.Token);
+
+        Assert.Equal(1, budget.ActiveCreations);
+        Assert.Equal(1, budget.ReservedConnections);
+
+        await waiterCts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.Equal(1, budget.ActiveCreations);
+        Assert.Equal(1, budget.ReservedConnections);
+    }
+
+    [Fact]
     public async Task PrewarmDoesNotTakeCapacityAheadOfWaitingForegroundAcquisition()
     {
         var budget = new ConnectionLifetimeBudget(1, 1);
