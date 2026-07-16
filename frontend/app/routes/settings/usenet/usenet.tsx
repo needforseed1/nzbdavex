@@ -843,8 +843,17 @@ function ConcurrencyAndSchedulingSettings({
     pooledConnections,
     providers,
 }: PerformanceSettingsProps & { pooledConnections: number; providers: ConnectionDetails[] }) {
-    const automaticWarmValidationConcurrency = getAutomaticWarmValidationConcurrency(providers);
+    const warmValidationCapacity = getWarmValidationCapacity(providers);
+    const automaticWarmValidationConnections = Math.min(warmValidationCapacity.total, 384);
     const warmValidationConcurrency = config["usenet.warm-validation-concurrency"] ?? "";
+    const configuredWarmValidationConnections = Number.parseInt(warmValidationConcurrency, 10);
+    const effectiveWarmValidationConnections = warmValidationConcurrency.trim() === ""
+        ? automaticWarmValidationConnections
+        : Math.min(
+            Number.isFinite(configuredWarmValidationConnections)
+                ? configuredWarmValidationConnections
+                : 0,
+            warmValidationCapacity.total);
     return (
         <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
             <div className={styles.sectionHeader}>
@@ -900,23 +909,21 @@ function ConcurrencyAndSchedulingSettings({
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                 <label htmlFor="warm-validation-concurrency-input" className={styles["form-label"]}>
-                    Warm validation concurrency per provider
+                    Warm validation connections
                 </label>
                 <input
                     type="text"
                     inputMode="numeric"
                     id="warm-validation-concurrency-input"
-                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(warmValidationConcurrency, 1, 256) ? styles.error : ""}`}
-                    placeholder={`Automatic (${automaticWarmValidationConcurrency})`}
+                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(warmValidationConcurrency, 1, 512) ? styles.error : ""}`}
+                    placeholder={`Automatic (${automaticWarmValidationConnections})`}
                     value={warmValidationConcurrency}
                     onChange={e => setNewConfig({
                         ...config,
                         "usenet.warm-validation-concurrency": e.target.value,
                     })} />
                 <div className={styles["form-hint"]}>
-                    Leave blank for Automatic ({automaticWarmValidationConcurrency} with the current providers).
-                    Controls how many already-connected sockets per provider are revalidated and STAT-primed when an NZB starts (1–256).
-                    It does not create connections or change playback and health-check lane limits.
+                    {warmValidationCapacity.total} health-check connections are currently available across {warmValidationCapacity.providers} eligible {warmValidationCapacity.providers === 1 ? "provider" : "providers"}; this setting will use {effectiveWarmValidationConnections}. Leave blank for Automatic ({automaticWarmValidationConnections}). This is one global budget distributed proportionally between providers (1–512). It validates already-connected sockets and does not change connection creation, playback, or health-check lane limits.
                 </div>
             </div>
         </div>
@@ -2156,7 +2163,7 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
         && isValidMaxQueueConnections(
             config["usenet.max-queue-connections"], getTotalPooledConnections(config))
         && isOptionalIntegerInRange(
-            config["usenet.warm-validation-concurrency"] ?? "", 1, 256)
+            config["usenet.warm-validation-concurrency"] ?? "", 1, 512)
         && isValidStreamingPriority(config["usenet.streaming-priority"])
         && isValidArticleBufferSize(config["usenet.article-buffer-size"])
         && segmentCacheValid
@@ -2199,18 +2206,18 @@ function getTotalPooledConnections(config: Record<string, string>): number {
     }
 }
 
-function getAutomaticWarmValidationConcurrency(providers: ConnectionDetails[]): number {
+function getWarmValidationCapacity(providers: ConnectionDetails[]): { total: number; providers: number } {
     const eligible = providers.filter(provider =>
         provider.MaxConnections > 0
         && (provider.Type === ProviderType.Pooled
             || provider.Type === ProviderType.BackupAndStats
             || provider.Type === ProviderType.HealthChecksOnly));
-    if (eligible.length === 0) return 32;
-
     const totalHealthWarmTarget = eligible.reduce((sum, provider) =>
         sum + provider.MaxConnections - Math.floor(provider.MaxConnections / 10), 0);
-    const perProvider = Math.ceil(Math.min(totalHealthWarmTarget, 384) / eligible.length);
-    return Math.max(16, Math.min(64, perProvider));
+    return {
+        total: Math.min(totalHealthWarmTarget, 512),
+        providers: eligible.length,
+    };
 }
 
 function isValidStreamingPriority(value: string): boolean {

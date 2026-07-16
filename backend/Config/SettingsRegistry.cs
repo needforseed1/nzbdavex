@@ -59,7 +59,7 @@ public static class SettingsRegistry
     {
         ["usenet.max-download-connections"] = (1, int.MaxValue),
         ["usenet.max-queue-connections"] = (1, int.MaxValue),
-        ["usenet.warm-validation-concurrency"] = (1, 256),
+        ["usenet.warm-validation-concurrency"] = (1, 512),
         ["usenet.streaming-priority"] = (0, 100),
         ["usenet.article-buffer-size"] = (1, int.MaxValue),
         ["usenet.segment-cache.max-gb"] = (1, long.MaxValue / (1024L * 1024L * 1024L)),

@@ -38,7 +38,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         ProviderBytesTracker bytesTracker)
         : this(
             new DrainingNntpClient(CreateDownloadingNntpClient(
-                configManager, websocketManager, usageTracker, metricsWriter, bytesTracker)),
+                configManager, websocketManager, usageTracker, metricsWriter, bytesTracker,
+                activateIdlePrewarming: true)),
             configManager, websocketManager, usageTracker, metricsWriter, bytesTracker)
     {
     }
@@ -67,7 +68,8 @@ public class UsenetStreamingClient : WrappingNntpClient
                 var nextFingerprint = GetProviderConfigFingerprint(configManager);
                 if (string.Equals(_providerConfigFingerprint, nextFingerprint, StringComparison.Ordinal)) return;
                 var newUsenetClient = CreateDownloadingNntpClient(
-                    configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
+                    configManager, websocketManager, usageTracker, metricsWriter, bytesTracker,
+                    activateIdlePrewarming: false);
                 _drainingClient.Replace(newUsenetClient);
                 _providerConfigFingerprint = nextFingerprint;
             }
@@ -100,10 +102,14 @@ public class UsenetStreamingClient : WrappingNntpClient
         WebsocketManager websocketManager,
         ProviderUsageTracker usageTracker,
         MetricsWriter metricsWriter,
-        ProviderBytesTracker bytesTracker
+        ProviderBytesTracker bytesTracker,
+        bool activateIdlePrewarming
     )
     {
-        var multiProviderClient = CreateMultiProviderClient(configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
+        var multiProviderClient = CreateMultiProviderClient(
+            configManager, websocketManager, usageTracker, metricsWriter, bytesTracker);
+        if (activateIdlePrewarming)
+            multiProviderClient.ActivateIdlePrewarming();
         var downloadingClient = new DownloadingNntpClient(multiProviderClient, configManager);
         if (!configManager.IsSegmentCacheEnabled()) return downloadingClient;
         try
@@ -148,7 +154,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             .ToList();
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
             cascadeEnabled: configManager.IsCascadeEnabled,
-            warmValidationConcurrency: configManager.GetWarmValidationConcurrencyPerProvider);
+            warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient

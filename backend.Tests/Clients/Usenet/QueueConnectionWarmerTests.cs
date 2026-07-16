@@ -138,6 +138,17 @@ public class QueueConnectionWarmerTests
         Assert.Equal(new[] { 2 }, missingBatches.OrderBy(x => x));
     }
 
+    [Fact]
+    public void WarmValidationBudgetIsDistributedProportionallyAndNeverExceedsTargets()
+    {
+        Assert.Equal([45, 23, 22],
+            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 90));
+        Assert.Equal([90, 45, 45],
+            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 512));
+        Assert.Equal([1, 0, 0],
+            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 1));
+    }
+
     private static MultiConnectionNntpClient CreateProvider(
         ProviderType type,
         string host,

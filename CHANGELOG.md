@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.9](https://github.com/needforseed1/nzbdavex/compare/v1.3.8...v1.3.9) (2026-07-16)
+
+### Improvements
+
+* Health-capable provider pools now establish their normal idle connection reserve after application startup, avoiding a fully cold first preparation and health check after a restart. Idle validation remains deliberately lightweight, and provider-setting reloads still wait for real demand.
+* Warm validation connections is now one global budget shared proportionally across eligible providers. The setting shows the currently available health-check capacity, supports Automatic or a manual value from 1 to 512, and never uses more connections than are available.
+
 ## [1.3.8](https://github.com/needforseed1/nzbdavex/compare/v1.3.7...v1.3.8) (2026-07-16)
 
 ### Improvements

@@ -875,6 +875,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
     }
 
+    public void ActivateIdlePrewarming()
+    {
+        if (_minimumIdleConnections > 0)
+            Volatile.Write(ref _prewarmingActivated, 1);
+    }
+
     private async Task PrewarmWithLeaseAsync(
         int count,
         CancellationToken cancellationToken,
@@ -1019,7 +1025,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (count == 0) return;
 
         var remaining = count;
-        var workerCount = Math.Min(count, Math.Clamp(maxConcurrency, 1, 256));
+        var workerCount = Math.Min(count, Math.Clamp(maxConcurrency, 1, 512));
         var workers = Enumerable.Range(0, workerCount).Select(async _ =>
         {
             while (Interlocked.Decrement(ref remaining) >= 0)

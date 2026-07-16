@@ -40,15 +40,19 @@ public class ConfigManagerTests
     }
 
     [Fact]
-    public void WarmValidationConcurrencyScalesWithProviderCountAndAllowsOverride()
+    public void WarmValidationBudgetUsesGlobalCapacityAndAllowsOverride()
     {
-        Assert.Equal(64, ConfigManager.CalculateAutomaticWarmValidationConcurrency(
+        Assert.Equal(360, ConfigManager.CalculateAvailableHealthWarmConnections(
             ProviderConfig(providerCount: 4, connectionsPerProvider: 100)));
-        Assert.Equal(32, ConfigManager.CalculateAutomaticWarmValidationConcurrency(
+        Assert.Equal(360, ConfigManager.CalculateAutomaticWarmValidationConnectionBudget(
+            ProviderConfig(providerCount: 4, connectionsPerProvider: 100)));
+        Assert.Equal(512, ConfigManager.CalculateAvailableHealthWarmConnections(
+            ProviderConfig(providerCount: 12, connectionsPerProvider: 100)));
+        Assert.Equal(384, ConfigManager.CalculateAutomaticWarmValidationConnectionBudget(
             ProviderConfig(providerCount: 12, connectionsPerProvider: 100)));
 
-        var overridden = WithValues(("usenet.warm-validation-concurrency", "256"));
-        Assert.Equal(256, overridden.GetWarmValidationConcurrencyPerProvider());
+        var overridden = WithValues(("usenet.warm-validation-concurrency", "512"));
+        Assert.Equal(512, overridden.GetWarmValidationConnectionBudget());
     }
 
     [Fact]

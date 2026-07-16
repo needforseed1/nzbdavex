@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
@@ -248,36 +249,29 @@ public class ConfigManager
         return Math.Clamp(value, 1, pool);
     }
 
-    public int GetWarmValidationConcurrencyPerProvider()
+    public int GetWarmValidationConnectionBudget()
     {
         var configured = StringUtil.EmptyToNull(
             GetConfigValue("usenet.warm-validation-concurrency"));
         if (configured != null
             && int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-            return Math.Clamp(value, 1, 256);
-        return CalculateAutomaticWarmValidationConcurrency(GetUsenetProviderConfig());
+            return Math.Clamp(value, 1, UsenetStreamingClient.ApplicationConnectionLimit);
+        return CalculateAutomaticWarmValidationConnectionBudget(GetUsenetProviderConfig());
     }
 
-    internal static int CalculateAutomaticWarmValidationConcurrency(UsenetProviderConfig config)
+    internal static int CalculateAvailableHealthWarmConnections(UsenetProviderConfig config)
     {
-        const int globalValidationTarget = 384;
-        const int minimumPerProvider = 16;
-        const int maximumPerProvider = 64;
-        var eligible = config.Providers
+        var total = config.Providers
             .Where(provider => provider.Type is ProviderType.Pooled
                 or ProviderType.BackupAndStats
                 or ProviderType.HealthChecksOnly)
             .Where(provider => provider.MaxConnections > 0)
-            .ToArray();
-        if (eligible.Length == 0) return 32;
-
-        var totalHealthWarmTarget = eligible.Sum(provider =>
-            (long)provider.MaxConnections - provider.MaxConnections / 10);
-        var desiredConcurrentValidations = Math.Min(totalHealthWarmTarget, globalValidationTarget);
-        var perProvider = (int)Math.Ceiling(
-            desiredConcurrentValidations / (double)eligible.Length);
-        return Math.Clamp(perProvider, minimumPerProvider, maximumPerProvider);
+            .Sum(provider => (long)provider.MaxConnections - provider.MaxConnections / 10);
+        return (int)Math.Min(total, UsenetStreamingClient.ApplicationConnectionLimit);
     }
+
+    internal static int CalculateAutomaticWarmValidationConnectionBudget(UsenetProviderConfig config) =>
+        Math.Min(CalculateAvailableHealthWarmConnections(config), 384);
 
     public bool IsPlaybackPipeliningEnabled()
     {

@@ -536,6 +536,24 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task IdleMaintenanceCanBeActivatedWithoutAnImmediatePrewarmCall()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            minimumIdleConnections: 2,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20));
+
+        pool.ActivateIdlePrewarming();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (pool.LiveConnections < 2)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(2, pool.IdleConnections);
+    }
+
+    [Fact]
     public async Task SharedBudgetPrewarmUsesOnlyImmediatelyAvailableSlots()
     {
         var budget = new ConnectionLifetimeBudget(2, 2);

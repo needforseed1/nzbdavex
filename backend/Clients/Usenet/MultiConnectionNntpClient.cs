@@ -67,6 +67,8 @@ public class MultiConnectionNntpClient(
 
     public bool HasSpareConnection => AvailableConnections - PendingSelections > 0;
 
+    internal void ActivateIdlePrewarming() => connectionPool.ActivateIdlePrewarming();
+
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 

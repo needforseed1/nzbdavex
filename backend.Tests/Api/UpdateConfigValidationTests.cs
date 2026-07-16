@@ -53,18 +53,18 @@ public class UpdateConfigValidationTests
     }
 
     [Fact]
-    public void WarmValidationConcurrencyAcceptsAutomaticAndEnforcesRange()
+    public void WarmValidationConnectionsAcceptAutomaticAndEnforceGlobalRange()
     {
         ConfigUpdateValidator.Validate([
             new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "" },
         ]);
         ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "256" },
+            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "512" },
         ]);
 
         Assert.Throws<BadHttpRequestException>(() =>
             ConfigUpdateValidator.Validate([
-                new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "257" },
+                new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "513" },
             ]));
     }
 
