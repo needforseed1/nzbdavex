@@ -76,30 +76,72 @@ public class MultiConnectionNntpClient(
 
     public Task PrimeHealthConnectionsAsync(
         IReadOnlyList<string> segmentIds,
-        int depth,
         int count,
         int maxConcurrency,
-        CancellationToken cancellationToken) =>
-        connectionPool.PrimeWarmConnectionsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (segmentIds.Count == 0 || count <= 0) return Task.CompletedTask;
+
+        var cursor = -1;
+        return connectionPool.PrimeWarmConnectionsAsync(
             count,
             maxConcurrency,
-            (connection, token) => PrimeStatConnectionAsync(connection, segmentIds, depth, token),
+            (connection, token) =>
+            {
+                var index = Interlocked.Increment(ref cursor) % segmentIds.Count;
+                return PrimeStatConnectionAsync(connection, segmentIds[index], token);
+            },
             cancellationToken);
+    }
 
-    private static async ValueTask PrimeStatConnectionAsync(
-        INntpClient connection,
+    public async Task<(int Received, int Found)> ProbeHealthCoverageAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
         CancellationToken cancellationToken)
     {
         var received = 0;
-        await foreach (var _ in connection.StatsPipelinedAsync(segmentIds, depth, cancellationToken)
-                           .WithCancellation(cancellationToken).ConfigureAwait(false))
-            received++;
+        var found = 0;
+        await connectionPool.PrimeWarmConnectionsAsync(
+                1,
+                1,
+                async (connection, token) =>
+                {
+                    await foreach (var result in connection.StatsPipelinedAsync(
+                                           segmentIds, depth, token)
+                                       .WithCancellation(token).ConfigureAwait(false))
+                    {
+                        if (received >= segmentIds.Count ||
+                            !string.Equals(
+                                result.SegmentId, segmentIds[received], StringComparison.Ordinal))
+                            throw new InvalidDataException(
+                                $"Health warm probe returned an invalid pipelined STAT response for {Host}.");
+
+                        received++;
+                        if (result.Exists) found++;
+                    }
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (received != segmentIds.Count)
             throw new IOException(
-                $"Health connection primer ended after {received} of {segmentIds.Count} STAT responses.");
+                $"Health warm probe for {Host} ended after {received} of {segmentIds.Count} STAT responses.");
+        return (received, found);
+    }
+
+    private static async ValueTask PrimeStatConnectionAsync(
+        INntpClient connection,
+        string segmentId,
+        CancellationToken cancellationToken)
+    {
+        var received = 0;
+        await foreach (var _ in connection.StatsPipelinedAsync([segmentId], 1, cancellationToken)
+                           .WithCancellation(cancellationToken).ConfigureAwait(false))
+            received++;
+
+        if (received != 1)
+            throw new IOException(
+                $"Health connection primer ended after {received} of 1 STAT responses.");
     }
 
     internal IDisposable SuspendPrewarming(int retainedIdleConnections, out int closedConnections) =>

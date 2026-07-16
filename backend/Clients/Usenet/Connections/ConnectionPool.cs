@@ -73,6 +73,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private int _disposed; // 0 == false, 1 == true
     private int _activeOperations;
     private int _lastReportedWarmConnections;
+    private int _prewarmingActivated;
     private long _nextPrewarmSuspensionId;
 
     /* ------------------------------------------------------------------------------ */
@@ -861,6 +862,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public async Task PrewarmAsync(int count, CancellationToken cancellationToken = default)
     {
+        // Pools are deliberately cold when created. Startup and provider reloads
+        // should not open hundreds of sockets that may be stale before the next
+        // queue item arrives. The first foreground prewarm activates idle
+        // maintenance for the lifetime of this pool.
+        if (count > 0) Volatile.Write(ref _prewarmingActivated, 1);
         if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
         using (maintenanceLease)
         {
@@ -1161,6 +1167,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
                 SweepOnce();
                 if (_warmConnectionRefreshInterval.HasValue &&
+                    Volatile.Read(ref _prewarmingActivated) == 1 &&
                     Volatile.Read(ref _pendingAcquisitions) == 0 &&
                     ActiveConnections == 0)
                 {

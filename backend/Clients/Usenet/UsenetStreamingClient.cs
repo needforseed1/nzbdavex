@@ -165,8 +165,6 @@ public class UsenetStreamingClient : WrappingNntpClient
             providerHost: connectionDetails.Host,
             onConnectionPoolChanged: onConnectionPoolChanged
         );
-        if (keepWarm > 0)
-            _ = PrewarmConnectionPoolAsync(connectionPool, keepWarm, connectionDetails.Host);
         var circuitBreaker = new ProviderCircuitBreaker(connectionDetails.Host);
         return new MultiConnectionNntpClient(
             connectionPool,
@@ -246,25 +244,6 @@ public class UsenetStreamingClient : WrappingNntpClient
     private static bool IsConnectionCapacityRejected(Exception exception)
     {
         return exception.TryGetCausingException(out UsenetConnectionLimitException _);
-    }
-
-    private static async Task PrewarmConnectionPoolAsync(
-        ConnectionPool<INntpClient> connectionPool,
-        int count,
-        string host)
-    {
-        try
-        {
-            await connectionPool.PrewarmAsync(count, SigtermUtil.GetCancellationToken()).ConfigureAwait(false);
-            Log.Information("Prewarmed {Count} NNTP connections for {Provider}.", count, host);
-        }
-        catch (OperationCanceledException) when (SigtermUtil.GetCancellationToken().IsCancellationRequested)
-        {
-        }
-        catch (Exception e)
-        {
-            Log.Debug(e, "Could not prewarm NNTP connections for {Provider}.", host);
-        }
     }
 
     public static async ValueTask<INntpClient> CreateNewConnection

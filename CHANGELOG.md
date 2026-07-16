@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.8](https://github.com/needforseed1/nzbdavex/compare/v1.3.7...v1.3.8) (2026-07-16)
+
+### Improvements
+
+* Cold health checks now sample provider coverage first and fully warm only providers that can contribute. Each selected connection receives one lightweight article check instead of repeating the complete sample across every socket.
+* Restarting the app or saving Usenet provider changes no longer opens large connection pools immediately. Connections ramp up aggressively when an NZB is queued, then normal idle maintenance begins after that real demand.
+* Connection diagnostics now distinguish requested validation work from the number of connections confirmed warm.
+
 ## [1.3.7](https://github.com/needforseed1/nzbdavex/compare/v1.3.6...v1.3.7) (2026-07-16)
 
 ### Fixes

@@ -520,6 +520,22 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task IdleMaintenanceWaitsForFirstExplicitPrewarm()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            minimumIdleConnections: 2,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20));
+
+        await Task.Delay(80);
+        Assert.Equal(0, pool.LiveConnections);
+
+        await pool.PrewarmAsync(2);
+        Assert.Equal(2, pool.LiveConnections);
+    }
+
+    [Fact]
     public async Task SharedBudgetPrewarmUsesOnlyImmediatelyAvailableSlots()
     {
         var budget = new ConnectionLifetimeBudget(2, 2);

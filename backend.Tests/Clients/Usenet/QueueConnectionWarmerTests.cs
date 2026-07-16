@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Connections;
@@ -103,17 +104,38 @@ public class QueueConnectionWarmerTests
         await client.PrimeHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
         Assert.Equal(0, pooledPrimed);
-        Assert.Equal(4, healthPrimed);
-        Assert.Equal(3, backupAndStatsPrimed);
+        Assert.Equal(5, healthPrimed);
+        Assert.Equal(4, backupAndStatsPrimed);
         Assert.Equal(0, backupOnlyPrimed);
 
         await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
         await client.PrimePrimaryHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
-        Assert.Equal(6, pooledPrimed);
-        Assert.Equal(4, healthPrimed);
-        Assert.Equal(3, backupAndStatsPrimed);
+        Assert.Equal(7, pooledPrimed);
+        Assert.Equal(5, healthPrimed);
+        Assert.Equal(4, backupAndStatsPrimed);
         Assert.Equal(0, backupOnlyPrimed);
+    }
+
+    [Fact]
+    public async Task StatPrimerExercisesEveryUsefulSocketOnceAndSkipsMissingProviderPool()
+    {
+        var fullBatches = new ConcurrentQueue<int>();
+        var missingBatches = new ConcurrentQueue<int>();
+        using var full = CreateProvider(
+            ProviderType.HealthChecksOnly, "full", 4, 0,
+            batchSize => fullBatches.Enqueue(batchSize));
+        using var missing = CreateProvider(
+            ProviderType.HealthChecksOnly, "missing", 4, 1,
+            batchSize => missingBatches.Enqueue(batchSize), exists: false);
+        using var client = new MultiProviderNntpClient(
+            [full, missing], new ProviderUsageTracker());
+
+        await client.PrewarmHealthCheckAsync(CancellationToken.None);
+        await client.PrimeHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
+
+        Assert.Equal(new[] { 1, 1, 1, 1, 2 }, fullBatches.OrderBy(x => x));
+        Assert.Equal(new[] { 2 }, missingBatches.OrderBy(x => x));
     }
 
     private static MultiConnectionNntpClient CreateProvider(
@@ -121,10 +143,20 @@ public class QueueConnectionWarmerTests
         string host,
         int maxConnections,
         int priority,
-        Action? onPrime = null)
+        Action? onPrime = null) =>
+        CreateProvider(type, host, maxConnections, priority,
+            onPrime is null ? null : _ => onPrime());
+
+    private static MultiConnectionNntpClient CreateProvider(
+        ProviderType type,
+        string host,
+        int maxConnections,
+        int priority,
+        Action<int>? onPrime,
+        bool exists = true)
     {
         var pool = new ConnectionPool<INntpClient>(
-            maxConnections, _ => ValueTask.FromResult<INntpClient>(new StubNntpClient(onPrime)));
+            maxConnections, _ => ValueTask.FromResult<INntpClient>(new StubNntpClient(onPrime, exists)));
         return new MultiConnectionNntpClient(
             pool,
             type,
@@ -137,7 +169,7 @@ public class QueueConnectionWarmerTests
             prepSpreadEnabled: true);
     }
 
-    private sealed class StubNntpClient(Action? onPrime = null) : NntpClient
+    private sealed class StubNntpClient(Action<int>? onPrime = null, bool exists = true) : NntpClient
     {
         public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
             => Task.CompletedTask;
@@ -166,11 +198,11 @@ public class QueueConnectionWarmerTests
             int depth,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            onPrime?.Invoke();
+            onPrime?.Invoke(segmentIds.Count);
             foreach (var segmentId in segmentIds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                yield return new PipelinedStatResult { SegmentId = segmentId, Exists = true };
+                yield return new PipelinedStatResult { SegmentId = segmentId, Exists = exists };
             }
             await Task.CompletedTask;
         }
