@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.7](https://github.com/needforseed1/nzbdavex/compare/v1.3.6...v1.3.7) (2026-07-16)
+
+### Fixes
+
+* NNTP connection setup now has a firm deadline and releases shared capacity when connecting, encryption, or authentication stalls. A failed provider can no longer leave the queue unable to start the current or following NZB.
+* Preparation now routes around providers without usable connections and moves to another eligible provider after a bounded wait. Backup providers remain recovery paths and can rescue preparation when primary providers cannot serve an article.
+* PAR2 recovery volumes no longer trigger unnecessary first-segment downloads during preparation. Their segment maps remain available, while the base PAR2 metadata used for filenames and sizes is still read normally.
+* Versioned container releases now update the `latest` image tag automatically alongside the version, minor-version, and `stable` tags.
+
 ## [1.3.6](https://github.com/needforseed1/nzbdavex/compare/v1.3.5...v1.3.6) (2026-07-15)
 
 ### Fixes
