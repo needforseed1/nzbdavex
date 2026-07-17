@@ -154,7 +154,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             .ToList();
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
             cascadeEnabled: configManager.IsCascadeEnabled,
-            warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget);
+            warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget,
+            connectionBudget: ConnectionBudget);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient
@@ -168,6 +169,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             maxConnections: connectionDetails.MaxConnections,
             connectionFactory: ct => CreateNewConnection(connectionDetails, ct),
             minimumIdleConnections: keepWarm,
+            useRecoveryCapacity: connectionDetails.Type == ProviderType.BackupOnly,
             providerHost: connectionDetails.Host,
             onConnectionPoolChanged: onConnectionPoolChanged
         );
@@ -223,6 +225,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         int maxConnections,
         Func<CancellationToken, ValueTask<INntpClient>> connectionFactory,
         int minimumIdleConnections,
+        bool useRecoveryCapacity,
         string providerHost,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
@@ -240,7 +243,20 @@ public class UsenetStreamingClient : WrappingNntpClient
             onConnectionCapacityReduced: (effectiveMax, _) => Log.Warning(
                 "NNTP provider {Provider} rejected additional connections; limiting this pool to {EffectiveMax} " +
                 "accepted connections until provider settings are reloaded.", providerHost, effectiveMax),
-            connectionBudget: ConnectionBudget);
+            onWarmFloorStateChanged: (warm, target, ready) =>
+            {
+                if (ready)
+                    Log.Information(
+                        "NNTP provider {Provider} restored its ready connection floor ({Warm}/{Target}).",
+                        providerHost, warm, target);
+                else
+                    Log.Warning(
+                        "NNTP provider {Provider} has remained below its ready connection floor " +
+                        "for 30s ({Warm}/{Target}). Background maintenance will keep retrying.",
+                        providerHost, warm, target);
+            },
+            connectionBudget: ConnectionBudget,
+            useRecoveryCapacity: useRecoveryCapacity);
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;
         var args = new ConnectionPoolStats.ConnectionPoolChangedEventArgs(0, 0, maxConnections);
         onConnectionPoolChanged(connectionPool, args);

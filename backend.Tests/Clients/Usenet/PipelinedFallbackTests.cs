@@ -343,6 +343,45 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthKeepsFourGlobalSlotsAvailableForBackupOnlyRecovery()
+    {
+        static bool PrimaryCoverage(string segmentId) => segmentId != "segment-318";
+
+        var budget = new ConnectionLifetimeBudget(12, 12);
+        var firstPrimaryClient = new CoveragePipelineClient(PrimaryCoverage);
+        var secondPrimaryClient = new CoveragePipelineClient(PrimaryCoverage);
+        var backupClient = new CoveragePipelineClient(_ => true);
+        using var firstPrimary = CreateProvider(
+            firstPrimaryClient, ProviderType.Pooled, "primary-1", 0,
+            maxConnections: 8, connectionBudget: budget);
+        using var secondPrimary = CreateProvider(
+            secondPrimaryClient, ProviderType.Pooled, "primary-2", 1,
+            maxConnections: 4, connectionBudget: budget);
+        using var backup = CreateProvider(
+            backupClient, ProviderType.BackupOnly, "rescue", 2,
+            maxConnections: 4, connectionBudget: budget);
+        using var multiProvider = new MultiProviderNntpClient(
+            [firstPrimary, secondPrimary, backup],
+            new ProviderUsageTracker(),
+            applicationConnectionLimit: 12,
+            connectionBudget: budget);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await firstPrimary.PrewarmAsync(8, CancellationToken.None);
+        await secondPrimary.PrewarmAsync(4, CancellationToken.None);
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 12,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Contains(
+            backupClient.Batches.SelectMany(batch => batch),
+            segment => segment == "segment-318");
+        Assert.Equal(0, backup.LiveConnections);
+        Assert.Equal(8, budget.ReservedConnections);
+    }
+
+    [Fact]
     public async Task BulkHealthQualificationDoesNotWaitForStalledProbe()
     {
         var stalledClient = new CoveragePipelineClient(
@@ -458,9 +497,14 @@ public class PipelinedFallbackTests
     private static MultiConnectionNntpClient CreateProvider(
         INntpClient client, ProviderType type, string host, int priority, int maxConnections = 1,
         int? pipeliningDepth = null, int? healthPipeliningDepth = null,
-        ProviderCircuitBreaker? circuitBreaker = null)
+        ProviderCircuitBreaker? circuitBreaker = null,
+        ConnectionLifetimeBudget? connectionBudget = null)
     {
-        var pool = new ConnectionPool<INntpClient>(maxConnections, _ => ValueTask.FromResult(client));
+        var pool = new ConnectionPool<INntpClient>(
+            maxConnections,
+            _ => ValueTask.FromResult(client),
+            connectionBudget: connectionBudget,
+            useRecoveryCapacity: type == ProviderType.BackupOnly);
         return new MultiConnectionNntpClient(
             pool,
             type,

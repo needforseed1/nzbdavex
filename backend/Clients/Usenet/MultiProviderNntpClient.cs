@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
+using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Database.Models.Metrics;
@@ -27,13 +28,15 @@ public class MultiProviderNntpClient(
     int applicationConnectionLimit = UsenetStreamingClient.ApplicationConnectionLimit,
     Func<int>? warmValidationConnectionBudget = null,
     TimeSpan? providerAttemptTimeout = null,
-    TimeSpan? providerOperationTimeout = null
+    TimeSpan? providerOperationTimeout = null,
+    ConnectionLifetimeBudget? connectionBudget = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
     private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
     private const int HealthReclamationIdleFloor = 4;
+    private const int HealthRecoveryConnectionReserve = 4;
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
@@ -42,6 +45,8 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan DefaultProviderOperationTimeout = TimeSpan.FromSeconds(15);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
     private static readonly AsyncLocal<BulkStatPlan?> BulkStatPlanContext = new();
+    private readonly BackupRecoveryCoordinator _backupRecovery = new(
+        HealthRecoveryConnectionReserve);
 
     /// <summary>
     /// Tag the current async flow with a read-session id so SegmentFetch rows
@@ -70,6 +75,8 @@ public class MultiProviderNntpClient(
 
     private readonly object _selectLock = new();
     private int _prepSpreadCursor;
+    private IReadOnlyList<MultiConnectionNntpClient> Providers => providers;
+    private ConnectionLifetimeBudget? ConnectionBudget => connectionBudget;
     private int TotalLiveConnections => providers.Sum(provider => provider.LiveConnections);
     private int ApplicationConnectionLimit => applicationConnectionLimit;
     private int WarmValidationConnectionBudget => Math.Clamp(
@@ -1361,7 +1368,7 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private static async Task<IReadOnlyList<PipelinedStatResult>> ResolvePipelinedStatBatchAsync(
+    private async Task<IReadOnlyList<PipelinedStatResult>> ResolvePipelinedStatBatchAsync(
         IReadOnlyList<string> segmentIds,
         IReadOnlyList<MultiConnectionNntpClient> orderedProviders,
         int fallbackDepth,
@@ -1386,8 +1393,14 @@ public class MultiProviderNntpClient(
             var missing = 0;
             lastAttemptFailed = false;
             var stopwatch = Stopwatch.StartNew();
+            IDisposable? recoveryLease = null;
             try
             {
+                if (provider.ProviderType == ProviderType.BackupOnly)
+                    recoveryLease = await _backupRecovery.EnterAsync(
+                            provider, cancellationToken)
+                        .ConfigureAwait(false);
+
                 var providerDepth = ResolveHealthDepth(provider, fallbackDepth);
                 await foreach (var result in provider.StatsPipelinedAsync(batch, providerDepth, cancellationToken)
                                    .WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -1429,6 +1442,7 @@ public class MultiProviderNntpClient(
             }
             finally
             {
+                recoveryLease?.Dispose();
                 plan?.RecordAttempt(provider, attempted.Count, received, found, missing,
                     stopwatch.ElapsedMilliseconds, lastAttemptFailed);
             }
@@ -1452,6 +1466,60 @@ public class MultiProviderNntpClient(
         }
 
         return resolved!;
+    }
+
+    private sealed class BackupRecoveryCoordinator(int maxConnections)
+    {
+        private readonly SemaphoreSlim _slots = new(maxConnections, maxConnections);
+        private readonly object _lock = new();
+        private readonly Dictionary<MultiConnectionNntpClient, int> _active = [];
+
+        public async ValueTask<IDisposable> EnterAsync(
+            MultiConnectionNntpClient provider,
+            CancellationToken cancellationToken)
+        {
+            await _slots.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lock (_lock)
+                _active[provider] = _active.GetValueOrDefault(provider) + 1;
+            return new Lease(this, provider);
+        }
+
+        private void Exit(MultiConnectionNntpClient provider)
+        {
+            var closeIdle = false;
+            lock (_lock)
+            {
+                var remaining = _active.GetValueOrDefault(provider) - 1;
+                if (remaining <= 0)
+                {
+                    _active.Remove(provider);
+                    closeIdle = true;
+                }
+                else
+                    _active[provider] = remaining;
+            }
+
+            try
+            {
+                if (closeIdle) provider.CloseIdleConnections();
+            }
+            finally
+            {
+                _slots.Release();
+            }
+        }
+
+        private sealed class Lease(
+            BackupRecoveryCoordinator owner,
+            MultiConnectionNntpClient provider) : IDisposable
+        {
+            private BackupRecoveryCoordinator? _owner = owner;
+
+            public void Dispose()
+            {
+                Interlocked.Exchange(ref _owner, null)?.Exit(provider);
+            }
+        }
     }
 
     public override async IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
@@ -1922,6 +1990,8 @@ public class MultiProviderNntpClient(
     {
         private readonly object _lock = new();
         private readonly Dictionary<MultiConnectionNntpClient, IDisposable> _suspensions = [];
+        private IDisposable? _recoveryReservation;
+        private int _reservedRecoveryConnections;
         private int _reclaimed;
         private bool _disposed;
 
@@ -1936,6 +2006,8 @@ public class MultiProviderNntpClient(
                 // normal fallback search rather than guessing which pool to cut.
                 if (preferred.Count == 0) return;
 
+                EnsureRecoveryReserve(probed, preferred);
+
                 foreach (var provider in probed.Where(preferred.Contains))
                 {
                     if (_suspensions.Remove(provider, out var suspension))
@@ -1947,10 +2019,15 @@ public class MultiProviderNntpClient(
 
                 var usefulTarget = Math.Min(
                     Math.Max(1, connectionDemand),
-                    preferred.Sum(provider => provider.MaxConnections));
+                    Math.Min(
+                        preferred.Sum(provider => provider.MaxConnections),
+                        Math.Max(1,
+                            owner.ApplicationConnectionLimit - _reservedRecoveryConnections)));
                 var preferredLive = preferred.Sum(provider => provider.LiveConnections);
                 var totalLive = owner.TotalLiveConnections;
-                var globalHeadroom = Math.Max(0, owner.ApplicationConnectionLimit - totalLive);
+                var globalHeadroom = Math.Max(
+                    0,
+                    owner.ApplicationConnectionLimit - totalLive - _reservedRecoveryConnections);
                 var reclaimNeeded = Math.Max(0, usefulTarget - preferredLive - globalHeadroom);
 
                 foreach (var provider in probed
@@ -1983,9 +2060,79 @@ public class MultiProviderNntpClient(
             }
         }
 
+        private void EnsureRecoveryReserve(
+            IReadOnlyCollection<MultiConnectionNntpClient> probed,
+            IReadOnlySet<MultiConnectionNntpClient> preferred)
+        {
+            var budget = owner.ConnectionBudget;
+            if (_recoveryReservation is not null || budget is null) return;
+
+            var reserveTarget = Math.Min(
+                HealthRecoveryConnectionReserve,
+                Math.Min(
+                    Math.Max(0, owner.ApplicationConnectionLimit - 1),
+                    owner.Providers
+                        .Where(provider => provider.ProviderType == ProviderType.BackupOnly)
+                        .Where(provider => !provider.IsTripped)
+                        .Where(provider => !owner.IsOverLimit(provider))
+                        .Sum(provider => provider.MaxConnections)));
+            if (reserveTarget == 0) return;
+
+            var trimNeeded = Math.Max(
+                0, reserveTarget - budget.AvailableStandardCapacity);
+            var candidates = probed
+                .Where(provider => provider.ProviderType != ProviderType.BackupOnly)
+                .OrderBy(provider => preferred.Contains(provider) ? 1 : 0)
+                .ThenBy(provider => preferred.Contains(provider)
+                    ? plan.Coverage(provider)
+                    : 0)
+                .ThenByDescending(provider => provider.IdleConnections)
+                .ToArray();
+
+            TrimCandidates(HealthReclamationIdleFloor);
+
+            if (!budget.TryReserveStandardCapacity(
+                    reserveTarget, out var reservation))
+            {
+                Log.Warning(
+                    "health-stat recovery-reserve action=failed requested={Requested} " +
+                    "availableStandard={AvailableStandard}",
+                    reserveTarget, budget.AvailableStandardCapacity);
+                return;
+            }
+
+            _recoveryReservation = reservation;
+            _reservedRecoveryConnections = reserveTarget;
+            Log.Information(
+                "health-stat recovery-reserve action=reserved connections={Connections}",
+                reserveTarget);
+            return;
+
+            void TrimCandidates(int retainedFloor)
+            {
+                foreach (var provider in candidates)
+                {
+                    if (trimNeeded == 0) return;
+                    var reclaimable = Math.Max(
+                        0, provider.IdleConnections - retainedFloor);
+                    var requested = Math.Min(trimNeeded, reclaimable);
+                    if (requested == 0) continue;
+
+                    var retained = provider.IdleConnections - requested;
+                    var reclaimed = provider.TrimIdleConnections(retained);
+                    trimNeeded = Math.Max(0, trimNeeded - reclaimed);
+                    Log.Information(
+                        "health-stat recovery-reserve provider={Provider} action=trim " +
+                        "retained={Retained} reclaimed={Reclaimed} remaining={Remaining}",
+                        provider.Host, retained, reclaimed, trimNeeded);
+                }
+            }
+        }
+
         public void Dispose()
         {
             MultiConnectionNntpClient[] restore;
+            IDisposable? recoveryReservation;
             int reclaimed;
             lock (_lock)
             {
@@ -1995,8 +2142,16 @@ public class MultiProviderNntpClient(
                 foreach (var suspension in _suspensions.Values)
                     suspension.Dispose();
                 _suspensions.Clear();
+                recoveryReservation = _recoveryReservation;
+                _recoveryReservation = null;
+                _reservedRecoveryConnections = 0;
                 reclaimed = _reclaimed;
             }
+
+            foreach (var provider in owner.Providers
+                         .Where(provider => provider.ProviderType == ProviderType.BackupOnly))
+                provider.CloseIdleConnections();
+            recoveryReservation?.Dispose();
 
             foreach (var provider in restore)
                 _ = RestoreWarmProviderAsync(provider);

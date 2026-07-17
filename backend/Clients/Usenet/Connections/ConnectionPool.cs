@@ -21,9 +21,11 @@ namespace NzbWebDAV.Clients.Usenet.Connections;
 public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 {
     private const int WarmValidationBatchSize = 4;
+    private const int IdlePrewarmExpansionBatchSize = 16;
     private const int ConcurrentConnectionCreationLimit = 16;
     private const int DefaultRapidWarmValidationConcurrencyLimit = 32;
     private static readonly TimeSpan UnderfilledWarmRetryInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan WarmFloorWarningDelay = TimeSpan.FromSeconds(30);
 
     /* -------------------------------- configuration -------------------------------- */
 
@@ -42,11 +44,14 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly Func<T, CancellationToken, ValueTask<bool>>? _validator;
     private readonly TimeSpan _validateAfterIdle;
     private readonly TimeSpan? _warmConnectionRefreshInterval;
+    private readonly TimeSpan _warmMaintenanceRetryInterval;
     private readonly int _maxConnections;
     private readonly int _minimumIdleConnections;
     private readonly Func<Exception, bool>? _connectionCapacityRejected;
     private readonly Action<int, Exception>? _onConnectionCapacityReduced;
+    private readonly Action<int, int, bool>? _onWarmFloorStateChanged;
     private readonly ConnectionLifetimeBudget? _connectionBudget;
+    private readonly bool _useRecoveryCapacity;
 
     /* --------------------------------- state --------------------------------------- */
 
@@ -75,6 +80,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private int _lastReportedWarmConnections;
     private int _prewarmingActivated;
     private long _nextPrewarmSuspensionId;
+    private long _warmFloorBelowSince;
+    private bool _warmFloorWarningRaised;
 
     /* ------------------------------------------------------------------------------ */
 
@@ -86,9 +93,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         TimeSpan? validateAfterIdle = null,
         int minimumIdleConnections = 0,
         TimeSpan? warmConnectionRefreshInterval = null,
+        TimeSpan? warmMaintenanceRetryInterval = null,
         Func<Exception, bool>? connectionCapacityRejected = null,
         Action<int, Exception>? onConnectionCapacityReduced = null,
-        ConnectionLifetimeBudget? connectionBudget = null)
+        Action<int, int, bool>? onWarmFloorStateChanged = null,
+        ConnectionLifetimeBudget? connectionBudget = null,
+        bool useRecoveryCapacity = false)
     {
         if (maxConnections <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxConnections));
@@ -96,6 +106,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(minimumIdleConnections));
         if (warmConnectionRefreshInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(warmConnectionRefreshInterval));
+        if (warmMaintenanceRetryInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(warmMaintenanceRetryInterval));
 
         _factory = connectionFactory
                    ?? throw new ArgumentNullException(nameof(connectionFactory));
@@ -104,9 +116,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _validateAfterIdle = validateAfterIdle ?? TimeSpan.FromSeconds(20);
         _minimumIdleConnections = minimumIdleConnections;
         _warmConnectionRefreshInterval = warmConnectionRefreshInterval;
+        _warmMaintenanceRetryInterval =
+            warmMaintenanceRetryInterval ?? UnderfilledWarmRetryInterval;
         _connectionCapacityRejected = connectionCapacityRejected;
         _onConnectionCapacityReduced = onConnectionCapacityReduced;
+        _onWarmFloorStateChanged = onWarmFloorStateChanged;
         _connectionBudget = connectionBudget;
+        _useRecoveryCapacity = useRecoveryCapacity;
 
         _maxConnections = maxConnections;
         _effectiveMaxConnections = maxConnections;
@@ -511,7 +527,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             return await _factory(cancellationToken).ConfigureAwait(false);
 
         using var reservation = await _connectionBudget
-            .ReserveCreationAsync(cancellationToken).ConfigureAwait(false);
+            .ReserveCreationAsync(_useRecoveryCapacity, cancellationToken).ConfigureAwait(false);
         var connection = await _factory(cancellationToken).ConfigureAwait(false);
         reservation.Commit();
         return connection;
@@ -523,7 +539,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (_connectionBudget is null)
             return (true, await _factory(cancellationToken).ConfigureAwait(false));
 
-        if (!_connectionBudget.TryReserveCreation(out var reservation))
+        if (!_connectionBudget.TryReserveCreation(_useRecoveryCapacity, out var reservation))
             return (false, default!);
 
         using (reservation)
@@ -940,13 +956,25 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         int maxConcurrency,
         CancellationToken cancellationToken = default)
     {
-        if (_minimumIdleConnections == 0 || _validator == null || count <= 0) return;
-        if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
+        await TryRefreshWarmConnectionsAsync(
+                count, maxConcurrency, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<bool> TryRefreshWarmConnectionsAsync(
+        int count,
+        int maxConcurrency,
+        CancellationToken cancellationToken)
+    {
+        if (_minimumIdleConnections == 0 || _validator == null || count <= 0)
+            return true;
+        if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return false;
         using (maintenanceLease)
         {
             await RefreshWarmConnectionsWithLeaseAsync(
                     count, maxConcurrency, null, cancellationToken, maintenanceLease.Token)
                 .ConfigureAwait(false);
+            return true;
         }
     }
 
@@ -984,9 +1012,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
                 // Keep maintenance cheap and staggered. Real borrowers still
                 // validate any connection that exceeded validateAfterIdle.
-                var count = Math.Min(
-                    requestedCount,
-                    Volatile.Read(ref _effectiveMaxConnections));
+                var count = Math.Min(requestedCount,
+                    Math.Min(
+                        Volatile.Read(ref _effectiveMaxConnections),
+                        primer is null ? IdleConnections : requestedCount));
                 await AcquireIdleConnectionsAsync(
                     count,
                     forceIdleValidation: primer is null,
@@ -1165,9 +1194,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             if (_warmConnectionRefreshInterval.HasValue)
                 interval = Min(interval, Min(
                     _warmConnectionRefreshInterval.Value,
-                    UnderfilledWarmRetryInterval));
+                    _warmMaintenanceRetryInterval));
             var nextWarmRefreshAt = DateTimeOffset.UtcNow +
                                     (_warmConnectionRefreshInterval ?? TimeSpan.Zero);
+            var failedRefreshRetry = _warmConnectionRefreshInterval.HasValue
+                ? Min(_warmMaintenanceRetryInterval, _warmConnectionRefreshInterval.Value)
+                : _warmMaintenanceRetryInterval;
             using var timer = new PeriodicTimer(interval);
             while (await timer.WaitForNextTickAsync(_sweepCts.Token).ConfigureAwait(false))
             {
@@ -1182,18 +1214,56 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         // A startup or restore prewarm may have yielded to real
                         // work or another provider's handshakes. Retry missing
                         // warm capacity opportunistically while the pool is idle.
-                        // Do not run forced validation while underfilled: that
-                        // path could turn maintenance into queued acquisitions.
-                        if (IdleConnections < _minimumIdleConnections)
-                            await PrewarmAsync(_minimumIdleConnections, _sweepCts.Token)
+                        // Establish and validate the small ready floor before
+                        // growing the rest of the idle pool. Otherwise a large
+                        // or slow speculative fill can keep the maintenance gate
+                        // busy until every useful connection has gone stale.
+                        var warmFloor = GetWarmFloorConnections();
+                        var startedBelowFloor = IdleConnections < warmFloor;
+                        if (startedBelowFloor)
+                            await PrewarmAsync(warmFloor, _sweepCts.Token)
                                 .ConfigureAwait(false);
-                        else if (DateTimeOffset.UtcNow >= nextWarmRefreshAt)
+
+                        var warmFloorReady = WarmConnections >= warmFloor;
+                        var now = DateTimeOffset.UtcNow;
+                        if (IdleConnections > 0 &&
+                            (!warmFloorReady || now >= nextWarmRefreshAt))
                         {
-                            await RefreshWarmConnectionsAsync(_sweepCts.Token)
+                            var attempted = await TryRefreshWarmConnectionsAsync(
+                                    warmFloor,
+                                    DefaultRapidWarmValidationConcurrencyLimit,
+                                    _sweepCts.Token)
                                 .ConfigureAwait(false);
-                            nextWarmRefreshAt = DateTimeOffset.UtcNow +
-                                                _warmConnectionRefreshInterval.Value;
+                            warmFloorReady = WarmConnections >= warmFloor;
+                            if (attempted && warmFloorReady)
+                            {
+                                failedRefreshRetry = Min(
+                                    _warmMaintenanceRetryInterval,
+                                    _warmConnectionRefreshInterval.Value);
+                                nextWarmRefreshAt = DateTimeOffset.UtcNow +
+                                                    _warmConnectionRefreshInterval.Value;
+                            }
+                            else
+                            {
+                                nextWarmRefreshAt = DateTimeOffset.UtcNow + failedRefreshRetry;
+                                failedRefreshRetry = Min(
+                                    failedRefreshRetry + failedRefreshRetry,
+                                    _warmConnectionRefreshInterval.Value);
+                            }
                         }
+
+                        if (!startedBelowFloor &&
+                            warmFloorReady &&
+                            IdleConnections < _minimumIdleConnections)
+                        {
+                            var expansionTarget = Math.Min(
+                                _minimumIdleConnections,
+                                LiveConnections + IdlePrewarmExpansionBatchSize);
+                            await PrewarmAsync(expansionTarget, _sweepCts.Token)
+                                .ConfigureAwait(false);
+                        }
+
+                        UpdateWarmFloorState(WarmConnections, warmFloor);
                     }
                     catch (OperationCanceledException) when (_sweepCts.IsCancellationRequested)
                     {
@@ -1201,7 +1271,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     }
                     catch
                     {
-                        // A later maintenance pass or real request will retry.
+                        var warmFloor = GetWarmFloorConnections();
+                        UpdateWarmFloorState(WarmConnections, warmFloor);
+                        nextWarmRefreshAt = DateTimeOffset.UtcNow + failedRefreshRetry;
+                        failedRefreshRetry = Min(
+                            failedRefreshRetry + failedRefreshRetry,
+                            _warmConnectionRefreshInterval.Value);
                     }
                 }
             }
@@ -1214,6 +1289,39 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private static TimeSpan Min(TimeSpan first, TimeSpan second) =>
         first <= second ? first : second;
+
+    private int GetWarmFloorConnections() =>
+        Math.Min(
+            WarmValidationBatchSize,
+            Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
+
+    private void UpdateWarmFloorState(int warmConnections, int warmFloor)
+    {
+        if (warmFloor == 0) return;
+
+        var now = Environment.TickCount64;
+        if (warmConnections >= warmFloor)
+        {
+            _warmFloorBelowSince = 0;
+            if (!_warmFloorWarningRaised) return;
+            _warmFloorWarningRaised = false;
+            _onWarmFloorStateChanged?.Invoke(warmConnections, warmFloor, true);
+            return;
+        }
+
+        if (_warmFloorBelowSince == 0)
+        {
+            _warmFloorBelowSince = now;
+            return;
+        }
+
+        if (_warmFloorWarningRaised ||
+            unchecked(now - _warmFloorBelowSince) < WarmFloorWarningDelay.TotalMilliseconds)
+            return;
+
+        _warmFloorWarningRaised = true;
+        _onWarmFloorStateChanged?.Invoke(warmConnections, warmFloor, false);
+    }
 
     private void SweepOnce()
     {
@@ -1264,7 +1372,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
         finally
         {
-            _connectionBudget?.ReleaseConnection();
+            _connectionBudget?.ReleaseConnection(_useRecoveryCapacity);
         }
     }
 

@@ -520,6 +520,54 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task IdleMaintenanceRepairsAnExpiredWarmFloorBeforeTheNormalRefresh()
+    {
+        var validated = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                return ValueTask.FromResult(true);
+            },
+            validateAfterIdle: TimeSpan.FromMilliseconds(40),
+            minimumIdleConnections: 4,
+            warmConnectionRefreshInterval: TimeSpan.FromSeconds(5),
+            warmMaintenanceRetryInterval: TimeSpan.FromMilliseconds(20));
+
+        await pool.PrewarmAsync(4);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (Volatile.Read(ref validated) < 4)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(4, pool.WarmConnections);
+        Assert.True(Volatile.Read(ref validated) >= 4);
+    }
+
+    [Fact]
+    public async Task WarmMaintenanceDoesNotQueueBehindAnActiveConnection()
+    {
+        var validated = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                return ValueTask.FromResult(true);
+            },
+            minimumIdleConnections: 1);
+
+        await pool.PrewarmAsync(1);
+        using var active = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await pool.RefreshWarmConnectionsAsync(1).WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(0, Volatile.Read(ref validated));
+        Assert.Equal(1, pool.ActiveConnections);
+    }
+
+    [Fact]
     public async Task IdleMaintenanceWaitsForFirstExplicitPrewarm()
     {
         await using var pool = new ConnectionPool<TrackedConnection>(
@@ -577,6 +625,34 @@ public class ConnectionPoolTests
 
         Assert.Equal(0, firstPool.LiveConnections);
         Assert.Equal(1, secondPool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task StandardCapacityReservationLeavesSlotsForRecoveryConnections()
+    {
+        var budget = new ConnectionLifetimeBudget(4, 4);
+        await using var standard = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionBudget: budget);
+        await using var recovery = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(2, () => { })),
+            connectionBudget: budget,
+            useRecoveryCapacity: true);
+
+        await standard.PrewarmAsync(4);
+        standard.TrimIdleConnections(2);
+        Assert.True(budget.TryReserveStandardCapacity(2, out var reservation));
+        using (reservation)
+        {
+            await standard.PrewarmAsync(4);
+            await recovery.PrewarmAsync(2);
+
+            Assert.Equal(2, standard.LiveConnections);
+            Assert.Equal(2, recovery.LiveConnections);
+            Assert.Equal(4, budget.ReservedConnections);
+        }
     }
 
     [Fact]

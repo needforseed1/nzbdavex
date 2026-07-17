@@ -8,6 +8,7 @@ namespace NzbWebDAV.Clients.Usenet.Connections;
 public sealed class ConnectionLifetimeBudget
 {
     private readonly SemaphoreSlim _connectionSlots;
+    private readonly SemaphoreSlim _standardConnectionSlots;
     private readonly SemaphoreSlim _creationSlots;
     private readonly int _maxConnections;
     private readonly int _maxConcurrentCreations;
@@ -23,14 +24,21 @@ public sealed class ConnectionLifetimeBudget
         _maxConnections = maxConnections;
         _maxConcurrentCreations = maxConcurrentCreations;
         _connectionSlots = new SemaphoreSlim(maxConnections, maxConnections);
+        _standardConnectionSlots = new SemaphoreSlim(maxConnections, maxConnections);
         _creationSlots = new SemaphoreSlim(maxConcurrentCreations, maxConcurrentCreations);
     }
 
     internal int ReservedConnections => _maxConnections - _connectionSlots.CurrentCount;
     internal int ActiveCreations => _maxConcurrentCreations - _creationSlots.CurrentCount;
     internal int ForegroundWaiters => Volatile.Read(ref _foregroundWaiters);
+    internal int AvailableStandardCapacity => _standardConnectionSlots.CurrentCount;
 
     internal async ValueTask<CreationReservation> ReserveCreationAsync(CancellationToken cancellationToken)
+        => await ReserveCreationAsync(useRecoveryCapacity: false, cancellationToken).ConfigureAwait(false);
+
+    internal async ValueTask<CreationReservation> ReserveCreationAsync(
+        bool useRecoveryCapacity,
+        CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _foregroundWaiters);
         try
@@ -42,8 +50,18 @@ public sealed class ConnectionLifetimeBudget
             await _creationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
-                return new CreationReservation(this);
+                if (!useRecoveryCapacity)
+                    await _standardConnectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    return new CreationReservation(this, !useRecoveryCapacity);
+                }
+                catch
+                {
+                    if (!useRecoveryCapacity) _standardConnectionSlots.Release();
+                    throw;
+                }
             }
             catch
             {
@@ -63,30 +81,72 @@ public sealed class ConnectionLifetimeBudget
     /// provider that is already using the application-wide socket budget.
     /// </summary>
     internal bool TryReserveCreation(out CreationReservation reservation)
+        => TryReserveCreation(useRecoveryCapacity: false, out reservation);
+
+    internal bool TryReserveCreation(
+        bool useRecoveryCapacity,
+        out CreationReservation reservation)
     {
         reservation = null!;
+        if (Volatile.Read(ref _foregroundWaiters) > 0) return false;
+
+        var standardReserved = false;
+        if (!useRecoveryCapacity)
+        {
+            if (!_standardConnectionSlots.Wait(0)) return false;
+            standardReserved = true;
+        }
+
         if (Volatile.Read(ref _foregroundWaiters) > 0 || !_connectionSlots.Wait(0))
+        {
+            if (standardReserved) _standardConnectionSlots.Release();
             return false;
+        }
 
         if (Volatile.Read(ref _foregroundWaiters) > 0 || !_creationSlots.Wait(0))
         {
             _connectionSlots.Release();
+            if (standardReserved) _standardConnectionSlots.Release();
             return false;
         }
 
-        reservation = new CreationReservation(this);
+        reservation = new CreationReservation(this, standardReserved);
         return true;
     }
 
-    public void ReleaseConnection() => _connectionSlots.Release();
+    internal bool TryReserveStandardCapacity(int count, out IDisposable reservation)
+    {
+        reservation = EmptyReservation.Instance;
+        if (count <= 0) return true;
+
+        var acquired = 0;
+        while (acquired < count && _standardConnectionSlots.Wait(0))
+            acquired++;
+        if (acquired != count)
+        {
+            if (acquired > 0) _standardConnectionSlots.Release(acquired);
+            return false;
+        }
+
+        reservation = new StandardCapacityReservation(_standardConnectionSlots, count);
+        return true;
+    }
+
+    public void ReleaseConnection(bool usedRecoveryCapacity = false)
+    {
+        _connectionSlots.Release();
+        if (!usedRecoveryCapacity) _standardConnectionSlots.Release();
+    }
 
     internal sealed class CreationReservation : IDisposable
     {
         private ConnectionLifetimeBudget? _owner;
+        private readonly bool _standardReserved;
 
-        public CreationReservation(ConnectionLifetimeBudget owner)
+        public CreationReservation(ConnectionLifetimeBudget owner, bool standardReserved)
         {
             _owner = owner;
+            _standardReserved = standardReserved;
         }
 
         /// <summary>
@@ -105,6 +165,28 @@ public sealed class ConnectionLifetimeBudget
             if (current is null) return;
             current._creationSlots.Release();
             current._connectionSlots.Release();
+            if (_standardReserved) current._standardConnectionSlots.Release();
+        }
+    }
+
+    private sealed class StandardCapacityReservation(
+        SemaphoreSlim slots,
+        int count) : IDisposable
+    {
+        private SemaphoreSlim? _slots = slots;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _slots, null)?.Release(count);
+        }
+    }
+
+    private sealed class EmptyReservation : IDisposable
+    {
+        public static readonly EmptyReservation Instance = new();
+
+        public void Dispose()
+        {
         }
     }
 }
