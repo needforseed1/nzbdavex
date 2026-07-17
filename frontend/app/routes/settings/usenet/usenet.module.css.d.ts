@@ -54,6 +54,8 @@ declare const styles: {
   readonly "full-width": string;
   readonly "form-label": string;
   readonly "form-input": string;
+  readonly "password-input-wrapper": string;
+  readonly "password-toggle": string;
   readonly "error": string;
   readonly "form-select": string;
   readonly "form-checkbox-wrapper": string;

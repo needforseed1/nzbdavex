@@ -612,6 +612,43 @@
     color: var(--text-faint);
 }
 
+.password-input-wrapper {
+    position: relative;
+}
+
+.password-input-wrapper .form-input {
+    padding-right: 44px;
+}
+
+.password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transform: translateY(-50%);
+    transition: color 120ms ease, background-color 120ms ease;
+}
+
+.password-toggle:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.password-toggle:focus-visible {
+    outline: 2px solid var(--border-strong);
+    outline-offset: 1px;
+}
+
 .form-input.error {
     border-color: rgba(239, 68, 68, 0.5);
 }

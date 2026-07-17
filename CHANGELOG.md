@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.12](https://github.com/needforseed1/nzbdavex/compare/v1.3.11...v1.3.12) (2026-07-17)
+
+### Improvements
+
+* Provider passwords can now be shown or hidden from inside the password field, making saved credentials easier to verify while keeping them hidden whenever the provider editor is opened.
+
 ## [1.3.11](https://github.com/needforseed1/nzbdavex/compare/v1.3.10...v1.3.11) (2026-07-17)
 
 ### Improvements

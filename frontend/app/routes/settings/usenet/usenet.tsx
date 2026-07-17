@@ -1158,6 +1158,7 @@ function ProviderModal({
     const [useSsl, setUseSsl] = useState(provider?.UseSsl ?? true);
     const [user, setUser] = useState(provider?.User || "");
     const [pass, setPass] = useState(provider?.Pass || "");
+    const [showPassword, setShowPassword] = useState(false);
     const [maxConnections, setMaxConnections] = useState(provider?.MaxConnections?.toString() || "");
     const [pipeliningDepth, setPipeliningDepth] = useState(provider?.PipeliningDepth?.toString() || "");
     const [healthPipeliningDepth, setHealthPipeliningDepth] = useState(provider?.HealthPipeliningDepth?.toString() || "");
@@ -1192,6 +1193,7 @@ function ProviderModal({
             setUseSsl(provider?.UseSsl ?? true);
             setUser(provider?.User || "");
             setPass(provider?.Pass || "");
+            setShowPassword(false);
             setMaxConnections(provider?.MaxConnections?.toString() || "");
             setPipeliningDepth(provider?.PipeliningDepth?.toString() || "");
             setHealthPipeliningDepth(provider?.HealthPipeliningDepth?.toString() || "");
@@ -1578,17 +1580,44 @@ function ProviderModal({
                             <label htmlFor="provider-pass" className={styles["form-label"]}>
                                 Password
                             </label>
-                            <input
-                                type="password"
-                                id="provider-pass"
-                                className={styles["form-input"]}
-                                placeholder="password"
-                                value={pass}
-                                onChange={(e) => {
-                                    setPass(e.target.value);
-                                    setConnectionTested(false);
-                                }}
-                            />
+                            <div className={styles["password-input-wrapper"]}>
+                                <input
+                                    type={showPassword ? "text" : "password"}
+                                    id="provider-pass"
+                                    className={styles["form-input"]}
+                                    placeholder="password"
+                                    value={pass}
+                                    onChange={(e) => {
+                                        setPass(e.target.value);
+                                        setConnectionTested(false);
+                                    }}
+                                />
+                                <button
+                                    type="button"
+                                    className={styles["password-toggle"]}
+                                    onClick={() => setShowPassword((visible) => !visible)}
+                                    aria-label={showPassword ? "Hide password" : "Show password"}
+                                    aria-pressed={showPassword}
+                                    aria-controls="provider-pass"
+                                    title={showPassword ? "Hide password" : "Show password"}
+                                >
+                                    <svg
+                                        viewBox="0 0 24 24"
+                                        width="18"
+                                        height="18"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                                        <circle cx="12" cy="12" r="2.5" />
+                                        {showPassword && <path d="m4 4 16 16" />}
+                                    </svg>
+                                </button>
+                            </div>
                         </div>
 
                         <div className={styles["form-group"]}>
