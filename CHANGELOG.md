@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.11](https://github.com/needforseed1/nzbdavex/compare/v1.3.10...v1.3.11) (2026-07-17)
+
+### Improvements
+
+* Advanced Usenet settings can now control how many connections remain authenticated and ready on each Primary and Backup + health checks provider. Safe defaults keep 5 and 10 connections ready respectively, plain Backup providers remain recovery-only, and changes apply without restarting the app.
+* Ready connections are refreshed every 30 seconds, while temporary connections opened for preparation, playback, or health checks still close after their normal idle period. The settings page shows the combined ready target and warns when higher values may compete with another download client using the same accounts.
+* Playback priority now controls provider connection scheduling directly, so saved priority changes take effect immediately when playback competes with preparation or health checks.
+
 ## [1.3.10](https://github.com/needforseed1/nzbdavex/compare/v1.3.9...v1.3.10) (2026-07-17)
 
 ### Fixes
