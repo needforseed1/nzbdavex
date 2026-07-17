@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.10](https://github.com/needforseed1/nzbdavex/compare/v1.3.9...v1.3.10) (2026-07-17)
+
+### Fixes
+
+* Provider pools now restore a small validated connection reserve promptly after startup or idle expiry, keeping the first preparation and health check ready without waiting for a full warmup cycle.
+* Health checks keep recovery capacity available for plain Backup providers even when health-capable providers fill the global connection limit. Backup connections are used only for unresolved articles and released afterward for normal work.
+* Failed Watchdog attempts now expose the actual failure reason, the stage that stopped, partial preparation and health timings, and any provider activity captured before the failure.
+
 ## [1.3.9](https://github.com/needforseed1/nzbdavex/compare/v1.3.8...v1.3.9) (2026-07-16)
 
 ### Improvements
