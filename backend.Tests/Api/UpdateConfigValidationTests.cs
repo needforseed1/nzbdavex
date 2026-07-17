@@ -69,6 +69,24 @@ public class UpdateConfigValidationTests
     }
 
     [Theory]
+    [InlineData("usenet.ready-connections.primary")]
+    [InlineData("usenet.ready-connections.health")]
+    public void ReadyConnectionFloorsAcceptZeroAndEnforceGlobalRange(string key)
+    {
+        ConfigUpdateValidator.Validate([
+            new ConfigItem { ConfigName = key, ConfigValue = "0" },
+        ]);
+        ConfigUpdateValidator.Validate([
+            new ConfigItem { ConfigName = key, ConfigValue = "512" },
+        ]);
+
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem { ConfigName = key, ConfigValue = "513" },
+            ]));
+    }
+
+    [Theory]
     [InlineData("play.total-budget-seconds", "1")]
     [InlineData("preflight.max-attempts", "0")]
     [InlineData("watchtower.size-floor-bytes", "-1")]

@@ -56,6 +56,8 @@ public class MultiConnectionNntpClient(
     public int LiveConnections => connectionPool.LiveConnections;
     public int WarmConnections => connectionPool.WarmConnections;
     public int IdleConnections => connectionPool.IdleConnections;
+    internal int PersistentIdleConnectionTarget => connectionPool.MinimumIdleConnections;
+    internal int PersistentWarmConnectionTarget => connectionPool.MinimumWarmConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int AvailableConnections => connectionPool.AvailableConnections;
     public int MaxConnections => connectionPool.MaxConnections;
@@ -68,6 +70,9 @@ public class MultiConnectionNntpClient(
     public bool HasSpareConnection => AvailableConnections - PendingSelections > 0;
 
     internal void ActivateIdlePrewarming() => connectionPool.ActivateIdlePrewarming();
+
+    internal void UpdatePriorityOdds(SemaphorePriorityOdds priorityOdds) =>
+        connectionPool.UpdatePriorityOdds(priorityOdds);
 
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);

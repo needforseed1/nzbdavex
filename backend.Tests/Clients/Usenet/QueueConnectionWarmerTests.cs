@@ -30,6 +30,129 @@ public class QueueConnectionWarmerTests
             UsenetStreamingClient.GetWarmConnectionTarget(providerType, maxConnections));
     }
 
+    [Theory]
+    [InlineData(ProviderType.HealthChecksOnly, 40, 4, 4)]
+    [InlineData(ProviderType.Pooled, 100, 4, 4)]
+    [InlineData(ProviderType.BackupAndStats, 3, 4, 3)]
+    [InlineData(ProviderType.BackupOnly, 50, 4, 0)]
+    [InlineData(ProviderType.Disabled, 50, 4, 0)]
+    [InlineData(ProviderType.Pooled, 100, 0, 0)]
+    public void PersistentIdleFloorTestOverrideDoesNotWarmIneligibleProviders(
+        ProviderType providerType,
+        int maxConnections,
+        int testOverride,
+        int expected)
+    {
+        Assert.Equal(expected,
+            UsenetStreamingClient.GetPersistentIdleConnectionTarget(
+                providerType, maxConnections, testOverride));
+    }
+
+    [Theory]
+    [InlineData(ProviderType.HealthChecksOnly, 40, 36)]
+    [InlineData(ProviderType.Pooled, 100, 50)]
+    [InlineData(ProviderType.BackupAndStats, 50, 45)]
+    [InlineData(ProviderType.BackupOnly, 50, 0)]
+    public void PersistentIdleFloorUsesExistingTargetsWithoutTestOverride(
+        ProviderType providerType,
+        int maxConnections,
+        int expected)
+    {
+        Assert.Equal(expected,
+            UsenetStreamingClient.GetPersistentIdleConnectionTarget(
+                providerType, maxConnections, testOverride: null));
+    }
+
+    [Theory]
+    [InlineData(10, 8, 8)]
+    [InlineData(4, 8, 4)]
+    [InlineData(10, null, 4)]
+    [InlineData(0, 8, 0)]
+    public void PersistentWarmFloorIsIndependentAndNeverExceedsIdleFloor(
+        int persistentIdleTarget,
+        int? testOverride,
+        int expected)
+    {
+        Assert.Equal(expected,
+            UsenetStreamingClient.GetPersistentWarmConnectionTarget(
+                persistentIdleTarget, testOverride));
+    }
+
+    [Theory]
+    [InlineData(true, null, true)]
+    [InlineData(false, 4, true)]
+    [InlineData(false, 0, true)]
+    [InlineData(false, null, false)]
+    public void TestFloorReactivatesIdleMaintenanceAfterProviderReload(
+        bool requestedByLifecycle,
+        int? testOverride,
+        bool expected)
+    {
+        Assert.Equal(expected,
+            UsenetStreamingClient.ShouldActivateIdlePrewarming(
+                requestedByLifecycle, testOverride));
+    }
+
+    [Fact]
+    public void RoleReadyFloorReactivatesIdleMaintenanceAfterProviderReload()
+    {
+        Assert.True(
+            UsenetStreamingClient.ShouldActivateIdlePrewarming(
+                requestedByLifecycle: false,
+                persistentIdleFloorTestOverride: null,
+                roleReadyFloorTestOverride: true));
+    }
+
+    [Theory]
+    [InlineData(ProviderType.Pooled, 100, 5)]
+    [InlineData(ProviderType.Pooled, 3, 3)]
+    [InlineData(ProviderType.BackupAndStats, 50, 20)]
+    [InlineData(ProviderType.HealthChecksOnly, 10, 10)]
+    [InlineData(ProviderType.BackupOnly, 50, null)]
+    [InlineData(ProviderType.Disabled, 50, null)]
+    public void RoleReadyFloorSeparatesPrimaryAndHealthCapableProviders(
+        ProviderType providerType,
+        int maxConnections,
+        int? expected)
+    {
+        var overrides =
+            new UsenetStreamingClient.PersistentReadyFloorTargets(
+                Primary: 5,
+                BackupHealth: 20);
+
+        Assert.Equal(
+            expected,
+            UsenetStreamingClient.GetRoleReadyConnectionTarget(
+                providerType,
+                maxConnections,
+                overrides));
+    }
+
+    [Theory]
+    [InlineData(null, null, 45, 30)]
+    [InlineData(60, 45, 60, 45)]
+    [InlineData(60, null, 60, 30)]
+    [InlineData(null, 10, 45, 10)]
+    [InlineData(30, 30, 45, 30)]
+    [InlineData(30, 45, 45, 30)]
+    public void WarmTimingOverridesRequireRefreshBeforeValidationExpiry(
+        int? validationSeconds,
+        int? refreshSeconds,
+        int expectedValidationSeconds,
+        int expectedRefreshSeconds)
+    {
+        var timings = UsenetStreamingClient.ResolveWarmConnectionTimings(
+            validationSeconds,
+            refreshSeconds);
+
+        Assert.Equal(
+            TimeSpan.FromSeconds(expectedValidationSeconds),
+            timings.ValidationWindow);
+        Assert.Equal(
+            TimeSpan.FromSeconds(expectedRefreshSeconds),
+            timings.RefreshInterval);
+    }
+
     [Fact]
     public async Task DistributesTargetAcrossPooledProvidersByCapacity()
     {

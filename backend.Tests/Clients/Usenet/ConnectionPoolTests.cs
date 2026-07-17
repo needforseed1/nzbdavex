@@ -25,6 +25,25 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task UpdatedPriorityOddsControlTheNextReturnedConnection()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })));
+        pool.UpdatePriorityOdds(new SemaphorePriorityOdds { HighPriorityOdds = 0 });
+        var activeHealth = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var waitingPlayback = pool.GetConnectionLockAsync(SemaphorePriority.High);
+        var waitingHealth = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+
+        activeHealth.Dispose();
+
+        var health = await waitingHealth.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(waitingPlayback.IsCompleted);
+        health.Dispose();
+        using var playback = await waitingPlayback.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task DisposalLetsBorrowedConnectionFinishBeforeDestroyingIt()
     {
         var disposed = 0;
@@ -517,6 +536,57 @@ public class ConnectionPoolTests
 
         Assert.Equal(4, Volatile.Read(ref validated));
         Assert.Equal(20, pool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task WarmFloorRefreshDoesNotPreventExcessIdleConnectionsFromExpiring()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            12,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            idleTimeout: TimeSpan.FromMilliseconds(100),
+            connectionValidator: (_, _) => ValueTask.FromResult(true),
+            validateAfterIdle: TimeSpan.FromMilliseconds(30),
+            minimumIdleConnections: 4,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20),
+            warmMaintenanceRetryInterval: TimeSpan.FromMilliseconds(10));
+
+        await pool.PrewarmAsync(12);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (pool.LiveConnections > 4)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(4, pool.LiveConnections);
+        Assert.Equal(4, pool.IdleConnections);
+        Assert.Equal(4, pool.WarmConnections);
+    }
+
+    [Fact]
+    public async Task SeparateWarmFloorKeepsAtLeastEightValidatedWhileRetainingTenIdle()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            12,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            idleTimeout: TimeSpan.FromMilliseconds(100),
+            connectionValidator: (_, _) => ValueTask.FromResult(true),
+            validateAfterIdle: TimeSpan.FromMilliseconds(30),
+            minimumIdleConnections: 10,
+            minimumWarmConnections: 8,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20),
+            warmMaintenanceRetryInterval: TimeSpan.FromMilliseconds(10));
+
+        await pool.PrewarmAsync(12);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (pool.LiveConnections != 10 ||
+               pool.IdleConnections != 10 ||
+               pool.WarmConnections < 8)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(10, pool.LiveConnections);
+        Assert.Equal(10, pool.IdleConnections);
+        Assert.InRange(pool.WarmConnections, 8, 10);
     }
 
     [Fact]

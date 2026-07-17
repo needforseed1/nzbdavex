@@ -808,6 +808,17 @@
     line-height: 1.4;
 }
 
+.ready-connections-warning {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: var(--radius-sm);
+    background: rgba(245, 158, 11, 0.06);
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
 .usage-hint {
     font-size: 10px;
     color: var(--text-muted);

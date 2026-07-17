@@ -17,17 +17,23 @@ public class DownloadingNntpClient : WrappingNntpClient
     private readonly ConfigManager _configManager;
     private readonly PrioritizedSemaphore _streamingSemaphore;
     private readonly PrioritizedSemaphore _queueSemaphore;
+    private readonly Action<SemaphorePriorityOdds>? _connectionPriorityUpdater;
     private volatile bool _limitQueueDownloads;
 
-    public DownloadingNntpClient(INntpClient usenetClient, ConfigManager configManager) : base(usenetClient)
+    public DownloadingNntpClient(
+        INntpClient usenetClient,
+        ConfigManager configManager,
+        Action<SemaphorePriorityOdds>? connectionPriorityUpdater = null) : base(usenetClient)
     {
         var maxDownloadConnections = configManager.GetMaxDownloadConnections();
         var maxQueueConnections = configManager.GetMaxQueueConnections();
         var streamingPriority = configManager.GetStreamingPriority();
         _configManager = configManager;
-        _streamingSemaphore = new PrioritizedSemaphore(maxDownloadConnections, maxDownloadConnections, streamingPriority);
+        _connectionPriorityUpdater = connectionPriorityUpdater;
+        _streamingSemaphore = new PrioritizedSemaphore(maxDownloadConnections, maxDownloadConnections);
         _queueSemaphore = new PrioritizedSemaphore(maxQueueConnections, maxQueueConnections);
         _limitQueueDownloads = maxQueueConnections < configManager.GetUsenetProviderConfig().TotalPooledConnections;
+        _connectionPriorityUpdater?.Invoke(streamingPriority);
         configManager.OnConfigChanged += OnConfigChanged;
     }
 
@@ -49,7 +55,7 @@ public class DownloadingNntpClient : WrappingNntpClient
         }
 
         if (e.ChangedConfig.ContainsKey("usenet.streaming-priority"))
-            _streamingSemaphore.UpdatePriorityOdds(_configManager.GetStreamingPriority());
+            _connectionPriorityUpdater?.Invoke(_configManager.GetStreamingPriority());
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(SegmentId segmentId,

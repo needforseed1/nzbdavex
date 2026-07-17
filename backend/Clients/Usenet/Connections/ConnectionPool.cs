@@ -35,6 +35,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public int ActiveConnections => _live - _idleConnections.Count;
     public int WarmConnections => GetWarmConnectionCount();
     public int MaxConnections => _maxConnections;
+    internal int MinimumIdleConnections => _minimumIdleConnections;
+    internal int MinimumWarmConnections => _minimumWarmConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
     public bool CapacityUnavailable => Volatile.Read(ref _capacityUnavailable) == 1;
 
@@ -47,6 +49,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly TimeSpan _warmMaintenanceRetryInterval;
     private readonly int _maxConnections;
     private readonly int _minimumIdleConnections;
+    private readonly int _minimumWarmConnections;
     private readonly Func<Exception, bool>? _connectionCapacityRejected;
     private readonly Action<int, Exception>? _onConnectionCapacityReduced;
     private readonly Action<int, int, bool>? _onWarmFloorStateChanged;
@@ -92,6 +95,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         Func<T, CancellationToken, ValueTask<bool>>? connectionValidator = null,
         TimeSpan? validateAfterIdle = null,
         int minimumIdleConnections = 0,
+        int? minimumWarmConnections = null,
         TimeSpan? warmConnectionRefreshInterval = null,
         TimeSpan? warmMaintenanceRetryInterval = null,
         Func<Exception, bool>? connectionCapacityRejected = null,
@@ -104,6 +108,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(maxConnections));
         if (minimumIdleConnections < 0 || minimumIdleConnections > maxConnections)
             throw new ArgumentOutOfRangeException(nameof(minimumIdleConnections));
+        var requestedMinimumWarmConnections =
+            minimumWarmConnections ?? Math.Min(WarmValidationBatchSize, minimumIdleConnections);
+        if (requestedMinimumWarmConnections < 0 ||
+            requestedMinimumWarmConnections > minimumIdleConnections)
+            throw new ArgumentOutOfRangeException(nameof(minimumWarmConnections));
         if (warmConnectionRefreshInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(warmConnectionRefreshInterval));
         if (warmMaintenanceRetryInterval <= TimeSpan.Zero)
@@ -115,6 +124,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _validator = connectionValidator;
         _validateAfterIdle = validateAfterIdle ?? TimeSpan.FromSeconds(20);
         _minimumIdleConnections = minimumIdleConnections;
+        _minimumWarmConnections = requestedMinimumWarmConnections;
         _warmConnectionRefreshInterval = warmConnectionRefreshInterval;
         _warmMaintenanceRetryInterval =
             warmMaintenanceRetryInterval ?? UnderfilledWarmRetryInterval;
@@ -146,15 +156,20 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken = default
     )
     {
-        return await GetConnectionLockAsync(priority, cancellationToken, false, false).ConfigureAwait(false);
+        return await GetConnectionLockAsync(
+            priority, cancellationToken, false, false, false).ConfigureAwait(false);
     }
+
+    internal void UpdatePriorityOdds(SemaphorePriorityOdds priorityOdds) =>
+        _gate.UpdatePriorityOdds(priorityOdds);
 
     private async Task<ConnectionLock<T>> GetConnectionLockCoreAsync
     (
         SemaphorePriority priority,
         CancellationToken cancellationToken,
         bool forceIdleValidation,
-        bool oldestFirst
+        bool oldestFirst,
+        bool preserveIdleAge
     )
     {
         // Make caller cancellation also cancel the wait on the gate.
@@ -183,7 +198,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     // A borrowed idle socket is active while it is being validated.
                     // Publish that transition before awaiting provider I/O.
                     TriggerConnectionPoolChangedEvent();
-                    var idleExpired = item.IsExpired(IdleTimeout);
+                    var idleExpired = item.IsIdleExpired(IdleTimeout);
                     var preserveWarmFloor = idleExpired
                                             && _minimumIdleConnections > 0
                                             && _idleConnections.Count < _minimumIdleConnections;
@@ -196,7 +211,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     }
 
                     if (_validator != null &&
-                        (forceIdleValidation || preserveWarmFloor || item.IsExpired(_validateAfterIdle)))
+                        (forceIdleValidation || preserveWarmFloor ||
+                         item.IsValidationExpired(_validateAfterIdle)))
                     {
                         bool healthy;
                         try
@@ -220,7 +236,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
                     TriggerConnectionPoolChangedEvent();
                     returnGateOnFailure = false;
-                    return BuildLock(item.Connection);
+                    return BuildLock(
+                        item.Connection,
+                        preserveIdleAge ? item.LastUsedMillis : null);
                 }
 
                 // A returned socket and a free handshake slot are both valid ways
@@ -249,7 +267,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     ReleaseGateIfOpen();
                     returnGateOnFailure = false;
                     return await GetConnectionLockCoreAsync(
-                            priority, cancellationToken, forceIdleValidation, oldestFirst)
+                            priority, cancellationToken, forceIdleValidation,
+                            oldestFirst, preserveIdleAge)
                         .ConfigureAwait(false);
                 }
 
@@ -310,8 +329,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             returnGateOnFailure = false;
             return BuildLock(conn);
 
-            ConnectionLock<T> BuildLock(T c)
-                => new(c, Return, Destroy);
+            ConnectionLock<T> BuildLock(T c, long? preservedLastUsedMillis = null)
+                => new(c, returned => Return(returned, preservedLastUsedMillis), Destroy);
 
             static void ThrowDisposed()
                 => throw new ObjectDisposedException(nameof(ConnectionPool<T>));
@@ -324,17 +343,27 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     /* ========================== core helpers ====================================== */
 
-    private readonly record struct Pooled(T Connection, long LastTouchedMillis)
+    private readonly record struct Pooled(
+        T Connection,
+        long LastUsedMillis,
+        long LastValidatedMillis)
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool IsExpired(TimeSpan idle, long nowMillis = 0)
+        public bool IsIdleExpired(TimeSpan idle, long nowMillis = 0)
         {
             if (nowMillis == 0) nowMillis = Environment.TickCount64;
-            return unchecked(nowMillis - LastTouchedMillis) >= idle.TotalMilliseconds;
+            return unchecked(nowMillis - LastUsedMillis) >= idle.TotalMilliseconds;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsValidationExpired(TimeSpan idle, long nowMillis = 0)
+        {
+            if (nowMillis == 0) nowMillis = Environment.TickCount64;
+            return unchecked(nowMillis - LastValidatedMillis) >= idle.TotalMilliseconds;
         }
     }
 
-    private void Return(T connection)
+    private void Return(T connection, long? preservedLastUsedMillis = null)
     {
         var destroy = false;
         TaskCompletionSource? idleAvailableSignal = null;
@@ -345,7 +374,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 destroy = true;
             else
             {
-                _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
+                var now = Environment.TickCount64;
+                _idleConnections.Push(new Pooled(
+                    connection,
+                    preservedLastUsedMillis ?? now,
+                    now));
                 _gate.Release();
                 idleAvailableSignal = TakeNextIdleWaiterUnsafe();
                 returnedSignal = _nextConnectionReturn;
@@ -415,7 +448,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         // next borrower would have to validate it before use.
         var active = Math.Max(0, live - idle);
         var freshIdle = _idleConnections.Count(item =>
-            !item.IsExpired(_validateAfterIdle, nowMillis));
+            !item.IsValidationExpired(_validateAfterIdle, nowMillis));
         return Math.Min(live, active + freshIdle);
     }
 
@@ -665,7 +698,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             {
                 // Items lower in the LIFO stack were returned earlier. Prefer
                 // the lower item when timestamps share the same millisecond.
-                if (candidate.LastTouchedMillis <= item.LastTouchedMillis)
+                if (candidate.LastValidatedMillis <= item.LastValidatedMillis)
                 {
                     newer.Add(item);
                     item = candidate;
@@ -878,10 +911,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     public async Task PrewarmAsync(int count, CancellationToken cancellationToken = default)
     {
-        // Pools are deliberately cold when created. Startup and provider reloads
-        // should not open hundreds of sockets that may be stale before the next
-        // queue item arrives. The first foreground prewarm activates idle
-        // maintenance for the lifetime of this pool.
+        // Pools are deliberately cold when created unless their owner explicitly
+        // activates the configured persistent floor. The first foreground prewarm
+        // also activates idle maintenance for the lifetime of this pool.
         if (count > 0) Volatile.Write(ref _prewarmingActivated, 1);
         if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
         using (maintenanceLease)
@@ -938,8 +970,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     {
         if (_minimumIdleConnections == 0 || _validator == null) return;
         var count = Math.Min(
-            WarmValidationBatchSize,
-            Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
+            _minimumWarmConnections,
+            Volatile.Read(ref _effectiveMaxConnections));
         await RefreshWarmConnectionsAsync(count, cancellationToken).ConfigureAwait(false);
     }
 
@@ -972,7 +1004,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         using (maintenanceLease)
         {
             await RefreshWarmConnectionsWithLeaseAsync(
-                    count, maxConcurrency, null, cancellationToken, maintenanceLease.Token)
+                    count, maxConcurrency, null,
+                    cancellationToken, maintenanceLease.Token)
                 .ConfigureAwait(false);
             return true;
         }
@@ -990,7 +1023,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         using (maintenanceLease)
         {
             await RefreshWarmConnectionsWithLeaseAsync(
-                    count, maxConcurrency, primer, cancellationToken, maintenanceLease.Token)
+                    count, maxConcurrency, primer,
+                    cancellationToken, maintenanceLease.Token)
                 .ConfigureAwait(false);
         }
     }
@@ -1063,7 +1097,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         SemaphorePriority.Low,
                         cancellationToken,
                         forceIdleValidation,
-                        oldestFirst)
+                        oldestFirst,
+                        preserveIdleAge: true)
                     .ConfigureAwait(false);
                 if (primer is null) continue;
                 try
@@ -1148,7 +1183,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 _idleConnections.Count >= _prewarmSuspensions.Values.Min()) return false;
             _inFlightCreations--;
             Interlocked.Increment(ref _live);
-            _idleConnections.Push(new Pooled(connection, Environment.TickCount64));
+            var now = Environment.TickCount64;
+            _idleConnections.Push(new Pooled(connection, now, now));
             return true;
         }
     }
@@ -1157,7 +1193,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         SemaphorePriority priority,
         CancellationToken cancellationToken,
         bool forceIdleValidation,
-        bool oldestFirst)
+        bool oldestFirst,
+        bool preserveIdleAge)
     {
         BeginOperation();
         Interlocked.Increment(ref _pendingAcquisitions);
@@ -1165,7 +1202,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         try
         {
             return await GetConnectionLockCoreAsync(
-                    priority, cancellationToken, forceIdleValidation, oldestFirst)
+                    priority, cancellationToken, forceIdleValidation,
+                    oldestFirst, preserveIdleAge)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
@@ -1292,8 +1330,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private int GetWarmFloorConnections() =>
         Math.Min(
-            WarmValidationBatchSize,
-            Math.Min(_minimumIdleConnections, Volatile.Read(ref _effectiveMaxConnections)));
+            _minimumWarmConnections,
+            Volatile.Read(ref _effectiveMaxConnections));
 
     private void UpdateWarmFloorState(int warmConnections, int warmFloor)
     {
@@ -1335,7 +1373,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             var remainingExpirations = Math.Max(0, _idleConnections.Count - _minimumIdleConnections);
             while (_idleConnections.TryPop(out var item))
             {
-                if (remainingExpirations > 0 && item.IsExpired(IdleTimeout, now))
+                if (remainingExpirations > 0 && item.IsIdleExpired(IdleTimeout, now))
                 {
                     expired.Add(item.Connection);
                     remainingExpirations--;

@@ -60,6 +60,12 @@ public class MultiProviderNntpClient(
         return new ScopeReleaser(() => ReadSessionScope.Value = previous);
     }
 
+    internal void UpdateConnectionPriorityOdds(SemaphorePriorityOdds priorityOdds)
+    {
+        foreach (var provider in providers)
+            provider.UpdatePriorityOdds(priorityOdds);
+    }
+
     private sealed class ScopeReleaser(Action onDispose) : IDisposable
     {
         public void Dispose() => onDispose();
@@ -88,21 +94,23 @@ public class MultiProviderNntpClient(
 
     internal void ActivateIdlePrewarming()
     {
-        var target = 0;
+        var idleTarget = 0;
+        var warmTarget = 0;
         var activated = 0;
         foreach (var provider in providers)
         {
-            var providerTarget = UsenetStreamingClient.GetWarmConnectionTarget(
-                provider.ProviderType, provider.MaxConnections);
+            var providerTarget = provider.PersistentIdleConnectionTarget;
             if (providerTarget <= 0) continue;
             provider.ActivateIdlePrewarming();
-            target += providerTarget;
+            idleTarget += providerTarget;
+            warmTarget += provider.PersistentWarmConnectionTarget;
             activated++;
         }
 
         Log.Information(
-            "usenet-startup-prewarm stage=activated providers={Providers} target={Target}",
-            activated, target);
+            "usenet-startup-prewarm stage=activated providers={Providers} " +
+            "idleTarget={IdleTarget} warmTarget={WarmTarget}",
+            activated, idleTarget, warmTarget);
     }
 
     public async Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken)

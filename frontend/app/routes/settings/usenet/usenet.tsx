@@ -854,6 +854,16 @@ function ConcurrencyAndSchedulingSettings({
                 ? configuredWarmValidationConnections
                 : 0,
             warmValidationCapacity.total);
+    const primaryReadyConnections = config["usenet.ready-connections.primary"] ?? "5";
+    const healthReadyConnections = config["usenet.ready-connections.health"] ?? "10";
+    const readyConnectionImpact = getReadyConnectionImpact(
+        providers,
+        isIntegerInRange(primaryReadyConnections, 0, 512)
+            ? Number(primaryReadyConnections)
+            : 0,
+        isIntegerInRange(healthReadyConnections, 0, 512)
+            ? Number(healthReadyConnections)
+            : 0);
     return (
         <div className={`${styles.section} ${styles["advanced-subsection"]}`}>
             <div className={styles.sectionHeader}>
@@ -893,7 +903,7 @@ function ConcurrencyAndSchedulingSettings({
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                 <label htmlFor="streaming-priority-input" className={styles["form-label"]}>
-                    Playback priority versus prep (%)
+                    Playback priority versus background work (%)
                 </label>
                 <input
                     type="text"
@@ -904,7 +914,7 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.streaming-priority"]}
                     onChange={e => setNewConfig({ ...config, "usenet.streaming-priority": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Controls how strongly playback is favored when it competes with queue preparation for NNTP capacity.
+                    Controls how strongly playback is favored when it competes with preparation and health checks for a provider&apos;s connections.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -925,6 +935,56 @@ function ConcurrencyAndSchedulingSettings({
                 <div className={styles["form-hint"]}>
                     {warmValidationCapacity.total} health-check connections are currently available across {warmValidationCapacity.providers} eligible {warmValidationCapacity.providers === 1 ? "provider" : "providers"}; this setting will use {effectiveWarmValidationConnections}. Leave blank for Automatic ({automaticWarmValidationConnections}). This is one global budget distributed proportionally between providers (1–512). It validates already-connected sockets and does not change connection creation, playback, or health-check lane limits.
                 </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="primary-ready-connections-input" className={styles["form-label"]}>
+                    Ready Primary connections (per provider)
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="primary-ready-connections-input"
+                    className={`${styles["form-input"]} ${!isIntegerInRange(primaryReadyConnections, 0, 512) ? styles.error : ""}`}
+                    placeholder="5"
+                    value={primaryReadyConnections}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "usenet.ready-connections.primary": e.target.value,
+                    })} />
+                <div className={styles["form-hint"]}>
+                    Keeps this many connections authenticated and recently validated on every Primary
+                    provider. The safe default is 5; each provider&apos;s configured connection limit
+                    remains the ceiling. Set 0 to disable the ready floor for Primary providers.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="health-ready-connections-input" className={styles["form-label"]}>
+                    Ready Backup + Health connections (per provider)
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="health-ready-connections-input"
+                    className={`${styles["form-input"]} ${!isIntegerInRange(healthReadyConnections, 0, 512) ? styles.error : ""}`}
+                    placeholder="10"
+                    value={healthReadyConnections}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "usenet.ready-connections.health": e.target.value,
+                    })} />
+                <div className={styles["form-hint"]}>
+                    Keeps this many connections authenticated and recently validated on every
+                    Backup + Health provider so health checks can start quickly. The safe default
+                    is 10. Plain Backup providers remain recovery-only and are not kept ready.
+                </div>
+            </div>
+            <div className={styles["ready-connections-warning"]}>
+                These connections stay logged in and count against each provider account&apos;s
+                connection allowance while idle. Higher values use more sockets and memory, and can
+                leave fewer connections for other download clients using the same accounts. The
+                current values target up to {readyConnectionImpact.connections} ready connections
+                across {readyConnectionImpact.providers} eligible {readyConnectionImpact.providers === 1 ? "provider" : "providers"}.
+                Validation refresh remains fixed at 30 seconds.
             </div>
         </div>
     );
@@ -2164,6 +2224,10 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
             config["usenet.max-queue-connections"], getTotalPooledConnections(config))
         && isOptionalIntegerInRange(
             config["usenet.warm-validation-concurrency"] ?? "", 1, 512)
+        && isIntegerInRange(
+            config["usenet.ready-connections.primary"] ?? "", 0, 512)
+        && isIntegerInRange(
+            config["usenet.ready-connections.health"] ?? "", 0, 512)
         && isValidStreamingPriority(config["usenet.streaming-priority"])
         && isValidArticleBufferSize(config["usenet.article-buffer-size"])
         && segmentCacheValid
@@ -2218,6 +2282,25 @@ function getWarmValidationCapacity(providers: ConnectionDetails[]): { total: num
         total: Math.min(totalHealthWarmTarget, 512),
         providers: eligible.length,
     };
+}
+
+function getReadyConnectionImpact(
+    providers: ConnectionDetails[],
+    primaryTarget: number,
+    healthTarget: number,
+): { connections: number; providers: number } {
+    const eligible = providers.filter(provider =>
+        provider.MaxConnections > 0
+        && (provider.Type === ProviderType.Pooled
+            || provider.Type === ProviderType.BackupAndStats
+            || provider.Type === ProviderType.HealthChecksOnly));
+    const connections = eligible.reduce((sum, provider) => {
+        const target = provider.Type === ProviderType.Pooled
+            ? primaryTarget
+            : healthTarget;
+        return sum + Math.min(target, provider.MaxConnections);
+    }, 0);
+    return { connections: Math.min(connections, 512), providers: eligible.length };
 }
 
 function isValidStreamingPriority(value: string): boolean {

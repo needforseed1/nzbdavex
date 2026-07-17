@@ -47,6 +47,27 @@ public class DownloadingNntpClientTests
         await second.Stream.DisposeAsync();
     }
 
+    [Fact]
+    public void StreamingPriorityUpdatesProviderPoolSchedulingLive()
+    {
+        var applied = new List<int>();
+        var config = BuildConfig(maxQueueConnections: null);
+        using var client = new DownloadingNntpClient(
+            new DeferredReleaseClient(),
+            config,
+            odds => applied.Add(odds.HighPriorityOdds));
+
+        config.UpdateValues([
+            new ConfigItem
+            {
+                ConfigName = "usenet.streaming-priority",
+                ConfigValue = "35",
+            },
+        ]);
+
+        Assert.Equal([80, 35], applied);
+    }
+
     private static ConfigManager BuildConfig(int? maxQueueConnections)
     {
         var providerConfig = new UsenetProviderConfig

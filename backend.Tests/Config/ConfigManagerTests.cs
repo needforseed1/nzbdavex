@@ -56,6 +56,20 @@ public class ConfigManagerTests
     }
 
     [Fact]
+    public void ReadyConnectionFloorsUseSafeDefaultsAndClampOverrides()
+    {
+        var defaults = new ConfigManager();
+        Assert.Equal(5, defaults.GetPrimaryReadyConnections());
+        Assert.Equal(10, defaults.GetHealthReadyConnections());
+
+        var overridden = WithValues(
+            ("usenet.ready-connections.primary", "-1"),
+            ("usenet.ready-connections.health", "999"));
+        Assert.Equal(0, overridden.GetPrimaryReadyConnections());
+        Assert.Equal(512, overridden.GetHealthReadyConnections());
+    }
+
+    [Fact]
     public void InvalidAndNullCollectionJsonFallsBackToEmptyConfigs()
     {
         var invalid = WithValues(
@@ -192,11 +206,18 @@ public class ConfigManagerTests
         var changedConfig = WithValues(("usenet.providers", changed));
 
         Assert.Equal(
-            UsenetStreamingClient.GetProviderConfigFingerprint(firstConfig),
-            UsenetStreamingClient.GetProviderConfigFingerprint(equivalentConfig));
+            UsenetStreamingClient.GetPoolConfigFingerprint(firstConfig),
+            UsenetStreamingClient.GetPoolConfigFingerprint(equivalentConfig));
         Assert.NotEqual(
-            UsenetStreamingClient.GetProviderConfigFingerprint(firstConfig),
-            UsenetStreamingClient.GetProviderConfigFingerprint(changedConfig));
+            UsenetStreamingClient.GetPoolConfigFingerprint(firstConfig),
+            UsenetStreamingClient.GetPoolConfigFingerprint(changedConfig));
+
+        var changedReadyFloor = WithValues(
+            ("usenet.providers", first),
+            ("usenet.ready-connections.primary", "6"));
+        Assert.NotEqual(
+            UsenetStreamingClient.GetPoolConfigFingerprint(firstConfig),
+            UsenetStreamingClient.GetPoolConfigFingerprint(changedReadyFloor));
     }
 
     private static ConfigManager WithValues(params (string Key, string Value)[] values)

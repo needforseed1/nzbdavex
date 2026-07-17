@@ -259,6 +259,18 @@ public class ConfigManager
         return CalculateAutomaticWarmValidationConnectionBudget(GetUsenetProviderConfig());
     }
 
+    public int GetPrimaryReadyConnections()
+    {
+        return GetInteger("usenet.ready-connections.primary", 5, 0,
+            UsenetStreamingClient.ApplicationConnectionLimit);
+    }
+
+    public int GetHealthReadyConnections()
+    {
+        return GetInteger("usenet.ready-connections.health", 10, 0,
+            UsenetStreamingClient.ApplicationConnectionLimit);
+    }
+
     internal static int CalculateAvailableHealthWarmConnections(UsenetProviderConfig config)
     {
         var total = config.Providers
