@@ -43,6 +43,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("processorsMs")] public required long ProcessorsMs { get; init; }
         [JsonPropertyName("lazyRarMounted")] public required bool LazyRarMounted { get; init; }
         [JsonPropertyName("firstSegmentFallbacks")] public required long FirstSegmentFallbacks { get; init; }
+        [JsonPropertyName("lastStage")] public string? LastStage { get; init; }
         [JsonPropertyName("providers")] public required List<PrepProviderDto> Providers { get; init; }
     }
 

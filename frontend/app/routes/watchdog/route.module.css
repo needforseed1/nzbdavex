@@ -493,6 +493,36 @@
     border-radius: var(--radius-sm);
 }
 
+.failureReasonBox {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px;
+    color: var(--text-secondary);
+    background: rgba(239, 68, 68, 0.07);
+    border: 1px solid rgba(239, 68, 68, 0.18);
+    border-radius: var(--radius-sm);
+}
+
+.failureReasonRaw {
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.failureReasonHeader {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
 .detailsSection {
     margin-top: 12px;
 }

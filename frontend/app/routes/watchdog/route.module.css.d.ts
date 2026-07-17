@@ -51,6 +51,9 @@ declare const styles: {
   readonly "detailsChevronOpen": string;
   readonly "winnerDetails": string;
   readonly "detailsEmpty": string;
+  readonly "failureReasonBox": string;
+  readonly "failureReasonRaw": string;
+  readonly "failureReasonHeader": string;
   readonly "detailsSection": string;
   readonly "detailsSectionHeader": string;
   readonly "detailsSectionTitle": string;

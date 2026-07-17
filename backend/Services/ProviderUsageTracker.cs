@@ -189,7 +189,8 @@ public sealed record PrepUsageSnapshot(
     long ProcessorsMs,
     bool LazyRarMounted,
     long FirstSegmentFallbacks,
-    IReadOnlyList<PrepProviderStat> Providers);
+    IReadOnlyList<PrepProviderStat> Providers,
+    string? LastStage = null);
 
 public sealed record PrepProviderStat(
     string ProviderId,

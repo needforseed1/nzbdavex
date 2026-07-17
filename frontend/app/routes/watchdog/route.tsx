@@ -13,6 +13,11 @@ import {
     ProviderSummary,
     type ProviderSummaryItem,
 } from "~/components/provider-summary/provider-summary";
+import {
+    deriveFailurePhase,
+    selectFailedDetailsAttempt,
+    summarizeFailure,
+} from "./watchdog-failure";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -183,6 +188,9 @@ function ClickCard({ group }: { group: ClickGroup }) {
     const status: "win" | "loss" | "inflight" =
         group.hasWinner ? "win" : group.allResolved ? "loss" : "inflight";
     const winner = group.attempts.find(a => a.isWinner);
+    const failedAttempt = !winner && group.allResolved ? selectFailedDetailsAttempt(group.attempts) : undefined;
+    const detailsAttempt = winner ?? failedAttempt;
+    const showingFailure = detailsAttempt != null && !detailsAttempt.isWinner;
 
     return (
         <div className={styles.clickCard}>
@@ -200,7 +208,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                 </div>
             </div>
 
-            {winner && (
+            {detailsAttempt && (
                 <>
                 <button
                     type="button"
@@ -208,24 +216,24 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     onClick={() => setDetailsOpen(open => !open)}
                     aria-expanded={detailsOpen}
                     aria-controls={`watchdog-stats-${group.clickId}`}
-                    title="Show health-check statistics">
-                    <span>Resolved via <span className={styles.winnerIndexer}>{winner.indexerName}</span></span>
+                    title="Show run statistics">
+                    <span>{showingFailure ? "Failed via " : "Resolved via "}<span className={styles.winnerIndexer}>{detailsAttempt.indexerName}</span></span>
                     <span className={styles.timingBoxes}>
-                        {winner.prepDurationMs != null || winner.healthDurationMs != null ? <>
-                            <TimingBox label="Prep" value={formatDuration(winner.prepDurationMs)} />
+                        {detailsAttempt.prepDurationMs != null || detailsAttempt.healthDurationMs != null ? <>
+                            <TimingBox label="Prep" value={formatDuration(detailsAttempt.prepDurationMs)} />
                             <TimingBox
                                 label="Health"
-                                value={winner.healthDurationMs != null
-                                    ? formatDuration(winner.healthDurationMs)
+                                value={detailsAttempt.healthDurationMs != null
+                                    ? formatDuration(detailsAttempt.healthDurationMs)
                                     : "Not run"}
                             />
                         </> : (
-                            <TimingBox label="Total" value={formatDuration(winner.durationMs)} />
+                            <TimingBox label="Total" value={formatDuration(detailsAttempt.durationMs)} />
                         )}
                     </span>
-                    {winner.size > 0 && <>
+                    {detailsAttempt.size > 0 && <>
                         <span className={styles.winnerDot}>·</span>
-                        <span>{formatBytes(winner.size)}</span>
+                        <span>{formatBytes(detailsAttempt.size)}</span>
                     </>}
                     <span className={styles.detailsHint}>
                         Stats
@@ -235,11 +243,15 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     </span>
                 </button>
                 {detailsOpen && (
-                    <WinnerStats
+                    <RunStats
                         id={`watchdog-stats-${group.clickId}`}
-                        prepStats={winner.prepStats}
-                        healthStats={winner.healthStats}
-                        healthDurationMs={winner.healthDurationMs}
+                        prepStats={detailsAttempt.prepStats}
+                        healthStats={detailsAttempt.healthStats}
+                        healthDurationMs={detailsAttempt.healthDurationMs}
+                        failReason={showingFailure ? detailsAttempt.failReason : null}
+                        failed={showingFailure}
+                        providerHost={detailsAttempt.providerHost}
+                        providerNickname={detailsAttempt.providerNickname}
                     />
                 )}
                 </>
@@ -313,16 +325,24 @@ function ClickCard({ group }: { group: ClickGroup }) {
     );
 }
 
-function WinnerStats({
+function RunStats({
     id,
     prepStats,
     healthStats,
     healthDurationMs,
+    failReason,
+    failed,
+    providerHost,
+    providerNickname,
 }: {
     id: string,
     prepStats?: WatchdogPrepStats | null,
     healthStats?: WatchdogHealthStats | null,
     healthDurationMs?: number | null,
+    failReason?: string | null,
+    failed: boolean,
+    providerHost?: string | null,
+    providerNickname?: string | null,
 }) {
     const firstSegments = prepStats?.providers.reduce((sum, provider) => sum + provider.articles, 0) ?? 0;
     const workShares = allocateWholePercentShares(
@@ -333,9 +353,35 @@ function WinnerStats({
     const healthRate = outcomeKnown && healthDurationMs != null && healthDurationMs > 0
         ? Math.round(foundArticles * 1000 / healthDurationMs)
         : null;
+    const failurePhase = failed ? deriveFailurePhase(prepStats) : null;
+    const hasPrepRouting = prepStats != null && prepStats.providers.length > 0;
 
     return (
         <div id={id} className={styles.winnerDetails}>
+            {failed && (
+                <section className={styles.failureReasonBox}>
+                    <div className={styles.failureReasonHeader}>
+                        <span>Failure</span>
+                        {failurePhase && <span>{failurePhase}</span>}
+                    </div>
+                    <span className={styles.detailsSectionTitle}>{summarizeFailure(failReason)}</span>
+                    {failReason && summarizeFailure(failReason) !== failReason && (
+                        <span className={styles.failureReasonRaw}>{failReason}</span>
+                    )}
+                </section>
+            )}
+            {failed && !healthStats && !hasPrepRouting && providerHost && (
+                <section className={styles.detailsSection}>
+                    <div className={styles.detailsSectionHeader}>
+                        <span className={styles.detailsSectionTitle}>Provider activity</span>
+                        <span className={styles.detailsSectionMeta}>Detailed routing was not captured</span>
+                    </div>
+                    <WatchdogProviderSummary
+                        providerHost={providerHost}
+                        providerNickname={providerNickname}
+                    />
+                </section>
+            )}
             {prepStats && prepStats.providers.length > 0 && (
                 <section className={styles.detailsSection}>
                     <div className={styles.detailsSectionHeader}>
@@ -386,7 +432,9 @@ function WinnerStats({
                         <span className={styles.detailsSectionMeta}>
                             {outcomeKnown
                                 ? `${formatCount(foundArticles)} / ${formatCount(healthStats.totalArticles)} available`
-                                : `${formatCount(healthStats.totalArticles)} articles checked`}
+                                : missingArticles != null && missingArticles > 0
+                                    ? `At least ${formatCount(missingArticles)} unavailable · stopped early`
+                                    : `${formatCount(healthStats.totalArticles)} articles targeted`}
                             {outcomeKnown && (missingArticles === 0
                                 ? " · complete"
                                 : ` · ${formatCount(missingArticles)} unavailable`)}
@@ -396,7 +444,11 @@ function WinnerStats({
                     )}
                 </div>
                 {!healthStats ? (
-                    <div className={styles.detailsEmpty}>Provider-level health statistics were not recorded for this older entry.</div>
+                    <div className={styles.detailsEmpty}>
+                        {failed
+                            ? "The run stopped before provider-level health statistics were captured."
+                            : "Provider-level health statistics were not recorded for this older entry."}
+                    </div>
                 ) : healthStats.providers.length === 0 ? (
                     <div className={styles.detailsEmpty}>This health check did not use the multi-provider bulk routing path.</div>
                 ) : (

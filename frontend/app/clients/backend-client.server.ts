@@ -479,6 +479,7 @@ export type WatchdogPrepStats = {
     processorsMs: number,
     lazyRarMounted: boolean,
     firstSegmentFallbacks: number,
+    lastStage?: string | null,
     providers: WatchdogPrepProvider[],
 }
 

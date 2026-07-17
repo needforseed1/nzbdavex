@@ -89,6 +89,7 @@ public partial class GetWatchdogEntriesController(
             ProcessorsMs = snapshot.ProcessorsMs,
             LazyRarMounted = snapshot.LazyRarMounted,
             FirstSegmentFallbacks = snapshot.FirstSegmentFallbacks,
+            LastStage = snapshot.LastStage,
             Providers = snapshot.Providers.Select(stat =>
             {
                 providersById.TryGetValue(stat.ProviderId, out var configured);

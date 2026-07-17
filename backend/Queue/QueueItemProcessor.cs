@@ -203,6 +203,22 @@ public class QueueItemProcessor(
                 segments = await FetchFirstSegmentsStep.FetchFirstSegments(
                     nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
             }
+            catch
+            {
+                var elapsedMs = stepTimer.ElapsedMilliseconds;
+                var partialProviders = BuildPrepProviderStats(
+                    usageBeforeFirstSegments,
+                    providerUsageTracker.Snapshot(queueItem.Id),
+                    bytesBeforeFirstSegments,
+                    providerUsageTracker.SnapshotBytes(queueItem.Id));
+                var partialFallbacks = Math.Max(0,
+                    providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
+                _prepDurationMs = ToDurationMs(elapsedMs);
+                providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
+                    nzbFiles.Count, prepConnections, queuedMs, elapsedMs, 0, 0, 0,
+                    false, partialFallbacks, partialProviders, "first-segments"));
+                throw;
+            }
             finally
             {
                 firstSegmentsCompleted();
@@ -220,28 +236,37 @@ public class QueueItemProcessor(
         var msFirstSeg = stepTimer.ElapsedMilliseconds;
         var usageAfterFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesAfterFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
-        var firstSegmentProviders = usageAfterFirstSegments.Keys
-            .Union(bytesAfterFirstSegments.Keys)
-            .Select(providerId => new PrepProviderStat(
-                providerId,
-                Math.Max(0, usageAfterFirstSegments.GetValueOrDefault(providerId) -
-                            usageBeforeFirstSegments.GetValueOrDefault(providerId)),
-                Math.Max(0, bytesAfterFirstSegments.GetValueOrDefault(providerId) -
-                            bytesBeforeFirstSegments.GetValueOrDefault(providerId))))
-            .Where(stat => stat.Articles > 0 || stat.Bytes > 0)
-            .OrderByDescending(stat => stat.Articles)
-            .ThenBy(stat => stat.ProviderId)
-            .ToArray();
+        var firstSegmentProviders = BuildPrepProviderStats(
+            usageBeforeFirstSegments, usageAfterFirstSegments,
+            bytesBeforeFirstSegments, bytesAfterFirstSegments);
         var firstSegmentFallbacks = Math.Max(0,
             providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
+        void RecordPrepProgress(string lastStage, long par2Ms = 0, long rarMs = 0,
+            long processorsMs = 0, bool lazyRarMounted = false)
+        {
+            _prepDurationMs = ToDurationMs(msFirstSeg + par2Ms + rarMs + processorsMs);
+            providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
+                nzbFiles.Count, prepConnections, queuedMs, msFirstSeg, par2Ms, rarMs, processorsMs,
+                lazyRarMounted, firstSegmentFallbacks, firstSegmentProviders, lastStage));
+        }
+        RecordPrepProgress("first-segments");
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments done ms={ElapsedMs}",
             queueItem.Id, queueItem.JobName, msFirstSeg);
         stepTimer.Restart();
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=par2 start",
             queueItem.Id, queueItem.JobName);
-        var par2FileDescriptors = await GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
-            segments, usenetClient, ct).ConfigureAwait(false);
-        var msPar2 = stepTimer.ElapsedMilliseconds;
+        List<NzbWebDAV.Par2Recovery.Packets.FileDesc> par2FileDescriptors;
+        long msPar2;
+        try
+        {
+            par2FileDescriptors = await GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
+                segments, usenetClient, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            msPar2 = stepTimer.ElapsedMilliseconds;
+            RecordPrepProgress("par2", msPar2);
+        }
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=par2 done ms={ElapsedMs}",
             queueItem.Id, queueItem.JobName, msPar2);
         stepTimer.Restart();
@@ -255,14 +280,22 @@ public class QueueItemProcessor(
         // parse failure — fall through to the per-part eager pipeline.
         LazyRarProcessor.Result? lazyRarResult = null;
         var rarFiles = fileInfos.Where(x => GetGroupName(x) == "rar").ToList();
-        if (configManager.IsLazyRarParsingEnabled() && rarFiles.Count > 0)
+        long msRar;
+        try
         {
-            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar start files={Files}",
-                queueItem.Id, queueItem.JobName, rarFiles.Count);
-            var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
-            lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
+            if (configManager.IsLazyRarParsingEnabled() && rarFiles.Count > 0)
+            {
+                Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar start files={Files}",
+                    queueItem.Id, queueItem.JobName, rarFiles.Count);
+                var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
+                lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
+            }
         }
-        var msRar = stepTimer.ElapsedMilliseconds;
+        finally
+        {
+            msRar = stepTimer.ElapsedMilliseconds;
+            RecordPrepProgress("rar", msPar2, msRar, lazyRarMounted: lazyRarResult is not null);
+        }
         if (rarFiles.Count > 0)
             Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar done ms={ElapsedMs} mounted={Mounted}",
                 queueItem.Id, queueItem.JobName, msRar, lazyRarResult is not null);
@@ -357,6 +390,8 @@ public class QueueItemProcessor(
         }
         catch
         {
+            RecordPrepProgress("processors", msPar2, msRar, stepTimer.ElapsedMilliseconds,
+                lazyRarResult is not null);
             await healthCts.CancelAsync().ConfigureAwait(false);
             if (healthCheckTask is not null)
             {
@@ -367,6 +402,10 @@ public class QueueItemProcessor(
                 catch
                 {
                     // Preserve the processor exception that caused the cancellation.
+                }
+                finally
+                {
+                    _healthDurationMs = ToDurationMs(healthTimer?.ElapsedMilliseconds ?? 0);
                 }
             }
 
@@ -379,6 +418,7 @@ public class QueueItemProcessor(
             .ToList();
         if (lazyRarResult is not null) fileProcessingResults.Add(lazyRarResult);
         var msProcessors = stepTimer.ElapsedMilliseconds;
+        RecordPrepProgress("processors", msPar2, msRar, msProcessors, lazyRarResult is not null);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors done ms={ElapsedMs} results={Results}",
             queueItem.Id, queueItem.JobName, msProcessors, fileProcessingResults.Count);
         stepTimer.Restart();
@@ -390,24 +430,25 @@ public class QueueItemProcessor(
         var healthWaitTimer = Stopwatch.StartNew();
         if (healthCheckTask is not null)
         {
-            await healthCheckTask.ConfigureAwait(false);
-            checkedFullHealth = true;
+            try
+            {
+                await healthCheckTask.ConfigureAwait(false);
+                checkedFullHealth = true;
+            }
+            catch
+            {
+                RecordPrepProgress("health", msPar2, msRar, msProcessors, lazyRarResult is not null);
+                throw;
+            }
+            finally
+            {
+                _healthDurationMs = ToDurationMs(healthTimer?.ElapsedMilliseconds ?? 0);
+            }
         }
         var msHealthWait = healthWaitTimer.ElapsedMilliseconds;
         var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
         _prepDurationMs = ToDurationMs(msFirstSeg + msPar2 + msRar + msProcessors);
-        _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : null;
-        providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
-            nzbFiles.Count,
-            prepConnections,
-            queuedMs,
-            msFirstSeg,
-            msPar2,
-            msRar,
-            msProcessors,
-            lazyRarResult is not null,
-            firstSegmentFallbacks,
-            firstSegmentProviders));
+        _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : _healthDurationMs;
         if (checkedFullHealth)
         {
             var statRate = msHealth > 0
@@ -428,6 +469,7 @@ public class QueueItemProcessor(
         // update the database
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database start",
             queueItem.Id, queueItem.JobName);
+        RecordPrepProgress("import", msPar2, msRar, msProcessors, lazyRarResult is not null);
         await MarkQueueItemCompleted(startTime, error: null, async () =>
         {
             var categoryFolder = await GetOrCreateCategoryFolder().ConfigureAwait(false);
@@ -893,6 +935,22 @@ public class QueueItemProcessor(
 
     private static int ToDurationMs(long durationMs) =>
         (int)Math.Clamp(durationMs, 0, int.MaxValue);
+
+    private static IReadOnlyList<PrepProviderStat> BuildPrepProviderStats(
+        IReadOnlyDictionary<string, long> usageBefore,
+        IReadOnlyDictionary<string, long> usageAfter,
+        IReadOnlyDictionary<string, long> bytesBefore,
+        IReadOnlyDictionary<string, long> bytesAfter) =>
+        usageAfter.Keys
+            .Union(bytesAfter.Keys)
+            .Select(providerId => new PrepProviderStat(
+                providerId,
+                Math.Max(0, usageAfter.GetValueOrDefault(providerId) - usageBefore.GetValueOrDefault(providerId)),
+                Math.Max(0, bytesAfter.GetValueOrDefault(providerId) - bytesBefore.GetValueOrDefault(providerId))))
+            .Where(stat => stat.Articles > 0 || stat.Bytes > 0)
+            .OrderByDescending(stat => stat.Articles)
+            .ThenBy(stat => stat.ProviderId)
+            .ToArray();
 
     private static string? SerializeHealthStats(HealthCheckUsageSnapshot? stats) =>
         stats is null ? null : JsonSerializer.Serialize(stats);
