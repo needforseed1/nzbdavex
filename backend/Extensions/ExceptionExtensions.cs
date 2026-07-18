@@ -6,7 +6,7 @@ public static class ExceptionExtensions
 {
     public static bool IsRetryableDownloadException(this Exception exception)
     {
-        return exception is RetryableDownloadException;
+        return exception is RetryableDownloadException or TimeoutException;
     }
 
     public static bool IsNonRetryableDownloadException(this Exception exception)

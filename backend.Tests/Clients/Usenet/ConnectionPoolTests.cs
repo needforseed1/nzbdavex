@@ -539,6 +539,72 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task RollingMaintenanceRefreshesTheEntireIdleTargetInBoundedBatches()
+    {
+        var validated = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            8,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                return ValueTask.FromResult(true);
+            },
+            validateAfterIdle: TimeSpan.FromMilliseconds(100),
+            minimumIdleConnections: 8,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(40),
+            warmMaintenanceRetryInterval: TimeSpan.FromMilliseconds(10));
+
+        await pool.PrewarmAsync(8);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (Volatile.Read(ref validated) < 8)
+            await Task.Delay(10, timeout.Token);
+
+        Assert.Equal(8, pool.IdleConnections);
+        Assert.InRange(Volatile.Read(ref validated), 8, 12);
+    }
+
+    [Fact]
+    public async Task StalledRollingValidationLeavesIdleCapacityForForegroundWork()
+    {
+        var validationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeValidations = 0;
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            8,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            connectionValidator: async (_, ct) =>
+            {
+                if (Interlocked.Increment(ref activeValidations) == 4)
+                    validationStarted.TrySetResult();
+                try
+                {
+                    await releaseValidation.Task.WaitAsync(ct);
+                    return true;
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeValidations);
+                }
+            },
+            validateAfterIdle: TimeSpan.FromMinutes(1),
+            minimumIdleConnections: 8,
+            warmConnectionRefreshInterval: TimeSpan.FromMilliseconds(20),
+            warmMaintenanceRetryInterval: TimeSpan.FromMilliseconds(10));
+
+        await pool.PrewarmAsync(8);
+        await validationStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        using var foreground = await pool.GetConnectionLockAsync(SemaphorePriority.High)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(4, Volatile.Read(ref activeValidations));
+        Assert.Equal(5, pool.ActiveConnections);
+        releaseValidation.TrySetResult();
+    }
+
+    [Fact]
     public async Task WarmFloorRefreshDoesNotPreventExcessIdleConnectionsFromExpiring()
     {
         await using var pool = new ConnectionPool<TrackedConnection>(

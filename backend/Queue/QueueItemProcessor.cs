@@ -43,6 +43,7 @@ public class QueueItemProcessor(
     private const int MaxProviderRetryAttempts = 20;
     private const int HealthPrimeSegmentCount = 16;
     private static readonly TimeSpan HealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
     private int? _prepDurationMs;
     private int? _healthDurationMs;
 
@@ -73,7 +74,7 @@ public class QueueItemProcessor(
 
         // When a queue-item is removed while processing,
         // then we need to clear any db changes and finish early.
-        catch (Exception e) when (e.GetBaseException().IsCancellationException())
+        catch (Exception e) when (IsCallerCancellation(e, ct))
         {
             Log.Information($"Processing of queue item `{queueItem.JobName}` was cancelled.");
             dbClient.Ctx.ClearChangeTracker();
@@ -154,6 +155,10 @@ public class QueueItemProcessor(
             ? PrewarmHealthConnectionsDuringPrepAsync(
                 connectionWarmer, queueItem, healthConnectionWarmupCts.Token)
             : Task.CompletedTask;
+        await using var healthWarmupLifetime = new HealthWarmupLifetime(
+            healthConnectionWarmupCts,
+            () => healthConnectionWarmupTask,
+            queueItem.JobName);
 
         // read the nzb document while dedicated health pools validate in parallel
         var nzb = await NzbDocument.LoadAsync(queueNzbStream).ConfigureAwait(false);
@@ -497,6 +502,58 @@ public class QueueItemProcessor(
         }).ConfigureAwait(false);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=database done",
             queueItem.Id, queueItem.JobName);
+    }
+
+    internal static bool IsCallerCancellation(Exception exception, CancellationToken cancellationToken)
+    {
+        return cancellationToken.IsCancellationRequested &&
+               exception.IsCancellationException();
+    }
+
+    internal static async Task CancelAndObserveWarmupAsync(
+        Task warmupTask,
+        CancellationTokenSource warmupCancellation,
+        string jobName,
+        TimeSpan? cleanupGrace = null)
+    {
+        if (!warmupTask.IsCompleted)
+        {
+            await warmupCancellation.CancelAsync().ConfigureAwait(false);
+            var grace = cleanupGrace ?? HealthWarmupCleanupGrace;
+            if (await Task.WhenAny(warmupTask, Task.Delay(grace)).ConfigureAwait(false) != warmupTask)
+            {
+                Log.Debug(
+                    "Health connection warmup cleanup exceeded {GraceMs}ms for {JobName}; " +
+                    "observing late completion without blocking the queue.",
+                    grace.TotalMilliseconds, jobName);
+                _ = ObserveLateWarmupCompletionAsync(warmupTask);
+                return;
+            }
+        }
+
+        try
+        {
+            await warmupTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (warmupCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception e)
+        {
+            Log.Debug(e, "Health connection warmup cleanup failed for {JobName}.", jobName);
+        }
+    }
+
+    private sealed class HealthWarmupLifetime(
+        CancellationTokenSource cancellation,
+        Func<Task> task,
+        string jobName) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            return new ValueTask(CancelAndObserveWarmupAsync(
+                task(), cancellation, jobName));
+        }
     }
 
     private static async Task PrewarmHealthConnectionsDuringPrepAsync(

@@ -1228,13 +1228,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     {
         try
         {
+            var rollingRefreshInterval = GetRollingWarmRefreshInterval();
             var interval = IdleTimeout / 2;
             if (_warmConnectionRefreshInterval.HasValue)
                 interval = Min(interval, Min(
-                    _warmConnectionRefreshInterval.Value,
+                    rollingRefreshInterval,
                     _warmMaintenanceRetryInterval));
-            var nextWarmRefreshAt = DateTimeOffset.UtcNow +
-                                    (_warmConnectionRefreshInterval ?? TimeSpan.Zero);
+            var nextWarmRefreshAt = DateTimeOffset.UtcNow + rollingRefreshInterval;
             var failedRefreshRetry = _warmConnectionRefreshInterval.HasValue
                 ? Min(_warmMaintenanceRetryInterval, _warmConnectionRefreshInterval.Value)
                 : _warmMaintenanceRetryInterval;
@@ -1267,9 +1267,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         if (IdleConnections > 0 &&
                             (!warmFloorReady || now >= nextWarmRefreshAt))
                         {
+                            var refreshCount = Math.Min(
+                                WarmValidationBatchSize, IdleConnections);
                             var attempted = await TryRefreshWarmConnectionsAsync(
-                                    warmFloor,
-                                    DefaultRapidWarmValidationConcurrencyLimit,
+                                    refreshCount,
+                                    refreshCount,
                                     _sweepCts.Token)
                                 .ConfigureAwait(false);
                             warmFloorReady = WarmConnections >= warmFloor;
@@ -1278,12 +1280,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                                 failedRefreshRetry = Min(
                                     _warmMaintenanceRetryInterval,
                                     _warmConnectionRefreshInterval.Value);
-                                nextWarmRefreshAt = DateTimeOffset.UtcNow +
-                                                    _warmConnectionRefreshInterval.Value;
+                                nextWarmRefreshAt =
+                                    DateTimeOffset.UtcNow + rollingRefreshInterval;
                             }
                             else
                             {
-                                nextWarmRefreshAt = DateTimeOffset.UtcNow + failedRefreshRetry;
+                                nextWarmRefreshAt = DateTimeOffset.UtcNow +
+                                                    Min(failedRefreshRetry, rollingRefreshInterval);
                                 failedRefreshRetry = Min(
                                     failedRefreshRetry + failedRefreshRetry,
                                     _warmConnectionRefreshInterval.Value);
@@ -1327,6 +1330,24 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private static TimeSpan Min(TimeSpan first, TimeSpan second) =>
         first <= second ? first : second;
+
+    private TimeSpan GetRollingWarmRefreshInterval()
+    {
+        if (!_warmConnectionRefreshInterval.HasValue)
+            return _warmMaintenanceRetryInterval;
+
+        var batches = Math.Max(
+            1,
+            (_minimumIdleConnections + WarmValidationBatchSize - 1) /
+            WarmValidationBatchSize);
+        var cadence = TimeSpan.FromTicks(Math.Max(
+            1,
+            _warmConnectionRefreshInterval.Value.Ticks / batches));
+        var minimumCadence = Min(
+            _warmConnectionRefreshInterval.Value,
+            TimeSpan.FromMilliseconds(500));
+        return cadence < minimumCadence ? minimumCadence : cadence;
+    }
 
     private int GetWarmFloorConnections() =>
         Math.Min(

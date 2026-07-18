@@ -1,5 +1,7 @@
 using NzbWebDAV.Queue;
 using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
 
 namespace NzbWebDAV.Tests.Queue;
 
@@ -140,6 +142,84 @@ public class QueueItemProcessorTests
         Assert.True(healthStarted);
         Assert.False(warmupCompletion.Task.IsCompleted);
 
+        warmupCompletion.SetResult();
+    }
+
+    [Fact]
+    public void ProviderTimeoutWrappingCancellationIsNotCallerCancellation()
+    {
+        using var callerCancellation = new CancellationTokenSource();
+        callerCancellation.Cancel();
+        var providerTimeout = new CouldNotConnectToUsenetException(
+            "Provider timed out.",
+            new TimeoutException(
+                "Attempt timed out.",
+                new OperationCanceledException()));
+
+        Assert.False(QueueItemProcessor.IsCallerCancellation(
+            providerTimeout, callerCancellation.Token));
+        Assert.True(providerTimeout.IsRetryableDownloadException());
+    }
+
+    [Fact]
+    public void RequestedQueueCancellationIsCallerCancellation()
+    {
+        using var callerCancellation = new CancellationTokenSource();
+        callerCancellation.Cancel();
+
+        Assert.True(QueueItemProcessor.IsCallerCancellation(
+            new OperationCanceledException(callerCancellation.Token),
+            callerCancellation.Token));
+    }
+
+    [Fact]
+    public void PipelinedProviderTimeoutIsRetryable()
+    {
+        Assert.True(new TimeoutException(
+            "Pipelined STAT deadline expired.").IsRetryableDownloadException());
+    }
+
+    [Fact]
+    public async Task FailedAttemptCancelsAndObservesItsWarmup()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var cleanupObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var warmup = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, warmupCancellation.Token);
+            }
+            finally
+            {
+                cleanupObserved.TrySetResult();
+            }
+        });
+
+        await QueueItemProcessor.CancelAndObserveWarmupAsync(
+            warmup, warmupCancellation, "test");
+
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.True(cleanupObserved.Task.IsCompletedSuccessfully);
+        Assert.True(warmup.IsCanceled);
+    }
+
+    [Fact]
+    public async Task WarmupThatIgnoresCancellationCannotBlockAttemptCleanup()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var warmupCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await QueueItemProcessor.CancelAndObserveWarmupAsync(
+            warmupCompletion.Task,
+            warmupCancellation,
+            "test",
+            TimeSpan.Zero);
+
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.False(warmupCompletion.Task.IsCompleted);
         warmupCompletion.SetResult();
     }
 

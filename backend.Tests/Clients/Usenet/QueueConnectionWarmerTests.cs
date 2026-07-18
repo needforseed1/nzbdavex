@@ -203,6 +203,38 @@ public class QueueConnectionWarmerTests
         Assert.Equal(0, backupOnly.LiveConnections);
     }
 
+    [Theory]
+    [InlineData(ProviderType.HealthChecksOnly)]
+    [InlineData(ProviderType.Pooled)]
+    public async Task JobStartPrewarmNeverBorrowsEstablishedIdleConnections(
+        ProviderType providerType)
+    {
+        var validated = 0;
+        var pool = new ConnectionPool<INntpClient>(
+            6,
+            _ => ValueTask.FromResult<INntpClient>(new StubNntpClient()),
+            connectionValidator: (_, _) =>
+            {
+                Interlocked.Increment(ref validated);
+                throw new InvalidOperationException(
+                    "Job-start prewarm must not force validation.");
+            },
+            minimumIdleConnections: 6);
+        using var provider = CreateProvider(providerType, "warm", pool);
+        using var client = new MultiProviderNntpClient(
+            [provider], new ProviderUsageTracker());
+        await pool.PrewarmAsync(6);
+
+        if (providerType == ProviderType.Pooled)
+            await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
+        else
+            await client.PrewarmHealthCheckAsync(CancellationToken.None);
+
+        Assert.Equal(0, Volatile.Read(ref validated));
+        Assert.Equal(6, provider.LiveConnections);
+        Assert.Equal(6, provider.IdleConnections);
+    }
+
     [Fact]
     public async Task StatPrimerExercisesOnlyTheRequestedHealthProviderRoles()
     {
@@ -234,22 +266,22 @@ public class QueueConnectionWarmerTests
         await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
         await client.PrimePrimaryHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
-        Assert.Equal(7, pooledPrimed);
+        Assert.Equal(5, pooledPrimed);
         Assert.Equal(5, healthPrimed);
         Assert.Equal(4, backupAndStatsPrimed);
         Assert.Equal(0, backupOnlyPrimed);
     }
 
     [Fact]
-    public async Task StatPrimerExercisesEveryUsefulSocketOnceAndSkipsMissingProviderPool()
+    public async Task StatPrimerExercisesOnlyABoundedSocketSampleAndSkipsMissingProviderPool()
     {
         var fullBatches = new ConcurrentQueue<int>();
         var missingBatches = new ConcurrentQueue<int>();
         using var full = CreateProvider(
-            ProviderType.HealthChecksOnly, "full", 4, 0,
+            ProviderType.HealthChecksOnly, "full", 12, 0,
             batchSize => fullBatches.Enqueue(batchSize));
         using var missing = CreateProvider(
-            ProviderType.HealthChecksOnly, "missing", 4, 1,
+            ProviderType.HealthChecksOnly, "missing", 12, 1,
             batchSize => missingBatches.Enqueue(batchSize), exists: false);
         using var client = new MultiProviderNntpClient(
             [full, missing], new ProviderUsageTracker());
@@ -299,6 +331,23 @@ public class QueueConnectionWarmerTests
             byteLimit: null,
             bytesUsedOffset: 0,
             priority,
+            prepOnly: false,
+            prepSpreadEnabled: true);
+    }
+
+    private static MultiConnectionNntpClient CreateProvider(
+        ProviderType type,
+        string host,
+        ConnectionPool<INntpClient> pool)
+    {
+        return new MultiConnectionNntpClient(
+            pool,
+            type,
+            new ProviderCircuitBreaker(host),
+            host,
+            byteLimit: null,
+            bytesUsedOffset: 0,
+            priority: 0,
             prepOnly: false,
             prepSpreadEnabled: true);
     }
