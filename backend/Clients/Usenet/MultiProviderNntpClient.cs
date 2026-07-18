@@ -32,6 +32,7 @@ public class MultiProviderNntpClient(
     ConnectionLifetimeBudget? connectionBudget = null
 ) : NntpClient, IQueueConnectionWarmer
 {
+    private const int HealthPrimeConnectionLimitPerProvider = 4;
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
     private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
@@ -161,12 +162,12 @@ public class MultiProviderNntpClient(
 
     public async Task PrewarmHealthCheckAsync(CancellationToken cancellationToken)
     {
-        var validationAllocations = GetWarmValidationAllocations();
         // Pool providers are already warmed by queue prewarm and then exercised by
         // BODY/ARTICLE prep. Health-only and backup+STAT providers otherwise sit
         // outside that path, so establish the same bounded warm floor used at
-        // startup while prep is busy. The pool can still grow to its configured
-        // maximum when health work actually demands it.
+        // startup while prep is busy. Do not force-validate established idle
+        // connections here: borrowing the entire idle pool for DATE can make it
+        // unavailable to the foreground prep that triggered this warmup.
         var eligible = providers
             .Where(x => x.ProviderType == ProviderType.BackupAndStats ||
                         (UsenetStreamingClient.HealthProviderPrewarmEnabled &&
@@ -177,21 +178,15 @@ public class MultiProviderNntpClient(
 
         await Task.WhenAll(eligible.Select(async provider =>
         {
-            var validationConcurrency = validationAllocations.GetValueOrDefault(provider);
             var target = UsenetStreamingClient.GetWarmConnectionTarget(
                 provider.ProviderType, provider.MaxConnections);
             try
             {
                 await provider.PrewarmAsync(target, cancellationToken).ConfigureAwait(false);
-                var refreshCount = Math.Min(target, provider.IdleConnections);
-                if (refreshCount > 0 && validationConcurrency > 0)
-                    await provider.RefreshWarmConnectionsAsync(
-                            refreshCount, validationConcurrency, cancellationToken)
-                        .ConfigureAwait(false);
                 Log.Debug(
-                    "Health prewarm provider={Provider} target={Target} refreshRequested={RefreshRequested} " +
-                    "validationConcurrency={ValidationConcurrency} warm={Warm} live={Live} idle={Idle}",
-                    provider.Host, target, refreshCount, validationConcurrency,
+                    "Health prewarm provider={Provider} target={Target} mode=establish-only " +
+                    "warm={Warm} live={Live} idle={Idle}",
+                    provider.Host, target,
                     provider.WarmConnections, provider.LiveConnections, provider.IdleConnections);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -208,13 +203,12 @@ public class MultiProviderNntpClient(
 
     public async Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken)
     {
-        var validationAllocations = GetWarmValidationAllocations();
         // First-segment prep intentionally reads only the metadata prefix of each
         // article. Those partially consumed BODY connections are discarded to keep
         // the NNTP command stream synchronized, so a Primary pool can be cold at the
         // prep-to-STAT boundary even when queue prewarm filled it beforehand.
-        // Refill opportunistically after that boundary. The pool's speculative
-        // creation path never queues ahead of foreground playback or health work.
+        // Refill opportunistically after that boundary, but leave every established
+        // idle socket available to lazy-RAR and other foreground ARTICLE work.
         var eligible = providers
             .Where(x => x.ProviderType == ProviderType.Pooled)
             .Where(x => !x.IsTripped)
@@ -223,21 +217,15 @@ public class MultiProviderNntpClient(
 
         await Task.WhenAll(eligible.Select(async provider =>
         {
-            var validationConcurrency = validationAllocations.GetValueOrDefault(provider);
             var target = UsenetStreamingClient.GetHealthCheckWarmConnectionTarget(
                 provider.ProviderType, provider.MaxConnections);
             try
             {
                 await provider.PrewarmAsync(target, cancellationToken).ConfigureAwait(false);
-                var refreshCount = Math.Min(target, provider.IdleConnections);
-                if (refreshCount > 0 && validationConcurrency > 0)
-                    await provider.RefreshWarmConnectionsAsync(
-                            refreshCount, validationConcurrency, cancellationToken)
-                        .ConfigureAwait(false);
                 Log.Debug(
-                    "Primary health prewarm provider={Provider} target={Target} refreshRequested={RefreshRequested} " +
-                    "validationConcurrency={ValidationConcurrency} warm={Warm} live={Live} idle={Idle}",
-                    provider.Host, target, refreshCount, validationConcurrency,
+                    "Primary health prewarm provider={Provider} target={Target} mode=establish-only " +
+                    "warm={Warm} live={Live} idle={Idle}",
+                    provider.Host, target,
                     provider.WarmConnections, provider.LiveConnections, provider.IdleConnections);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -307,11 +295,13 @@ public class MultiProviderNntpClient(
 
         await Task.WhenAll(eligible.Where(preferred.Contains).Select(async provider =>
         {
-            // Validation has already established that these are viable sockets.
-            // Exercise the real STAT path once per distinct connection. Replaying
-            // the entire coverage sample on every socket only creates a large burst
-            // of duplicate provider work and can slow the bulk check that follows.
-            var concurrency = validationAllocations.GetValueOrDefault(provider);
+            // The probe established that this provider is viable. Exercise a small
+            // sample of distinct sockets on the real STAT path. Priming an entire
+            // large pool can consume the capacity needed by foreground ARTICLE work
+            // and turns one slow provider into a job-wide timeout burst.
+            var allocatedConcurrency = validationAllocations.GetValueOrDefault(provider);
+            var concurrency = Math.Min(
+                HealthPrimeConnectionLimitPerProvider, allocatedConcurrency);
             var connectionCount = Math.Min(provider.IdleConnections, concurrency);
             if (connectionCount == 0) return;
             var timer = Stopwatch.StartNew();
