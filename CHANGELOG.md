@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.13](https://github.com/needforseed1/nzbdavex/compare/v1.3.12...v1.3.13) (2026-07-18)
+
+### Fixes
+
+* Health checks now keep primary article checks on providers with established connections instead of reserving work for providers with no usable sockets, preventing checks from lingering at 99%.
+* Stalled health-check batches now retry only unresolved articles with another provider and fail within a bounded time if no provider completes them.
+
 ## [1.3.12](https://github.com/needforseed1/nzbdavex/compare/v1.3.11...v1.3.12) (2026-07-17)
 
 ### Improvements
