@@ -3,6 +3,11 @@ declare const styles: {
   readonly "section": string;
   readonly "sectionHeader": string;
   readonly "alertMessage": string;
+  readonly "provider-groups": string;
+  readonly "provider-group": string;
+  readonly "provider-group-header": string;
+  readonly "provider-group-title": string;
+  readonly "provider-group-count": string;
   readonly "providers-grid": string;
   readonly "provider-card": string;
   readonly "provider-card-inner": string;
@@ -20,9 +25,8 @@ declare const styles: {
   readonly "benchmark-options": string;
   readonly "benchmark-options-content": string;
   readonly "delete": string;
-  readonly "provider-host": string;
-  readonly "provider-host-secondary": string;
-  readonly "provider-port": string;
+  readonly "provider-name": string;
+  readonly "provider-order": string;
   readonly "provider-type-badge": string;
   readonly "disabled": string;
   readonly "backup": string;

@@ -1,5 +1,5 @@
 .container {
-    max-width: 700px;
+    max-width: 1000px;
     margin-bottom: 25px;
 }
 
@@ -31,11 +31,59 @@
     border-radius: var(--radius-md);
 }
 
+.provider-groups {
+    margin-bottom: 28px;
+}
+
+.provider-group + .provider-group {
+    margin-top: 32px;
+}
+
+.provider-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 13px;
+    padding-left: 2px;
+}
+
+.provider-group-header::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    margin-left: 8px;
+    background: linear-gradient(to right, var(--text-muted) 0%, var(--border-default) 45%, transparent 100%);
+}
+
+.provider-group-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.005em;
+}
+
+.provider-group-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    color: var(--text-secondary);
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
 .providers-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
     gap: 16px;
-    margin-bottom: 28px;
 }
 
 .provider-card {
@@ -207,31 +255,29 @@
     min-width: 0;
 }
 
-.provider-host {
+.provider-name {
     font-size: 15px;
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 2px;
-    word-break: break-all;
+    overflow-wrap: anywhere;
     line-height: 1.3;
     letter-spacing: -0.01em;
 }
 
-.provider-port {
-    font-size: 10px;
-    font-weight: 500;
+.provider-order {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 2px 8px;
     color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-
-.provider-host-secondary {
-    font-size: 12px;
-    font-weight: 400;
-    color: var(--text-muted);
-    word-break: break-all;
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    font-size: 9px;
+    font-weight: 600;
     line-height: 1.3;
-    margin-bottom: 2px;
+    letter-spacing: 0.08em;
+    vertical-align: middle;
 }
 
 .provider-divider {
@@ -440,6 +486,7 @@
 }
 
 .advanced-panel {
+    max-width: 700px;
     margin-bottom: 28px;
     border-color: var(--border-default);
     background: var(--bg-surface);

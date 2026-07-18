@@ -2,6 +2,10 @@
 
 ## [1.3.14](https://github.com/needforseed1/nzbdavex/compare/v1.3.13...v1.3.14) (2026-07-19)
 
+### Improvements
+
+* The Usenet provider overview now groups providers by role, shows pipeline overrides directly on each card, and keeps drag-and-drop ordering within the relevant provider group.
+
 ### Fixes
 
 * Queue and health-check prewarming now establishes missing connections without borrowing authenticated idle sockets for a simultaneous validation burst, keeping foreground preparation and health work supplied.

@@ -208,14 +208,15 @@ type UsenetProviderConfig = {
 
 type ProviderRole = "primary" | "prep" | "backup-health" | "backup" | "health" | "disabled";
 
-const PROVIDER_ROLE_LABELS: Record<ProviderRole, string> = {
-    primary: "Primary",
-    prep: "Prep only",
-    "backup-health": "Backup + health checks",
-    backup: "Backup",
-    health: "Health checks only",
-    disabled: "Disabled",
-};
+type ProviderOverviewGroupKey = "primary" | "backup-health" | "backup" | "prep" | "disabled";
+
+const PROVIDER_OVERVIEW_GROUPS: Array<{ key: ProviderOverviewGroupKey; label: string }> = [
+    { key: "primary", label: "Primary" },
+    { key: "backup-health", label: "Backup + health checks" },
+    { key: "backup", label: "Backup" },
+    { key: "prep", label: "Prep only" },
+    { key: "disabled", label: "Disabled" },
+];
 
 function getProviderRole(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">): ProviderRole {
     if (provider.Type === ProviderType.Disabled) return "disabled";
@@ -223,6 +224,11 @@ function getProviderRole(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">)
     if (provider.Type === ProviderType.BackupAndStats) return "backup-health";
     if (provider.Type === ProviderType.BackupOnly) return "backup";
     return provider.PrepOnly ? "prep" : "primary";
+}
+
+function getProviderOverviewGroup(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">): ProviderOverviewGroupKey {
+    const role = getProviderRole(provider);
+    return role === "health" ? "backup-health" : role;
 }
 
 function parseProviderConfig(jsonString: string): UsenetProviderConfig {
@@ -304,6 +310,24 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     const providerConfig = useMemo(() => parseProviderConfig(config["usenet.providers"]), [config]);
     const providerConfigJsonValid = isProviderConfigJsonValid(config["usenet.providers"]);
     const cascadeEnabled = config["usenet.cascade.enabled"] === "true";
+    const providerGroups = useMemo(() => {
+        const entries = providerConfig.Providers.map((provider, index) => ({
+            provider,
+            index,
+            id: providerKey(provider, index),
+            group: getProviderOverviewGroup(provider),
+        }));
+        return PROVIDER_OVERVIEW_GROUPS
+            .map(group => ({
+                ...group,
+                entries: entries.filter(entry => entry.group === group.key),
+            }))
+            .filter(group => group.entries.length > 0);
+    }, [providerConfig]);
+    const visibleProviderEntries = useMemo(
+        () => providerGroups.flatMap(group => group.entries),
+        [providerGroups],
+    );
     const pooledConnections = Math.max(1, providerConfig.Providers
         .filter(provider => provider.Type === ProviderType.Pooled)
         .reduce((sum, provider) => sum + provider.MaxConnections, 0));
@@ -390,11 +414,11 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
     const handleDragEnd = useCallback((event: DragEndEvent) => {
         const { active, over } = event;
         if (!over || active.id === over.id) return;
-        const ids = providerConfig.Providers.map(providerKey);
-        const from = ids.indexOf(String(active.id));
-        const to = ids.indexOf(String(over.id));
-        if (from !== -1 && to !== -1) handleReorder(from, to);
-    }, [providerConfig, handleReorder]);
+        const activeEntry = visibleProviderEntries.find(entry => entry.id === String(active.id));
+        const overEntry = visibleProviderEntries.find(entry => entry.id === String(over.id));
+        if (!activeEntry || !overEntry || activeEntry.group !== overEntry.group) return;
+        handleReorder(activeEntry.index, overEntry.index);
+    }, [visibleProviderEntries, handleReorder]);
 
     const handleConnectionsMessage = useCallback((message: string) => {
         const parts = (message || "0|0|0|0|1|0").split("|");
@@ -486,179 +510,163 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     </p>
                 ) : (
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                    <SortableContext items={providerConfig.Providers.map(providerKey)} strategy={rectSortingStrategy}>
-                    <div className={styles["providers-grid"]}>
-                        {providerConfig.Providers.map((provider, index) => {
-                            const isDisabled = provider.Type === ProviderType.Disabled;
-                            return (
-                            <SortableItem key={providerKey(provider, index)} id={providerKey(provider, index)} disabled={!cascadeEnabled}>
-                            {({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging }) => (
-                            <div ref={setNodeRef} style={style} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
-                                <div className={styles["provider-card-inner"]}>
-                                    <div className={styles["provider-header"]}>
-                                        <div className={styles["provider-header-content"]}>
-                                            <div className={styles["provider-host"]}>
-                                                {cascadeEnabled && !isDisabled && (
-                                                    <span style={{ display: "inline-block", marginRight: 8, padding: "2px 8px", fontSize: 9, fontWeight: 600, letterSpacing: "0.08em", color: "var(--text-muted)", background: "var(--bg-surface-2)", border: "1px solid var(--border-subtle)", borderRadius: 6, verticalAlign: "middle" }}>
-                                                        #{index + 1}
-                                                    </span>
-                                                )}
-                                                {provider.Nickname?.trim() || provider.Host}
-                                                {isDisabled && <span className={styles["provider-disabled-badge"]}>Disabled</span>}
-                                            </div>
-                                            {provider.Nickname?.trim() && (
-                                                <div className={styles["provider-host-secondary"]}>
-                                                    {provider.Host}
-                                                </div>
-                                            )}
-                                            <div className={styles["provider-port"]}>
-                                                Port {provider.Port}
-                                            </div>
-                                        </div>
-                                        <div className={styles["provider-header-actions"]}>
-                                            {cascadeEnabled && (
-                                                <button
-                                                    type="button"
-                                                    ref={setActivatorNodeRef}
-                                                    className={styles["header-action-button"]}
-                                                    style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: "none" }}
-                                                    data-tooltip="Drag to reorder"
-                                                    aria-label="Drag to reorder"
-                                                    {...attributes}
-                                                    {...listeners}
-                                                >
-                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                                                        <circle cx="9" cy="5" r="1.6" /><circle cx="15" cy="5" r="1.6" />
-                                                        <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
-                                                        <circle cx="9" cy="19" r="1.6" /><circle cx="15" cy="19" r="1.6" />
-                                                    </svg>
-                                                </button>
-                                            )}
-                                            <button
-                                                className={`${styles["header-action-button"]} ${styles["toggle"]} ${isDisabled ? styles["toggle-off"] : styles["toggle-on"]}`}
-                                                onClick={() => handleToggleProvider(index)}
-                                                data-tooltip={isDisabled ? "Enable Provider" : "Disable Provider"}
-                                                aria-label={isDisabled ? "Enable Provider" : "Disable Provider"}
-                                                aria-pressed={!isDisabled}
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-                                                    <line x1="12" y1="2" x2="12" y2="12" />
-                                                </svg>
-                                            </button>
-                                            <button
-                                                className={styles["header-action-button"]}
-                                                onClick={() => handleEditProvider(index)}
-                                                data-tooltip="Edit Provider"
-                                                aria-label="Edit Provider"
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                                </svg>
-                                            </button>
-                                            <button
-                                                className={`${styles["header-action-button"]} ${styles["delete"]}`}
-                                                onClick={() => handleDeleteProvider(index)}
-                                                data-tooltip="Delete Provider"
-                                                aria-label="Delete Provider"
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <polyline points="3 6 5 6 21 6" />
-                                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                                </svg>
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    <div className={styles["provider-details"]}>
-                                        <div className={styles["provider-detail-row"]}>
-
-                                            <div className={styles["provider-detail-item"]}>
-                                                <div className={styles["provider-detail-icon"]}>
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                                        <circle cx="12" cy="7" r="4" />
-                                                    </svg>
-                                                </div>
-                                                <div className={styles["provider-detail-content"]}>
-                                                    <span className={styles["provider-detail-label"]}>Username</span>
-                                                    <span className={styles["provider-detail-value"]}>{provider.User}</span>
-                                                </div>
-                                            </div>
-
-                                            <div className={styles["provider-detail-item"]}>
-                                                <div className={styles["provider-detail-icon"]}>
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                                                    </svg>
-                                                </div>
-                                                <div className={styles["provider-detail-content"]}>
-                                                    <span className={styles["provider-detail-label"]}>Connections</span>
-                                                    <span className={styles["provider-detail-value"]}>
-                                                        {connections[provider.Id]
-                                                            ? `${connections[provider.Id].live} / ${provider.MaxConnections} max`
-                                                            : `${provider.MaxConnections} max`}
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            <div className={styles["provider-detail-item"]}>
-                                                <div className={styles["provider-detail-icon"]}>
-                                                    {provider.UseSsl ? (
-                                                        // Closed lock icon
-                                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                            <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
-                                                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                                            <circle cx="12" cy="16" r="1" fill="currentColor" />
-                                                        </svg>
-                                                    ) : (
-                                                        // Open lock icon
-                                                        <svg width="13" height="13" viewBox="0 -2 24 26" fill="none" stroke="currentColor" strokeWidth="2">
-                                                            <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
-                                                            <path d="M7 11V4a5 5 0 0 1 9.9 1" />
-                                                            <circle cx="12" cy="16" r="1" fill="currentColor" />
-                                                        </svg>
-                                                    )}
-                                                </div>
-                                                <div className={styles["provider-detail-content"]}>
-                                                    <span className={styles["provider-detail-label"]}>Security</span>
-                                                    <span className={styles["provider-detail-value"]}>
-                                                        {provider.UseSsl ? "SSL Enabled" : "No SSL"}
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            <div className={styles["provider-detail-item"]}>
-                                                <div className={styles["provider-detail-icon"]}>
-                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3">
-                                                        <text x="12" y="9" fontSize="10" fill="currentColor" textAnchor="middle" fontWeight="600">1</text>
-                                                        <text x="6" y="21" fontSize="10" fill="currentColor" textAnchor="middle" fontWeight="600">2</text>
-                                                        <text x="18" y="21" fontSize="10" fill="currentColor" textAnchor="middle" fontWeight="600">3</text>
-                                                    </svg>
-                                                </div>
-                                                <div className={styles["provider-detail-content"]}>
-                                                    <span className={styles["provider-detail-label"]}>Behavior</span>
-                                                    <span className={styles["provider-detail-value"]}>
-                                                        {PROVIDER_ROLE_LABELS[getProviderRole(provider)]}
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                        </div>
-
-                                        <UsageRow
-                                            provider={provider}
-                                            usage={usage[provider.Id]}
-                                            onReset={() => handleResetUsage(index)}
-                                        />
-                                    </div>
+                    <SortableContext items={visibleProviderEntries.map(entry => entry.id)} strategy={rectSortingStrategy}>
+                    <div className={styles["provider-groups"]}>
+                        {providerGroups.map(group => (
+                            <section
+                                key={group.key}
+                                className={styles["provider-group"]}
+                                aria-labelledby={`provider-group-${group.key}`}
+                            >
+                                <div className={styles["provider-group-header"]}>
+                                    <h6 id={`provider-group-${group.key}`} className={styles["provider-group-title"]}>
+                                        {group.label}
+                                    </h6>
+                                    <span className={styles["provider-group-count"]}>
+                                        {group.entries.length}
+                                    </span>
                                 </div>
-                            </div>
-                            )}
-                            </SortableItem>
-                            );
-                        })}
+                                <div className={styles["providers-grid"]}>
+                                    {group.entries.map(({ provider, index, id }, groupIndex) => {
+                                        const isDisabled = provider.Type === ProviderType.Disabled;
+                                        const pipelineOverrides = [
+                                            provider.PipeliningDepth != null
+                                                ? `Playback ${provider.PipeliningDepth}`
+                                                : null,
+                                            provider.HealthPipeliningDepth != null
+                                                ? `Health ${provider.HealthPipeliningDepth}`
+                                                : null,
+                                        ].filter((value): value is string => value !== null);
+                                        return (
+                                        <SortableItem key={id} id={id} disabled={!cascadeEnabled || isDisabled}>
+                                        {({ setNodeRef, setActivatorNodeRef, attributes, listeners, style, isDragging }) => (
+                                        <div ref={setNodeRef} style={style} className={`${styles["provider-card"]} ${isDisabled ? styles["provider-card-disabled"] : ""}`}>
+                                            <div className={styles["provider-card-inner"]}>
+                                                <div className={styles["provider-header"]}>
+                                                    <div className={styles["provider-header-content"]}>
+                                                        <div className={styles["provider-name"]}>
+                                                            {cascadeEnabled && !isDisabled && (
+                                                                <span className={styles["provider-order"]}>
+                                                                    #{groupIndex + 1}
+                                                                </span>
+                                                            )}
+                                                            {provider.Nickname?.trim() || `Provider ${index + 1}`}
+                                                        </div>
+                                                    </div>
+                                                    <div className={styles["provider-header-actions"]}>
+                                                        {cascadeEnabled && !isDisabled && (
+                                                            <button
+                                                                type="button"
+                                                                ref={setActivatorNodeRef}
+                                                                className={styles["header-action-button"]}
+                                                                style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: "none" }}
+                                                                data-tooltip="Drag within group"
+                                                                aria-label={`Reorder ${provider.Nickname?.trim() || `Provider ${index + 1}`} within ${group.label}`}
+                                                                {...attributes}
+                                                                {...listeners}
+                                                            >
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                                    <circle cx="9" cy="5" r="1.6" /><circle cx="15" cy="5" r="1.6" />
+                                                                    <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+                                                                    <circle cx="9" cy="19" r="1.6" /><circle cx="15" cy="19" r="1.6" />
+                                                                </svg>
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            className={`${styles["header-action-button"]} ${styles["toggle"]} ${isDisabled ? styles["toggle-off"] : styles["toggle-on"]}`}
+                                                            onClick={() => handleToggleProvider(index)}
+                                                            data-tooltip={isDisabled ? "Enable Provider" : "Disable Provider"}
+                                                            aria-label={isDisabled ? "Enable Provider" : "Disable Provider"}
+                                                            aria-pressed={!isDisabled}
+                                                        >
+                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                                <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                                                                <line x1="12" y1="2" x2="12" y2="12" />
+                                                            </svg>
+                                                        </button>
+                                                        <button
+                                                            className={styles["header-action-button"]}
+                                                            onClick={() => handleEditProvider(index)}
+                                                            data-tooltip="Edit Provider"
+                                                            aria-label="Edit Provider"
+                                                        >
+                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                                            </svg>
+                                                        </button>
+                                                        <button
+                                                            className={`${styles["header-action-button"]} ${styles["delete"]}`}
+                                                            onClick={() => handleDeleteProvider(index)}
+                                                            data-tooltip="Delete Provider"
+                                                            aria-label="Delete Provider"
+                                                        >
+                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                <polyline points="3 6 5 6 21 6" />
+                                                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div className={styles["provider-details"]}>
+                                                    <div className={styles["provider-detail-row"]}>
+                                                        <div className={styles["provider-detail-item"]}>
+                                                            <div className={styles["provider-detail-icon"]}>
+                                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                                                                </svg>
+                                                            </div>
+                                                            <div className={styles["provider-detail-content"]}>
+                                                                <span className={styles["provider-detail-label"]}>Connections</span>
+                                                                <span className={styles["provider-detail-value"]}>
+                                                                    {connections[provider.Id]
+                                                                        ? `${connections[provider.Id].live} / ${provider.MaxConnections} max`
+                                                                        : `${provider.MaxConnections} max`}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <div
+                                                            className={styles["provider-detail-item"]}
+                                                            title={pipelineOverrides.length > 0
+                                                                ? "Provider-specific pipeline depths override the global defaults."
+                                                                : "This provider inherits the global playback and health pipeline depths."}
+                                                        >
+                                                            <div className={styles["provider-detail-icon"]}>
+                                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                                    <path d="M4 6h9" />
+                                                                    <path d="M4 12h16" />
+                                                                    <path d="M4 18h6" />
+                                                                    <circle cx="16" cy="6" r="2" />
+                                                                    <circle cx="13" cy="18" r="2" />
+                                                                </svg>
+                                                            </div>
+                                                            <div className={styles["provider-detail-content"]}>
+                                                                <span className={styles["provider-detail-label"]}>Pipeline overrides</span>
+                                                                <span className={styles["provider-detail-value"]}>
+                                                                    {pipelineOverrides.length > 0
+                                                                        ? pipelineOverrides.join(" · ")
+                                                                        : "Global defaults"}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <UsageRow
+                                                        provider={provider}
+                                                        usage={usage[provider.Id]}
+                                                        onReset={() => handleResetUsage(index)}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        )}
+                                        </SortableItem>
+                                        );
+                                    })}
+                                </div>
+                            </section>
+                        ))}
                     </div>
                     </SortableContext>
                     </DndContext>
