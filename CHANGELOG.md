@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.14](https://github.com/needforseed1/nzbdavex/compare/v1.3.13...v1.3.14) (2026-07-19)
+
+### Fixes
+
+* Queue and health-check prewarming now establishes missing connections without borrowing authenticated idle sockets for a simultaneous validation burst, keeping foreground preparation and health work supplied.
+* Ready-connection maintenance now refreshes the full idle target in rolling batches of four and runs only while the provider has no active or pending foreground work.
+* Health-check STAT priming now samples at most four sockets per provider. Provider timeouts remain retryable, and canceled warmup cleanup cannot hold the queue indefinitely.
+
+### Notes
+
+* A queue item can remain visible at 100% briefly after its health check has completed while nzbdavex creates the WebDAV mount metadata and saves the final import to its database. This is local import work, not a stalled provider health check; import progress is not currently displayed separately.
+
 ## [1.3.13](https://github.com/needforseed1/nzbdavex/compare/v1.3.12...v1.3.13) (2026-07-18)
 
 ### Fixes
