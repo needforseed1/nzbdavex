@@ -883,9 +883,11 @@ public class MultiProviderNntpClient(
             var plan = BulkStatPlanContext.Value;
             if (plan is not null && ReferenceEquals(plan.Owner, this))
             {
-                var preferred = pool
+                var preferredCandidates = pool
                     .Where(IsPrimaryStatProvider)
                     .Where(plan.IsPreferred)
+                    .ToList();
+                var preferred = PreferLiveStatProviders(preferredCandidates)
                     .OrderBy(plan.SelectionScore)
                     .ThenBy(plan.ProbeRank)
                     .ThenBy(EffectivePriority)
@@ -922,9 +924,12 @@ public class MultiProviderNntpClient(
 
             // STAT transfers no article bodies, so spread health-eligible traffic by
             // normalized occupancy. Pending reservations prevent a burst of lanes
-            // from all selecting the same nominally-fast provider before its sockets
-            // have finished connecting. BackupOnly providers remain rescue-only.
-            var primary = SelectPrimaryStatTier(pool)
+            // from all selecting the same provider. Prefer capacity that has already
+            // established a usable socket; cold providers remain in the fallback
+            // chain and rejoin primary selection as soon as prewarm or a probe
+            // publishes a connection. BackupOnly providers remain rescue-only.
+            var primaryCandidates = SelectPrimaryStatTier(pool).ToList();
+            var primary = PreferLiveStatProviders(primaryCandidates)
                 .OrderBy(StatSpreadScore)
                 .ThenBy(EffectivePriority)
                 .ThenBy(EstimatedDeliveryScore)
@@ -973,9 +978,16 @@ public class MultiProviderNntpClient(
 
     private static double StatSpreadScore(MultiConnectionNntpClient provider)
     {
-        var capacity = Math.Max(1, provider.ActiveConnections + provider.AvailableConnections);
+        var capacity = Math.Max(1, provider.LiveConnections);
         var committed = provider.ActiveConnections + provider.PendingSelections;
         return committed / (double)capacity;
+    }
+
+    private static IReadOnlyList<MultiConnectionNntpClient> PreferLiveStatProviders(
+        IReadOnlyList<MultiConnectionNntpClient> candidates)
+    {
+        var live = candidates.Where(provider => provider.LiveConnections > 0).ToList();
+        return live.Count > 0 ? live : candidates;
     }
 
     private bool IsPrimaryStatProvider(MultiConnectionNntpClient provider) =>
@@ -1387,12 +1399,33 @@ public class MultiProviderNntpClient(
         var pending = Enumerable.Range(0, segmentIds.Count).ToList();
         ExceptionDispatchInfo? lastException = null;
         var lastAttemptFailed = false;
+        var operationStopwatch = Stopwatch.StartNew();
 
-        foreach (var provider in orderedProviders)
+        for (var providerIndex = 0; providerIndex < orderedProviders.Count; providerIndex++)
         {
             if (pending.Count == 0) break;
             cancellationToken.ThrowIfCancellationRequested();
+            var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
+            if (remainingOperationTime <= TimeSpan.Zero)
+            {
+                lastAttemptFailed = true;
+                lastException = ExceptionDispatchInfo.Capture(new TimeoutException(
+                    "No Usenet provider completed the pipelined STAT batch within " +
+                    $"{ProviderOperationTimeout.TotalSeconds:0.#} seconds."));
+                break;
+            }
 
+            var provider = orderedProviders[providerIndex];
+            var isLastProvider = providerIndex == orderedProviders.Count - 1;
+            var maximumAttemptTime = isLastProvider
+                ? ProviderOperationTimeout
+                : ProviderAttemptTimeout;
+            var attemptTimeout = maximumAttemptTime < remainingOperationTime
+                ? maximumAttemptTime
+                : remainingOperationTime;
+            using var attemptCts =
+                ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.CancelAfter(attemptTimeout);
             var attempted = pending;
             var batch = attempted.Select(index => segmentIds[index]).ToArray();
             var stillPending = new List<int>(attempted.Count);
@@ -1406,12 +1439,13 @@ public class MultiProviderNntpClient(
             {
                 if (provider.ProviderType == ProviderType.BackupOnly)
                     recoveryLease = await _backupRecovery.EnterAsync(
-                            provider, cancellationToken)
+                            provider, attemptCts.Token)
                         .ConfigureAwait(false);
 
                 var providerDepth = ResolveHealthDepth(provider, fallbackDepth);
-                await foreach (var result in provider.StatsPipelinedAsync(batch, providerDepth, cancellationToken)
-                                   .WithCancellation(cancellationToken).ConfigureAwait(false))
+                await foreach (var result in provider.StatsPipelinedAsync(
+                                       batch, providerDepth, attemptCts.Token)
+                                   .WithCancellation(attemptCts.Token).ConfigureAwait(false))
                 {
                     if (received >= attempted.Count)
                         throw new InvalidDataException(
@@ -1437,6 +1471,21 @@ public class MultiProviderNntpClient(
                 if (received != attempted.Count)
                     throw new IOException(
                         $"Provider {provider.Host} ended a pipelined STAT batch after {received} of {attempted.Count} responses.");
+            }
+            catch (OperationCanceledException e) when (
+                !cancellationToken.IsCancellationRequested && attemptCts.Token.IsCancellationRequested)
+            {
+                lastAttemptFailed = true;
+                var providerTimeout = new TimeoutException(
+                    $"Provider {provider.Host} did not complete the pipelined STAT batch within " +
+                    $"{attemptTimeout.TotalSeconds:0.#} seconds.", e);
+                lastException = ExceptionDispatchInfo.Capture(providerTimeout);
+                for (var i = received; i < attempted.Count; i++)
+                    stillPending.Add(attempted[i]);
+                Log.Debug(providerTimeout,
+                    "Pipelined STAT batch timed out on provider {Provider}; " +
+                    "retrying {Count} unresolved segments as a batch.",
+                    provider.Host, stillPending.Count);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
@@ -1923,7 +1972,7 @@ public class MultiProviderNntpClient(
 
         public double SelectionScore(MultiConnectionNntpClient provider)
         {
-            var capacity = Math.Max(1, provider.ActiveConnections + provider.AvailableConnections);
+            var capacity = Math.Max(1, provider.LiveConnections);
             var committed = provider.ActiveConnections + provider.PendingSelections;
             var rate = EffectiveRate(provider);
             MultiConnectionNntpClient[] preferred;

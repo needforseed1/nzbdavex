@@ -45,6 +45,89 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task StalledBatchTimesOutAndRetriesOnNextProvider()
+    {
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var backupClient = new RecordingPipelineClient([true, true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromSeconds(1));
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b"], 2, CancellationToken.None));
+
+        Assert.All(results, result => Assert.True(result.Exists));
+        Assert.Single(stalledClient.Batches);
+        Assert.Equal(["a", "b"], backupClient.Batches.Single());
+    }
+
+    [Fact]
+    public async Task TimedOutBatchRetriesOnlyResponsesThatWereNotResolved()
+    {
+        var stalledClient = new RecordingPipelineClient(
+            [true], stallAfterResults: true);
+        var backupClient = new RecordingPipelineClient([true, true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromSeconds(1));
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b", "c"], 3, CancellationToken.None));
+
+        Assert.All(results, result => Assert.True(result.Exists));
+        Assert.Equal(["b", "c"], backupClient.Batches.Single());
+    }
+
+    [Fact]
+    public async Task StalledFinalProviderCannotHoldPipelinedHealthForever()
+    {
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(25),
+            providerOperationTimeout: TimeSpan.FromMilliseconds(75));
+
+        await Assert.ThrowsAsync<TimeoutException>(() => CollectAsync(
+            client.StatsPipelinedAsync(["a"], 1, CancellationToken.None)));
+    }
+
+    [Fact]
+    public async Task CallerCancellationIsNotConvertedToPipelinedProviderTimeout()
+    {
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var backupClient = new RecordingPipelineClient([true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromSeconds(1),
+            providerOperationTimeout: TimeSpan.FromSeconds(2));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => CollectAsync(
+            client.StatsPipelinedAsync(["a"], 1, cancellation.Token)));
+
+        Assert.Empty(backupClient.Batches);
+    }
+
+    [Fact]
     public async Task FailedBodyBatchRotatesTheNextChunkToAnotherProvider()
     {
         var primaryClient = new RecordingPipelineClient([], failBodyAfterResults: 1);
@@ -104,6 +187,89 @@ public class PipelinedFallbackTests
 
         Assert.Single(pooledClient.Batches);
         Assert.Single(healthBackupClient.Batches);
+    }
+
+    [Fact]
+    public async Task NormalHealthSkipsColdProviderUntilPrewarmMakesItLive()
+    {
+        var coldFactoryCalls = 0;
+        var releaseColdFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coldTransport = new CoveragePipelineClient(_ => true);
+        var coldPool = new ConnectionPool<INntpClient>(
+            50,
+            async cancellationToken =>
+            {
+                Interlocked.Increment(ref coldFactoryCalls);
+                await releaseColdFactory.Task.WaitAsync(cancellationToken);
+                return coldTransport;
+            });
+        var cold = CreateProvider(coldPool, ProviderType.Pooled, "cold", 0);
+
+        var readyTransport = new CoveragePipelineClient(_ => true);
+        var readyPool = new ConnectionPool<INntpClient>(
+            4, _ => ValueTask.FromResult<INntpClient>(readyTransport));
+        await readyPool.PrewarmAsync(4);
+        var ready = CreateProvider(readyPool, ProviderType.Pooled, "ready", 1);
+        using var client = new MultiProviderNntpClient(
+            [cold, ready], new ProviderUsageTracker());
+
+        var readyResult = await CollectAsync(
+            client.StatsPipelinedAsync(["ready-segment"], 1, CancellationToken.None));
+
+        Assert.True(readyResult.Single().Exists);
+        Assert.Equal(0, Volatile.Read(ref coldFactoryCalls));
+        Assert.Single(readyTransport.Batches);
+
+        releaseColdFactory.TrySetResult();
+        await cold.PrewarmAsync(1, CancellationToken.None);
+        var recoveredResult = await CollectAsync(
+            client.StatsPipelinedAsync(["cold-segment"], 1, CancellationToken.None));
+
+        Assert.True(recoveredResult.Single().Exists);
+        Assert.Equal(1, Volatile.Read(ref coldFactoryCalls));
+        Assert.Single(coldTransport.Batches);
+    }
+
+    [Fact]
+    public async Task NormalHealthDistributesLanesByEstablishedLiveCapacity()
+    {
+        var coordinator = new LaneCoordinator(5);
+        var sparseTransport = new CoordinatedPipelineClient(coordinator);
+        var sparseFactoryCalls = 0;
+        var sparsePool = new ConnectionPool<INntpClient>(
+            50,
+            async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref sparseFactoryCalls) > 1)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return sparseTransport;
+            });
+        await sparsePool.PrewarmAsync(1);
+        var sparse = CreateProvider(sparsePool, ProviderType.Pooled, "sparse", 0);
+
+        var denseTransport = new CoordinatedPipelineClient(coordinator);
+        var densePool = new ConnectionPool<INntpClient>(
+            4, _ => ValueTask.FromResult<INntpClient>(denseTransport));
+        await densePool.PrewarmAsync(4);
+        var dense = CreateProvider(densePool, ProviderType.Pooled, "dense", 1);
+        using var client = new MultiProviderNntpClient(
+            [sparse, dense],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromSeconds(1));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        await client.CheckAllSegmentsPipelinedAsync(
+            ["a", "b", "c", "d", "e"],
+            depth: 1,
+            fallbackConcurrency: 5,
+            progress: null,
+            timeout.Token);
+
+        Assert.Equal(1, Volatile.Read(ref sparseFactoryCalls));
+        Assert.Single(sparseTransport.Batches);
+        Assert.Equal(4, denseTransport.Batches.Count);
     }
 
     [Fact]
@@ -233,6 +399,59 @@ public class PipelinedFallbackTests
         Assert.Single(missingClient.Batches);
         Assert.True(completeClient.Batches.Count > 1);
         Assert.Equal(segments.Length, progress.Maximum);
+    }
+
+    [Fact]
+    public async Task BulkPlanDoesNotAssignPrimaryLanesToPreferredProviderThatWentCold()
+    {
+        static bool PartialCoverage(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length)) % 4 != 0;
+
+        var coldFactoryCalls = 0;
+        var coldTransport = new CoveragePipelineClient(PartialCoverage);
+        var coldPool = new ConnectionPool<INntpClient>(
+            50,
+            async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref coldFactoryCalls) > 1)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return coldTransport;
+            });
+        var cold = CreateProvider(coldPool, ProviderType.Pooled, "cold", 0);
+
+        var releaseReadyProbe = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readyTransport = new CoveragePipelineClient(
+            _ => true,
+            (batch, cancellationToken) => batch == 1
+                ? releaseReadyProbe.Task.WaitAsync(cancellationToken)
+                : Task.CompletedTask);
+        var readyPool = new ConnectionPool<INntpClient>(
+            4, _ => ValueTask.FromResult<INntpClient>(readyTransport));
+        await readyPool.PrewarmAsync(4);
+        var ready = CreateProvider(readyPool, ProviderType.Pooled, "ready", 1);
+        using var client = new MultiProviderNntpClient(
+            [cold, ready],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromSeconds(1));
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        var check = client.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 4,
+            progress: null, CancellationToken.None);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        while (cold.IdleConnections == 0)
+            await Task.Delay(10, timeout.Token);
+
+        cold.CloseIdleConnections();
+        Assert.Equal(0, cold.LiveConnections);
+        releaseReadyProbe.TrySetResult();
+        await check.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, Volatile.Read(ref coldFactoryCalls));
+        Assert.Single(coldTransport.Batches);
+        Assert.True(readyTransport.Batches.Count > 1);
     }
 
     [Fact]
@@ -519,6 +738,22 @@ public class PipelinedFallbackTests
             healthPipeliningDepth: healthPipeliningDepth);
     }
 
+    private static MultiConnectionNntpClient CreateProvider(
+        ConnectionPool<INntpClient> pool,
+        ProviderType type,
+        string host,
+        int priority) =>
+        new(
+            pool,
+            type,
+            new ProviderCircuitBreaker(host),
+            host,
+            byteLimit: null,
+            bytesUsedOffset: 0,
+            priority,
+            prepOnly: false,
+            prepSpreadEnabled: true);
+
     private static async Task<List<PipelinedStatResult>> CollectAsync(
         IAsyncEnumerable<PipelinedStatResult> source)
     {
@@ -537,7 +772,8 @@ public class PipelinedFallbackTests
     private sealed class RecordingPipelineClient(
         IReadOnlyList<bool> results,
         bool failAfterResults = false,
-        int? failBodyAfterResults = null) : NntpClient
+        int? failBodyAfterResults = null,
+        bool stallAfterResults = false) : NntpClient
     {
         public List<string[]> Batches { get; } = [];
         public List<string[]> BodyBatches { get; } = [];
@@ -574,6 +810,9 @@ public class PipelinedFallbackTests
                 };
                 await Task.Yield();
             }
+
+            if (stallAfterResults)
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 
             if (failAfterResults)
                 throw new IOException("Simulated batch failure.");
