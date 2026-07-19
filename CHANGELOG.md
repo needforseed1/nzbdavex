@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.15](https://github.com/needforseed1/nzbdavex/compare/v1.3.14...v1.3.15) (2026-07-19)
+
+### Fixes
+
+* Connection pools now keep bounded authentication handshakes running while foreground work reuses returned idle sockets, allowing health checks to grow rapidly beyond their initial warm connection count without trapping active work behind connection setup.
+* Health-check STAT routing now accounts for queued acquisitions and separates connection-acquisition deadlines from command deadlines. Congested providers fail over promptly, freshly authenticated sockets receive a full command window, and unresolved batches receive one globally bounded recovery pass.
+* Queue retries now wake at their advertised retry time instead of waiting for the next one-minute poll, and transient first-segment failures retry only the affected file instead of restarting all preparation work.
+
+### Notes
+
+* A queue item can remain visible at 100% briefly after health checking finishes while nzbdavex creates WebDAV mount metadata and saves the import to its database. This local import phase is not a stalled provider health check.
+
 ## [1.3.14](https://github.com/needforseed1/nzbdavex/compare/v1.3.13...v1.3.14) (2026-07-19)
 
 ### Improvements
