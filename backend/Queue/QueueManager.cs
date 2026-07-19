@@ -28,8 +28,7 @@ public class QueueManager : IDisposable
     private readonly QueueItemSourceTracker _sourceTracker;
     private readonly BenchmarkGate _benchmarkGate;
 
-    private CancellationTokenSource _sleepingQueueToken = new();
-    private readonly Lock _sleepingQueueLock = new();
+    private readonly SleepingQueueSignal _sleepingQueueSignal = new();
     private readonly object _queuePrewarmLock = new();
     private Task _queuePrewarmTask = Task.CompletedTask;
     private CancellationTokenSource? _queuePrewarmCts;
@@ -63,14 +62,7 @@ public class QueueManager : IDisposable
 
     public void AwakenQueue(DateTime? dateTime = null)
     {
-        TimeSpan? cancelAfter = dateTime.HasValue ? (dateTime.Value - DateTime.Now) : null;
-        lock (_sleepingQueueLock)
-        {
-            if (cancelAfter.HasValue && cancelAfter.Value > TimeSpan.Zero)
-                _sleepingQueueToken.CancelAfter(cancelAfter.Value);
-            else
-                _sleepingQueueToken.Cancel();
-        }
+        _sleepingQueueSignal.Awaken(dateTime);
     }
 
     public void BeginQueuePrewarm()
@@ -176,24 +168,17 @@ public class QueueManager : IDisposable
                 var topItem = await LockAsync(() => dbClient.GetTopQueueItem(ct)).ConfigureAwait(false);
                 if (topItem.queueItem is null)
                 {
-                    try
-                    {
-                        // if we're done with the queue, wait a minute before checking again.
-                        // or wait until awoken by cancellation of _sleepingQueueToken
-                        await Task.Delay(TimeSpan.FromMinutes(1), _sleepingQueueToken.Token).ConfigureAwait(false);
-                    }
-                    catch when (_sleepingQueueToken.IsCancellationRequested)
-                    {
-                        lock (_sleepingQueueLock)
-                        {
-                            if (!_sleepingQueueToken.TryReset())
-                            {
-                                _sleepingQueueToken.Dispose();
-                                _sleepingQueueToken = new CancellationTokenSource();
-                            }
-                        }
-                    }
+                    // An item paused for a retry backoff is not eligible yet, but the
+                    // queue must resume at its advertised `PauseUntil` rather than on
+                    // the next full poll interval.
+                    var nextPauseUntil = await dbClient
+                        .GetNextQueueItemPauseUntilAsync(ct).ConfigureAwait(false);
+                    if (nextPauseUntil.HasValue) AwakenQueue(nextPauseUntil);
 
+                    // if we're done with the queue, wait a minute before checking again.
+                    // or wait until awoken through the sleeping-queue signal.
+                    await _sleepingQueueSignal
+                        .WaitAsync(TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -340,6 +325,7 @@ public class QueueManager : IDisposable
         EndQueuePrewarm();
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
+        _sleepingQueueSignal.Dispose();
     }
 
     private class InProgressQueueItem
