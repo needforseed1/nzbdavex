@@ -154,6 +154,19 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         return (queueItem, queueNzbStream);
     }
 
+    /// <summary>
+    /// Returns the earliest `PauseUntil` still in the future, or null when no
+    /// queue item is waiting on a scheduled retry. Used to wake the queue when
+    /// a paused item becomes eligible instead of sleeping a full poll interval.
+    /// </summary>
+    public Task<DateTime?> GetNextQueueItemPauseUntilAsync(CancellationToken ct = default)
+    {
+        var nowTime = DateTime.Now;
+        return Ctx.QueueItems
+            .Where(q => q.PauseUntil != null && q.PauseUntil > nowTime)
+            .MinAsync(q => q.PauseUntil, ct);
+    }
+
     public Task<QueueItem[]> GetQueueItems
     (
         string? category,

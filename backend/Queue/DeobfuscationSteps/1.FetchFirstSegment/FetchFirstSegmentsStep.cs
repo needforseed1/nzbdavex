@@ -6,12 +6,20 @@ using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Par2Recovery;
+using Serilog;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
 public static class FetchFirstSegmentsStep
 {
+    // One failed first-segment fetch must not force the entire prep step (and
+    // every already-completed fetch) to rerun. Each file gets a small number of
+    // bounded in-place retries; every attempt already walks all providers.
+    private const int MaxFetchAttemptsPerFile = 3;
+    private static readonly TimeSpan[] FetchRetryDelays =
+        [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(2)];
+
     public static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
     (
         List<NzbFile> nzbFiles,
@@ -55,6 +63,35 @@ public static class FetchFirstSegmentsStep
         if (Par2.IsRecoveryVolumeFileName(nzbFile.GetSubjectFileName()))
             return BuildMissingFirstSegment(nzbFile);
 
+        for (var attempt = 1;; attempt++)
+        {
+            try
+            {
+                return await FetchFirstSegmentOnce(nzbFile, usenetClient, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception e) when (
+                attempt < MaxFetchAttemptsPerFile &&
+                !e.IsCancellationException() &&
+                e.IsRetryableDownloadException())
+            {
+                Log.Warning(
+                    "First-segment fetch failed for `{Subject}` " +
+                    "(attempt {Attempt}/{MaxAttempts}); retrying this file only -- {Error}",
+                    nzbFile.Subject, attempt, MaxFetchAttemptsPerFile, e.Message);
+                await Task.Delay(FetchRetryDelays[attempt - 1], cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task<NzbFileWithFirstSegment> FetchFirstSegmentOnce
+    (
+        NzbFile nzbFile,
+        INntpClient usenetClient,
+        CancellationToken cancellationToken
+    )
+    {
         try
         {
             // get the first article stream

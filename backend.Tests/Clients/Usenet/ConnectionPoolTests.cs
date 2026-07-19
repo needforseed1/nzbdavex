@@ -1285,7 +1285,7 @@ public class ConnectionPoolTests
     {
         var attempts = 0;
         var speculativeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var speculativeCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSpeculative = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await using var pool = new ConnectionPool<TrackedConnection>(
             2,
@@ -1295,16 +1295,8 @@ public class ConnectionPoolTests
                 if (attempt == 1) return new TrackedConnection(attempt, () => { });
 
                 speculativeStarted.TrySetResult();
-                try
-                {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
-                    throw new InvalidOperationException("The speculative handshake should be cancelled.");
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    speculativeCancelled.TrySetResult();
-                    throw;
-                }
+                await releaseSpeculative.Task.WaitAsync(ct);
+                return new TrackedConnection(attempt, () => { });
             });
 
         var first = await pool.GetConnectionLockAsync(SemaphorePriority.Low, timeout.Token);
@@ -1312,13 +1304,20 @@ public class ConnectionPoolTests
         var waiting = pool.GetConnectionLockAsync(SemaphorePriority.Low, timeout.Token);
         await speculativeStarted.Task.WaitAsync(timeout.Token);
 
+        // The waiting acquisition must reuse the returned socket immediately
+        // instead of waiting behind the unfinished handshake.
         first.Dispose();
         using var reused = await waiting.WaitAsync(timeout.Token);
-
         Assert.Equal(firstId, reused.Connection.Id);
-        await speculativeCancelled.Task.WaitAsync(timeout.Token);
         Assert.Equal(2, attempts);
-        Assert.Equal(1, pool.LiveConnections);
+
+        // The detached handshake is not discarded: with demand still queued, its
+        // socket is published when it completes so the pool grows under load.
+        var third = pool.GetConnectionLockAsync(SemaphorePriority.Low, timeout.Token);
+        releaseSpeculative.TrySetResult();
+        using var grown = await third.WaitAsync(timeout.Token);
+        Assert.Equal(2, grown.Connection.Id);
+        Assert.Equal(2, pool.LiveConnections);
     }
 
     [Fact]
@@ -1363,12 +1362,13 @@ public class ConnectionPoolTests
         first.Dispose();
         using var reused = await waiting.WaitAsync(TimeSpan.FromMilliseconds(500));
         Assert.Equal(firstId, reused.Connection.Id);
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        // The abandoned handshake still owns its lifetime reservation until its
-        // cancellation cleanup finishes, preventing an unbounded replacement burst.
-        // Pool disposal also tracks that cleanup instead of leaving an orphaned task.
+        // The detached handshake still owns its lifetime reservation until its
+        // cleanup finishes, preventing an unbounded replacement burst. Pool
+        // disposal cancels the detached work and tracks its cleanup instead of
+        // leaving an orphaned task.
         var disposing = pool.DisposeAsync().AsTask();
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
         await competingPool.PrewarmAsync(1).WaitAsync(TimeSpan.FromSeconds(1));
         Assert.False(disposing.IsCompleted);
         Assert.Equal(0, competingPool.LiveConnections);

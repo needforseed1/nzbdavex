@@ -23,6 +23,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private const int WarmValidationBatchSize = 4;
     private const int IdlePrewarmExpansionBatchSize = 16;
     private const int ConcurrentConnectionCreationLimit = 16;
+    private static readonly TimeSpan DetachedCreationCompletionLimit = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan CreationCapacityRetryDelay = TimeSpan.FromMilliseconds(25);
     private const int DefaultRapidWarmValidationConcurrencyLimit = 32;
     private static readonly TimeSpan UnderfilledWarmRetryInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan WarmFloorWarningDelay = TimeSpan.FromSeconds(30);
@@ -38,6 +40,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     internal int MinimumIdleConnections => _minimumIdleConnections;
     internal int MinimumWarmConnections => _minimumWarmConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
+    public int PendingAcquisitions => Volatile.Read(ref _pendingAcquisitions);
     public bool CapacityUnavailable => Volatile.Read(ref _capacityUnavailable) == 1;
 
     public event EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs>? OnConnectionPoolChanged;
@@ -264,12 +267,17 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                 if (!TryReserveConnectionCreation())
                 {
                     _creationGate.Release();
-                    ReleaseGateIfOpen();
-                    returnGateOnFailure = false;
-                    return await GetConnectionLockCoreAsync(
-                            priority, cancellationToken, forceIdleValidation,
-                            oldestFirst, preserveIdleAge)
-                        .ConfigureAwait(false);
+                    // Every connection slot is either live or already being
+                    // established (including detached handshakes). Recursing here
+                    // used to build an unbounded synchronous retry chain that
+                    // could burn CPU and overflow the stack under sustained
+                    // demand. Yield briefly instead; the next pass picks up a
+                    // returned idle socket, a published detached connection, or
+                    // capacity freed by a failed handshake.
+                    await Task.Delay(CreationCapacityRetryDelay, linked.Token).ConfigureAwait(false);
+                    replaceDiscardedConnection = false;
+                    replacementIdleTask = null;
+                    continue;
                 }
 
                 // Need a fresh connection.
@@ -283,7 +291,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                             replaceDiscardedConnection ? replacementIdleTask : null).ConfigureAwait(false);
                         if (!speculative.Created)
                         {
-                            ReleaseConnectionCreationReservation();
+                            if (!speculative.ReservationTransferred)
+                                ReleaseConnectionCreationReservation();
                             creationReservationHeld = false;
                             replaceDiscardedConnection = false;
                             replacementIdleTask = null;
@@ -583,89 +592,134 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task<(bool Created, T Connection)> CreateUnlessIdleReturnsAsync(
-        CancellationToken cancellationToken,
-        Task? replacementIdleTask)
+    private async Task<(bool Created, T Connection, bool ReservationTransferred)>
+        CreateUnlessIdleReturnsAsync(
+            CancellationToken cancellationToken,
+            Task? replacementIdleTask)
     {
-        using var creationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // The creation is governed by the pool's lifetime rather than only this
+        // caller so an in-flight handshake can be detached below and finish as
+        // published idle capacity. The caller still cancels it while attached.
+        var creationGovernor = CancellationTokenSource.CreateLinkedTokenSource(
+            _sweepCts.Token, _capacityCts.Token);
+        var callerRegistration = cancellationToken.Register(
+            static state => ((CancellationTokenSource)state!).Cancel(), creationGovernor);
+        var governorTransferred = false;
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var creationTask = CreateConnectionAsync(creationCts.Token).AsTask();
-        var idleTask = replacementIdleTask is null
-            ? WaitForIdleAsync(idleCts.Token)
-            : replacementIdleTask.WaitAsync(idleCts.Token);
-        var completed = await Task.WhenAny(creationTask, idleTask).ConfigureAwait(false);
-
-        if (completed == creationTask)
-        {
-            idleCts.Cancel();
-            try
-            {
-                await idleTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
-            {
-            }
-
-            return (true, await creationTask.ConfigureAwait(false));
-        }
-
-        await idleTask.ConfigureAwait(false);
-        // A reusable socket is always the shortest path forward. In particular,
-        // creation may be waiting on the shared lifetime budget and cannot make
-        // progress until another socket is destroyed. Let one returned socket
-        // satisfy one waiter; later acquisitions can still grow the pool.
-        creationCts.Cancel();
-
-        // Cancellation of a TCP/TLS handshake can take noticeably longer than
-        // signaling it. Do not keep an authenticated idle socket waiting for that
-        // cleanup. The abandoned creation remains tracked as an active operation,
-        // so pool disposal still drains it and the global lifetime budget remains
-        // charged until it has either failed or produced a connection to dispose.
-        if (!creationTask.IsCompleted)
-        {
-            BeginChildOperation();
-            _ = DrainAbandonedCreationAsync(creationTask);
-            return (false, default!);
-        }
-
         try
         {
-            // The handshake may have won the race just after the idle signal.
-            var connection = await creationTask.ConfigureAwait(false);
-            return (true, connection);
+            var creationTask = CreateConnectionAsync(creationGovernor.Token).AsTask();
+            var idleTask = replacementIdleTask is null
+                ? WaitForIdleAsync(idleCts.Token)
+                : replacementIdleTask.WaitAsync(idleCts.Token);
+            var completed = await Task.WhenAny(creationTask, idleTask).ConfigureAwait(false);
+
+            if (completed == creationTask)
+            {
+                idleCts.Cancel();
+                try
+                {
+                    await idleTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+                {
+                }
+
+                return (true, await creationTask.ConfigureAwait(false), false);
+            }
+
+            await idleTask.ConfigureAwait(false);
+            // A reusable socket is the shortest path forward for this caller, but
+            // the handshake already in flight is still useful capacity. Cancelling
+            // it here pinned the pool at whatever size it had when a demand burst
+            // began: fast idle returns won every race, so no new connection could
+            // ever finish while work was queued. Instead, detach the creation from
+            // this caller and publish the socket as idle capacity when it
+            // completes. The creation reservation transfers to the detached task,
+            // so growth stays bounded by the pool's effective maximum, the
+            // per-pool creation gate, and the global handshake budget. Pool
+            // disposal still drains the detached work through the child-operation
+            // barrier.
+            if (!creationTask.IsCompleted)
+            {
+                callerRegistration.Dispose();
+                creationGovernor.CancelAfter(DetachedCreationCompletionLimit);
+                governorTransferred = true;
+                BeginChildOperation();
+                _ = CompleteDetachedCreationAsync(creationTask, creationGovernor);
+                return (false, default!, true);
+            }
+
+            try
+            {
+                // The handshake may have won the race just after the idle signal.
+                var connection = await creationTask.ConfigureAwait(false);
+                return (true, connection, false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Re-enter the normal acquisition loop so the returned connection is
+                // subject to the same expiry and health validation as any other idle
+                // connection. Another waiter may win it first, which is harmless.
+                return (false, default!, false);
+            }
         }
-        catch (OperationCanceledException) when (
-            creationCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        finally
         {
-            // Re-enter the normal acquisition loop so the returned connection is
-            // subject to the same expiry and health validation as any other idle
-            // connection. Another waiter may win it first, which is harmless.
-            return (false, default!);
+            if (!governorTransferred)
+            {
+                callerRegistration.Dispose();
+                creationGovernor.Dispose();
+            }
         }
     }
 
-    private async Task DrainAbandonedCreationAsync(Task<T> creationTask)
+    private async Task CompleteDetachedCreationAsync(
+        Task<T> creationTask,
+        CancellationTokenSource creationGovernor)
     {
         try
         {
             var connection = await creationTask.ConfigureAwait(false);
-            DisposeConnection(connection);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected after an idle connection wins the acquisition race.
+            // Publish only while the pool still has queued demand (or is below
+            // its activated idle floor). A handshake that outlives the burst it
+            // was started for must not hold shared lifetime-budget capacity that
+            // other pools or backup recovery may be waiting on.
+            if (HasDemandForDetachedConnection() && TryPublishPrewarmedConnection(connection))
+            {
+                RaiseEffectiveCapacityToLive();
+                SignalIdleAvailable();
+                TriggerConnectionPoolChangedEvent();
+            }
+            else
+            {
+                DisposeConnection(connection);
+                ReleaseConnectionCreationReservation();
+            }
         }
         catch (Exception e)
         {
+            ReleaseConnectionCreationReservation();
             // A provider connection-limit response still carries useful capacity
-            // information even though this speculative connection is no longer
-            // needed by its original borrower.
-            if (_connectionCapacityRejected?.Invoke(e) == true)
+            // information even though this detached connection never completed.
+            if (e is not OperationCanceledException &&
+                _connectionCapacityRejected?.Invoke(e) == true)
                 ReduceConnectionCapacity(e);
         }
         finally
         {
+            creationGovernor.Dispose();
             EndOperation();
+        }
+    }
+
+    private bool HasDemandForDetachedConnection()
+    {
+        if (Volatile.Read(ref _pendingAcquisitions) > 0) return true;
+        lock (_idleLock)
+        {
+            return Volatile.Read(ref _prewarmingActivated) == 1 &&
+                   _idleConnections.Count < _minimumIdleConnections;
         }
     }
 

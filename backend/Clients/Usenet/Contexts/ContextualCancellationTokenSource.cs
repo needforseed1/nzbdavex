@@ -37,7 +37,7 @@ public class ContextualCancellationTokenSource : IDisposable
         return contextualCts;
     }
 
-    private void SetContext<T>(T? value)
+    internal void SetContext<T>(T? value)
     {
         if (value == null) return;
         ObjectDisposedException.ThrowIf(_disposed, nameof(ContextualCancellationTokenSource));
