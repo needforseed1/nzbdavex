@@ -59,6 +59,7 @@ public class MultiConnectionNntpClient(
     internal int PersistentIdleConnectionTarget => connectionPool.MinimumIdleConnections;
     internal int PersistentWarmConnectionTarget => connectionPool.MinimumWarmConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
+    public int PendingAcquisitions => connectionPool.PendingAcquisitions;
     public int AvailableConnections => connectionPool.AvailableConnections;
     public int MaxConnections => connectionPool.MaxConnections;
 
@@ -432,14 +433,14 @@ public class MultiConnectionNntpClient(
     public override IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
         => RunPipelinedAsync(
-            c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken),
+            (c, token) => c.StatsPipelinedAsync(segmentIds, depth, token),
             segmentIds.Count,
             cancellationToken);
 
     internal IAsyncEnumerable<PipelinedStatResult> StatsPipelinedRecoveryProbeAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
         => RunPipelinedAsync(
-            c => c.StatsPipelinedAsync(segmentIds, depth, cancellationToken),
+            (c, token) => c.StatsPipelinedAsync(segmentIds, depth, token),
             segmentIds.Count,
             cancellationToken,
             allowDuringCooldown: true);
@@ -447,19 +448,19 @@ public class MultiConnectionNntpClient(
     public override IAsyncEnumerable<PipelinedBodyResult> DecodedBodiesPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
         => RunPipelinedAsync(
-            c => c.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken),
+            (c, token) => c.DecodedBodiesPipelinedAsync(segmentIds, depth, token),
             segmentIds.Count,
             cancellationToken);
 
     public override IAsyncEnumerable<PipelinedArticleResult> DecodedArticlesPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken)
         => RunPipelinedAsync(
-            c => c.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken),
+            (c, token) => c.DecodedArticlesPipelinedAsync(segmentIds, depth, token),
             segmentIds.Count,
             cancellationToken);
 
     private async IAsyncEnumerable<T> RunPipelinedAsync<T>(
-        Func<INntpClient, IAsyncEnumerable<T>> batchFactory,
+        Func<INntpClient, CancellationToken, IAsyncEnumerable<T>> batchFactory,
         int expectedCount,
         [EnumeratorCancellation] CancellationToken cancellationToken,
         bool allowDuringCooldown = false)
@@ -471,13 +472,23 @@ public class MultiConnectionNntpClient(
             throw new ProviderCircuitOpenException(Host);
 
         var priority = GetDownloadPriority(cancellationToken);
+        var attempt = cancellationToken.GetContext<ProviderAttemptContext>();
         try
         {
-            var connectionLock = await connectionPool.GetConnectionLockAsync(priority, cancellationToken).ConfigureAwait(false);
+            var connectionLock = await AcquirePipelinedConnectionAsync(
+                priority, attempt, cancellationToken).ConfigureAwait(false);
             var completed = false;
             var received = 0;
-            await using var enumerator = batchFactory(connectionLock.Connection)
-                .GetAsyncEnumerator(cancellationToken);
+            // The command timer starts only after a usable connection has been
+            // acquired, so a socket that finished its handshake late still gets a
+            // full command window instead of the tail of an exhausted deadline.
+            using var commandCts = attempt is null
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            commandCts?.CancelAfter(attempt!.CommandTimeout);
+            var commandToken = commandCts?.Token ?? cancellationToken;
+            await using var enumerator = batchFactory(connectionLock.Connection, commandToken)
+                .GetAsyncEnumerator(commandToken);
             try
             {
                 while (true)
@@ -502,6 +513,20 @@ public class MultiConnectionNntpClient(
                             throw new IOException(
                                 $"Pipelined batch returned more than the expected {expectedCount} responses.");
                     }
+                    catch (OperationCanceledException e) when (
+                        commandCts?.IsCancellationRequested == true &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        // A command-window timeout replaces the socket but stays
+                        // breaker-neutral, matching the previous provider-timeout
+                        // semantics: synchronized slow spells must not trip every
+                        // provider at once while recovery is still possible.
+                        connectionLock.Replace();
+                        throw new TimeoutException(
+                            $"Provider {Host} did not complete the pipelined batch within " +
+                            $"{attempt!.CommandTimeout.TotalSeconds:0.#} seconds after acquiring a connection.",
+                            e);
+                    }
                     catch (Exception e) when (!e.IsCancellationException())
                     {
                         circuitBreaker.RecordFailure(halfOpenProbe);
@@ -521,6 +546,32 @@ public class MultiConnectionNntpClient(
         finally
         {
             circuitBreaker.EndAttempt(halfOpenProbe);
+        }
+    }
+
+    private async Task<ConnectionLock<INntpClient>> AcquirePipelinedConnectionAsync(
+        SemaphorePriority priority,
+        ProviderAttemptContext? attempt,
+        CancellationToken cancellationToken)
+    {
+        if (attempt is null)
+            return await connectionPool.GetConnectionLockAsync(priority, cancellationToken)
+                .ConfigureAwait(false);
+
+        using var acquisitionCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        acquisitionCts.CancelAfter(attempt.AcquisitionTimeout);
+        try
+        {
+            return await connectionPool.GetConnectionLockAsync(priority, acquisitionCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e) when (
+            acquisitionCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Provider {Host} had no usable connection within " +
+                $"{attempt.AcquisitionTimeout.TotalSeconds:0.#} seconds.", e);
         }
     }
 
