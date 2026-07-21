@@ -20,6 +20,10 @@ import {
     useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import {
+    getProviderConnectionSignature,
+    requiresProviderConnectionTest,
+} from "./provider-connection-test";
 
 const usenetConnectionsTopic = {'cxs': 'state'};
 const benchmarkTopic = {'bench': 'state'};
@@ -1186,7 +1190,19 @@ function ProviderModal({
     const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
     const [benchmarkMode, setBenchmarkMode] = useState<BenchmarkMode>("speed");
     const benchmarkAbortRef = useRef<AbortController | null>(null);
-    const connectionSignature = JSON.stringify([host, port, useSsl, user, pass]);
+    const currentConnectionDetails = { host, port, useSsl, user, pass };
+    const savedConnectionDetails = provider === null ? null : {
+        host: provider.Host,
+        port: provider.Port,
+        useSsl: provider.UseSsl,
+        user: provider.User,
+        pass: provider.Pass,
+    };
+    const connectionSignature = getProviderConnectionSignature(currentConnectionDetails);
+    const connectionTestRequired = requiresProviderConnectionTest(
+        savedConnectionDetails,
+        currentConnectionDetails,
+    );
     const connectionSignatureRef = useRef(connectionSignature);
     connectionSignatureRef.current = connectionSignature;
 
@@ -1211,8 +1227,9 @@ function ProviderModal({
             setLimitUnit(lim.unit);
             setInitialUsedValue(used.value);
             setInitialUsedUnit(used.unit);
-            // Opening an existing provider is not a connection test. Preserve
-            // the two-stage Test Connection -> Save Provider workflow.
+            // A saved provider with unchanged connection details may be edited
+            // without opening another socket. New or changed connection details
+            // still require a successful test before they can be saved.
             setConnectionTested(false);
             setTestError(null);
             setIntensity("quick");
@@ -1481,10 +1498,11 @@ function ProviderModal({
     const isByteLimitValid = isOptionalByteValueValid(limitValue, limitUnit);
     const isInitialUsedValid = isEditing || isOptionalByteValueValid(initialUsedValue, initialUsedUnit);
 
-    const isFormValid = host.trim() !== ""
+    const isConnectionFormValid = host.trim() !== ""
         && isPositiveInteger(port) && Number(port) <= 65_535
         && user.trim() !== ""
-        && pass.trim() !== ""
+        && pass.trim() !== "";
+    const isFormValid = isConnectionFormValid
         && isPositiveInteger(maxConnections) && Number(maxConnections) <= 1024
         && isPipeliningDepthValid
         && isHealthPipeliningDepthValid
@@ -1493,12 +1511,13 @@ function ProviderModal({
 
     // The speed test doesn't need Max Connections (it can recommend one), just
     // a reachable provider.
-    const canBenchmark = host.trim() !== ""
-        && isPositiveInteger(port) && Number(port) <= 65_535
-        && user.trim() !== ""
-        && pass.trim() !== "";
+    const canBenchmark = isConnectionFormValid;
 
-    const canSave = isFormValid && (connectionTested || type == ProviderType.Disabled);
+    const canSave = isFormValid && (
+        type == ProviderType.Disabled
+        || !connectionTestRequired
+        || connectionTested
+    );
 
     if (!show) return null;
 
@@ -1817,22 +1836,20 @@ function ProviderModal({
                 </div>
 
                 <div className={styles["modal-footer"]}>
-                    <div className={styles["modal-footer-left"]}></div>
-                    <div className={styles["modal-footer-right"]}>
+                    <div className={styles["modal-footer-left"]}>
                         <Button variant="secondary" onClick={onClose}>Cancel</Button>
-                        {!canSave ? (
-                            <Button
-                                variant="primary"
-                                onClick={handleTestConnection}
-                                disabled={!isFormValid || isTestingConnection}
-                            >
-                                {isTestingConnection ? "Testing..." : "Test Connection"}
-                            </Button>
-                        ) : (
-                            <Button variant="primary" onClick={handleSave} disabled={!canSave}>
-                                Save Provider
-                            </Button>
-                        )}
+                    </div>
+                    <div className={styles["modal-footer-right"]}>
+                        <Button
+                            variant="secondary"
+                            onClick={handleTestConnection}
+                            disabled={!isConnectionFormValid || isTestingConnection}
+                        >
+                            {isTestingConnection ? "Testing..." : "Test Connection"}
+                        </Button>
+                        <Button variant="primary" onClick={handleSave} disabled={!canSave}>
+                            Save Provider
+                        </Button>
                     </div>
                 </div>
             </div>

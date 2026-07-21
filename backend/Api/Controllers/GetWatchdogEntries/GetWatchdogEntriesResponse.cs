@@ -54,6 +54,11 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("nickname")] public string? Nickname { get; init; }
         [JsonPropertyName("articles")] public required long Articles { get; init; }
         [JsonPropertyName("bytes")] public required long Bytes { get; init; }
+        [JsonPropertyName("attempts")] public required long Attempts { get; init; }
+        [JsonPropertyName("missing")] public required long Missing { get; init; }
+        [JsonPropertyName("timeouts")] public required long Timeouts { get; init; }
+        [JsonPropertyName("errors")] public required long Errors { get; init; }
+        [JsonPropertyName("workMs")] public required long WorkMs { get; init; }
     }
 
     public class HealthStatsDto

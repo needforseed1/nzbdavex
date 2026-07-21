@@ -4,6 +4,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 using UsenetSharp.Models;
@@ -28,48 +29,71 @@ public class FetchFirstSegmentsStepTests
     }
 
     [Fact]
-    public async Task SingleTransientFailureRetriesOnlyThatFileNotTheCompletedOnes()
+    public async Task TransientProviderFailureIsNotRetriedDuringPreparation()
     {
         var files = Enumerable.Range(0, 5).Select(NzbFile).ToList();
         var client = new FlakyFirstSegmentClient(
             failuresBySegment: new() { ["file-3-segment"] = 1 });
 
-        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
-            files, client, new ConfigManager(), CancellationToken.None);
+        var error = await Assert.ThrowsAsync<RetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), CancellationToken.None));
 
-        Assert.Equal(5, results.Count);
-        Assert.All(results, result => Assert.False(result.MissingFirstSegment));
-        Assert.Equal(2, client.Attempts["file-3-segment"]);
-        foreach (var other in files.Where(x => x.Subject != "file-3"))
-            Assert.Equal(1, client.Attempts[other.Segments[0].MessageId]);
+        Assert.Equal(1, client.Attempts["file-3-segment"]);
+        Assert.Contains("after one provider pass", error.Message);
     }
 
     [Fact]
-    public async Task PersistentRetryableFailureStillFailsTheStepAfterBoundedAttempts()
+    public async Task PersistentProviderFailureRemainsDescribedAsUnavailable()
     {
         var files = new List<NzbFile> { NzbFile(0) };
         var client = new FlakyFirstSegmentClient(
             failuresBySegment: new() { ["file-0-segment"] = int.MaxValue });
 
-        await Assert.ThrowsAsync<CouldNotConnectToUsenetException>(() =>
+        var error = await Assert.ThrowsAsync<RetryableDownloadException>(() =>
             FetchFirstSegmentsStep.FetchFirstSegments(
                 files, client, new ConfigManager(), CancellationToken.None));
 
-        Assert.Equal(3, client.Attempts["file-0-segment"]);
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.True(error.IsRetryableDownloadException());
+        Assert.False(error.IsNonRetryableDownloadException());
+        Assert.IsType<CouldNotConnectToUsenetException>(error.InnerException);
+        Assert.Contains("Preparation could not verify", error.Message);
+        Assert.Contains("file-0-segment", error.Message);
+        Assert.Contains("file-0", error.Message);
+        Assert.Contains("after one provider pass", error.Message);
+        Assert.Contains("providers were unavailable", error.Message);
     }
 
     [Fact]
-    public async Task MissingArticleIsNotRetried()
+    public async Task CallerCancellationIsNotConvertedToPreparationFailure()
+    {
+        var files = new List<NzbFile> { NzbFile(0) };
+        var client = new FlakyFirstSegmentClient(
+            failuresBySegment: new() { ["file-0-segment"] = int.MaxValue });
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), cancellation.Token));
+
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+    }
+
+    [Fact]
+    public async Task ConfirmedMissingRequiredArticleFailsPreparationWithoutRetry()
     {
         var files = new List<NzbFile> { NzbFile(0) };
         var client = new FlakyFirstSegmentClient(
             missingSegments: ["file-0-segment"]);
 
-        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
-            files, client, new ConfigManager(), CancellationToken.None);
+        var error = await Assert.ThrowsAsync<NonRetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), CancellationToken.None));
 
-        Assert.True(Assert.Single(results).MissingFirstSegment);
         Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.Contains("missing from every available Usenet provider", error.Message);
     }
 
     private static NzbFile NzbFile(int index)
@@ -97,6 +121,7 @@ public class FetchFirstSegmentsStepTests
         {
             var id = segmentId.ToString();
             Attempts.AddOrUpdate(id, 1, (_, previous) => previous + 1);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (missingSegments?.Contains(id) == true)
                 throw new UsenetArticleNotFoundException(id);

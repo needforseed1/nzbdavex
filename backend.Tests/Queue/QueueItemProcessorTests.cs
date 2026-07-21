@@ -211,6 +211,32 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
+    public void PreparationProviderFailureDoesNotGetWholeQueueRetry()
+    {
+        var failure = new RetryableDownloadException(
+            "Preparation could not verify a first segment after one provider pass.",
+            new CouldNotConnectToUsenetException(
+                "One or more providers were unavailable.",
+                new TimeoutException("Provider did not become usable.")));
+
+        Assert.False(QueueItemProcessor.ShouldRetryWholeQueueItem(
+            failure, preparationCompleted: false));
+    }
+
+    [Fact]
+    public void HealthPhaseProviderFailureKeepsBoundedWholeQueueRetry()
+    {
+        var failure = new CouldNotConnectToUsenetException(
+            "No Usenet provider could complete the operation.",
+            new TimeoutException("Provider did not become usable."));
+
+        Assert.True(QueueItemProcessor.ShouldRetryWholeQueueItem(
+            failure, preparationCompleted: true));
+        Assert.False(QueueItemProcessor.HasExhaustedProviderFailureBudget(1));
+        Assert.True(QueueItemProcessor.HasExhaustedProviderFailureBudget(2));
+    }
+
+    [Fact]
     public async Task FailedAttemptCancelsAndObservesItsWarmup()
     {
         using var warmupCancellation = new CancellationTokenSource();

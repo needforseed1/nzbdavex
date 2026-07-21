@@ -30,7 +30,8 @@ public class MultiProviderNntpClient(
     TimeSpan? providerAttemptTimeout = null,
     TimeSpan? providerOperationTimeout = null,
     ConnectionLifetimeBudget? connectionBudget = null,
-    TimeSpan? indeterminateRecoveryBudget = null
+    TimeSpan? indeterminateRecoveryBudget = null,
+    TimeSpan? bulkStatProbeTimeout = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int HealthPrimeConnectionLimitPerProvider = 4;
@@ -38,7 +39,10 @@ public class MultiProviderNntpClient(
     private const int BulkStatProbeThreshold = 256;
     private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
     private const int HealthReclamationIdleFloor = 4;
+    private const int HealthQuarantinedRecoveryIdleFloor = 8;
     private const int HealthRecoveryConnectionReserve = 4;
+    private const int HealthRecoveryMaxConnectionsPerProvider = 8;
+    private const int HealthRecoverySegmentsPerConnection = 512;
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
@@ -102,6 +106,7 @@ public class MultiProviderNntpClient(
         ApplicationConnectionLimit);
     private TimeSpan ProviderAttemptTimeout => providerAttemptTimeout ?? DefaultProviderAttemptTimeout;
     private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
+    private TimeSpan BulkProbeTimeout => bulkStatProbeTimeout ?? BulkStatProbeTimeout;
     private TimeSpan IndeterminateRecoveryBudget =>
         indeterminateRecoveryBudget ?? DefaultIndeterminateRecoveryBudget;
 
@@ -585,6 +590,8 @@ public class MultiProviderNntpClient(
         if (attribution != null) attribution.Host = null;
         ExceptionDispatchInfo? lastException = null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses = null;
+        var attemptedProviders = 0;
+        var providerUnavailable = false;
         var orderedProviders = statOperation
             ? SelectOrderedProvidersForStat(cancellationToken, out var reserved)
             : SelectOrderedProviders(cancellationToken, out reserved);
@@ -594,9 +601,14 @@ public class MultiProviderNntpClient(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
-            if (remainingOperationTime <= TimeSpan.Zero) break;
+            if (remainingOperationTime <= TimeSpan.Zero)
+            {
+                providerUnavailable = true;
+                break;
+            }
             var provider = orderedProviders[i];
             var isLastProvider = i == orderedProviders.Count - 1;
+            attemptedProviders++;
 
             if (lastException is not null)
             {
@@ -658,6 +670,7 @@ public class MultiProviderNntpClient(
             catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
             {
                 stopwatch.Stop();
+                providerUnavailable = true;
                 var providerTimeout = new TimeoutException(
                     $"Provider {provider.Host} did not become usable within " +
                     $"{attemptTimeout.TotalSeconds:0.#} seconds.", e);
@@ -672,6 +685,8 @@ public class MultiProviderNntpClient(
             {
                 stopwatch.Stop();
                 var reason = ClassifyException(e);
+                if (reason != SegmentFetch.FetchStatus.Missing)
+                    providerUnavailable = true;
                 RecordFetch(provider.Id, reason, stopwatch.ElapsedMilliseconds, i);
                 (priorMisses ??= new()).Add((provider.Id, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
@@ -683,16 +698,23 @@ public class MultiProviderNntpClient(
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (lastException?.SourceException is TimeoutException timeoutException)
+        if (providerUnavailable || attemptedProviders < orderedProviders.Count)
+        {
+            var cause = lastException?.SourceException ?? new TimeoutException(
+                "The provider operation deadline expired before every provider was consulted.");
             throw new CouldNotConnectToUsenetException(
-                "No Usenet provider could complete the operation.",
-                timeoutException);
+                "Article availability could not be verified because one or more " +
+                "Usenet providers were unavailable.",
+                cause);
+        }
+
         lastException?.Throw();
         throw new Exception("There are no usenet providers configured.");
     }
 
     private void RecordFetch(string host, SegmentFetch.FetchStatus status, long durationMs, int retries)
     {
+        usageTracker.RecordPrepAttempt(host, status, durationMs);
         if (metricsWriter == null) return;
         metricsWriter.RecordFetch(new SegmentFetch
         {
@@ -774,6 +796,8 @@ public class MultiProviderNntpClient(
 
     private static SegmentFetch.FetchStatus ClassifyException(Exception ex)
     {
+        if (ex.TryGetCausingException(out UsenetArticleNotFoundException _))
+            return SegmentFetch.FetchStatus.Missing;
         if (ex is TimeoutException) return SegmentFetch.FetchStatus.Timeout;
         if (ex is UnauthorizedAccessException) return SegmentFetch.FetchStatus.Auth;
         if (ex is System.IO.IOException || ex is System.Net.Sockets.SocketException) return SegmentFetch.FetchStatus.Network;
@@ -1348,7 +1372,7 @@ public class MultiProviderNntpClient(
         var sample = sampleIndexes.Select(index => segmentIds[index]).ToArray();
         var qualificationTimer = Stopwatch.StartNew();
         var pendingProbes = probeCandidates
-            .Select(provider => ProbeStatProviderAsync(
+            .Select(provider => ProbeStatProviderWithRetryAsync(
                 provider, sample, depth, provider.IsTripped, cancellationToken))
             .ToList();
         var probes = new List<BulkStatProbe>(pendingProbes.Count);
@@ -1450,7 +1474,40 @@ public class MultiProviderNntpClient(
         return new BulkStatQualification(plan, verified);
     }
 
-    private static async Task<BulkStatProbe> ProbeStatProviderAsync(
+    private async Task<BulkStatProbe> ProbeStatProviderWithRetryAsync(
+        MultiConnectionNntpClient provider,
+        IReadOnlyList<string> segmentIds,
+        int fallbackDepth,
+        bool recoveryProbe,
+        CancellationToken cancellationToken)
+    {
+        var hadEstablishedIdleConnection = provider.IdleConnections > 0;
+        var first = await ProbeStatProviderOnceAsync(
+                provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
+            .ConfigureAwait(false);
+        if (first.Success || first.Received > 0 || !hadEstablishedIdleConnection)
+            return first;
+
+        // A qualification batch uses one socket. When an established socket
+        // returns nothing, cancellation replaces it; retrying once prevents a
+        // single stale or wedged idle connection from quarantining an otherwise
+        // healthy provider. Do not double the cold-start wait for a zero-live
+        // provider: it can still join via a successful late probe or recovery.
+        Log.Debug(
+            "health-stat probe retry provider={Provider} reason={Reason} received=0",
+            provider.Host, first.Status);
+        var retry = await ProbeStatProviderOnceAsync(
+                provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
+            .ConfigureAwait(false);
+        return retry with
+        {
+            Status = retry.Success
+                ? "ok-after-fresh-socket-retry"
+                : $"{retry.Status}-after-fresh-socket-retry",
+        };
+    }
+
+    private async Task<BulkStatProbe> ProbeStatProviderOnceAsync(
         MultiConnectionNntpClient provider,
         IReadOnlyList<string> segmentIds,
         int fallbackDepth,
@@ -1462,7 +1519,7 @@ public class MultiProviderNntpClient(
         var found = 0;
         var stopwatch = Stopwatch.StartNew();
         using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        probeCts.CancelAfter(BulkStatProbeTimeout);
+        probeCts.CancelAfter(BulkProbeTimeout);
         try
         {
             var providerDepth = ResolveHealthDepth(provider, fallbackDepth);
@@ -1691,6 +1748,8 @@ public class MultiProviderNntpClient(
         {
             var (provider, targets) = candidate;
             IDisposable? lease = null;
+            var received = 0;
+            var recoveryConnections = 0;
             try
             {
                 if (provider.ProviderType == ProviderType.BackupOnly)
@@ -1698,29 +1757,43 @@ public class MultiProviderNntpClient(
                         .ConfigureAwait(false);
 
                 var providerDepth = ResolveHealthDepth(provider, depth);
-                var results = provider.IsTripped
-                    ? provider.StatsPipelinedRecoveryProbeAsync(targets, providerDepth, budgetCts.Token)
-                    : provider.StatsPipelinedAsync(targets, providerDepth, budgetCts.Token);
-                var received = 0;
-                await foreach (var result in results
-                                   .WithCancellation(budgetCts.Token).ConfigureAwait(false))
+                var recoveryBatches = PartitionRecoveryTargets(
+                    targets, ResolveRecoveryConcurrency(provider, targets.Length));
+                recoveryConnections = recoveryBatches.Count;
+                await Task.WhenAll(recoveryBatches.Select(async batch =>
                 {
-                    if (received >= targets.Length ||
-                        !string.Equals(result.SegmentId, targets[received], StringComparison.Ordinal))
-                        throw new InvalidDataException(
-                            $"Provider {provider.Host} returned an invalid recovery STAT response.");
+                    var results = provider.IsTripped
+                        ? provider.StatsPipelinedRecoveryProbeAsync(
+                            batch, providerDepth, budgetCts.Token)
+                        : provider.StatsPipelinedAsync(
+                            batch, providerDepth, budgetCts.Token);
+                    var batchReceived = 0;
+                    await foreach (var result in results
+                                       .WithCancellation(budgetCts.Token).ConfigureAwait(false))
+                    {
+                        if (batchReceived >= batch.Length ||
+                            !string.Equals(
+                                result.SegmentId, batch[batchReceived], StringComparison.Ordinal))
+                            throw new InvalidDataException(
+                                $"Provider {provider.Host} returned an invalid recovery STAT response.");
 
-                    if (result.Exists) foundSegments.TryAdd(result.SegmentId, 0);
-                    else collector.RecordMissing(result.SegmentId, provider);
-                    received++;
-                }
+                        if (result.Exists) foundSegments.TryAdd(result.SegmentId, 0);
+                        else collector.RecordMissing(result.SegmentId, provider);
+                        batchReceived++;
+                        Interlocked.Increment(ref received);
+                    }
 
-                if (received != targets.Length)
-                    throw new IOException(
-                        $"Provider {provider.Host} ended a recovery STAT pass after " +
-                        $"{received} of {targets.Length} responses.");
+                    if (batchReceived != batch.Length)
+                        throw new IOException(
+                            $"Provider {provider.Host} ended a recovery STAT pass after " +
+                            $"{batchReceived} of {batch.Length} responses.");
+                })).ConfigureAwait(false);
 
                 plan?.Requalify(provider);
+                Log.Debug(
+                    "health-stat recovery provider={Provider} status=ok targets={Targets} " +
+                    "received={Received} connections={Connections}",
+                    provider.Host, targets.Length, received, recoveryBatches.Count);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1730,15 +1803,17 @@ public class MultiProviderNntpClient(
             {
                 unavailableProviders.TryAdd(provider.Host, 0);
                 Log.Debug(
-                    "health-stat recovery provider={Provider} status=budget-expired targets={Targets}",
-                    provider.Host, targets.Length);
+                    "health-stat recovery provider={Provider} status=budget-expired " +
+                    "targets={Targets} received={Received} connections={Connections}",
+                    provider.Host, targets.Length, received, recoveryConnections);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
                 unavailableProviders.TryAdd(provider.Host, 0);
                 Log.Debug(e,
-                    "health-stat recovery provider={Provider} status=failed targets={Targets}",
-                    provider.Host, targets.Length);
+                    "health-stat recovery provider={Provider} status=failed targets={Targets} " +
+                    "received={Received} connections={Connections}",
+                    provider.Host, targets.Length, received, recoveryConnections);
             }
             finally
             {
@@ -1781,6 +1856,43 @@ public class MultiProviderNntpClient(
             throw new UsenetArticleUnverifiableException(
                 stillUnresolved,
                 unavailableProviders.Keys.OrderBy(host => host).ToArray());
+    }
+
+    private static int ResolveRecoveryConcurrency(
+        MultiConnectionNntpClient provider,
+        int targetCount)
+    {
+        if (targetCount <= 1 || provider.IsTripped ||
+            provider.ProviderType == ProviderType.BackupOnly)
+            return 1;
+
+        var usefulConnections = (targetCount + HealthRecoverySegmentsPerConnection - 1) /
+                                HealthRecoverySegmentsPerConnection;
+        var establishedIdle = Math.Max(1, provider.IdleConnections);
+        return Math.Clamp(
+            Math.Min(usefulConnections, establishedIdle),
+            1,
+            HealthRecoveryMaxConnectionsPerProvider);
+    }
+
+    internal static IReadOnlyList<string[]> PartitionRecoveryTargets(
+        IReadOnlyList<string> targets,
+        int requestedPartitions)
+    {
+        if (targets.Count == 0) return [];
+        var partitions = Math.Clamp(requestedPartitions, 1, targets.Count);
+        var result = new string[partitions][];
+        var offset = 0;
+        for (var index = 0; index < partitions; index++)
+        {
+            var remaining = targets.Count - offset;
+            var remainingPartitions = partitions - index;
+            var count = (remaining + remainingPartitions - 1) / remainingPartitions;
+            result[index] = targets.Skip(offset).Take(count).ToArray();
+            offset += count;
+        }
+
+        return result;
     }
 
     private readonly record struct PipelinedStatPassState(
@@ -2593,8 +2705,17 @@ public class MultiProviderNntpClient(
                     if (_suspensions.ContainsKey(provider)) continue;
                     try
                     {
+                        // A provider quarantined after a zero-response probe is
+                        // intentionally kept out of primary lanes, but its final
+                        // recovery pass must not be forced through one socket.
+                        // Healthy zero-coverage providers retain the smaller
+                        // reclamation floor so normal lane/backup capacity is
+                        // unaffected.
+                        var retainedFloor = plan.IsQuarantined(provider)
+                            ? HealthQuarantinedRecoveryIdleFloor
+                            : HealthReclamationIdleFloor;
                         var reclaimable = Math.Max(
-                            0, provider.IdleConnections - HealthReclamationIdleFloor);
+                            0, provider.IdleConnections - retainedFloor);
                         var requested = Math.Min(reclaimNeeded, reclaimable);
                         var retained = provider.IdleConnections - requested;
                         var suspension = provider.SuspendPrewarming(retained, out var reclaimed);

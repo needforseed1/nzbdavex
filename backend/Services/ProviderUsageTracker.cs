@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models.Metrics;
 
 namespace NzbWebDAV.Services;
 
@@ -11,8 +12,10 @@ namespace NzbWebDAV.Services;
 public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
 {
     private static readonly AsyncLocal<Guid?> CurrentScope = new();
+    private static readonly AsyncLocal<int> PrepAttemptCaptureDepth = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _usage = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _bytes = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, PrepProviderAttemptStat>> _prepAttempts = new();
     private readonly ConcurrentDictionary<Guid, byte> _byteCaptureScopes = new();
     private readonly ConcurrentDictionary<Guid, long> _failoverSaves = new();
     private readonly ConcurrentDictionary<Guid, PrepUsageSnapshot> _prepStats = new();
@@ -60,6 +63,39 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         if (id is null) return new Releaser(static () => { });
         _byteCaptureScopes[id.Value] = 0;
         return new Releaser(() => _byteCaptureScopes.TryRemove(id.Value, out _));
+    }
+
+    public IDisposable BeginPrepAttemptCapture()
+    {
+        var previous = PrepAttemptCaptureDepth.Value;
+        PrepAttemptCaptureDepth.Value = previous + 1;
+        return new Releaser(() => PrepAttemptCaptureDepth.Value = previous);
+    }
+
+    public void RecordPrepAttempt(
+        string providerId,
+        SegmentFetch.FetchStatus status,
+        long durationMs)
+    {
+        var id = CurrentScope.Value;
+        if (id is null || PrepAttemptCaptureDepth.Value <= 0 ||
+            string.IsNullOrWhiteSpace(providerId)) return;
+
+        var delta = new PrepProviderAttemptStat(
+            Attempts: 1,
+            Missing: status == SegmentFetch.FetchStatus.Missing ? 1 : 0,
+            Timeouts: status == SegmentFetch.FetchStatus.Timeout ? 1 : 0,
+            Errors: status is not (SegmentFetch.FetchStatus.Ok or
+                SegmentFetch.FetchStatus.Missing or SegmentFetch.FetchStatus.Timeout) ? 1 : 0,
+            WorkMs: Math.Max(0, durationMs));
+        var providers = _prepAttempts.GetOrAdd(
+            id.Value, _ => new ConcurrentDictionary<string, PrepProviderAttemptStat>());
+        providers.AddOrUpdate(providerId, delta, (_, current) => new PrepProviderAttemptStat(
+            current.Attempts + delta.Attempts,
+            current.Missing + delta.Missing,
+            current.Timeouts + delta.Timeouts,
+            current.Errors + delta.Errors,
+            current.WorkMs + delta.WorkMs));
     }
 
     public long GetFailoverSaves(Guid scopeId)
@@ -126,6 +162,13 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         return d.ToDictionary(kv => kv.Key, kv => kv.Value);
     }
 
+    public IReadOnlyDictionary<string, PrepProviderAttemptStat> SnapshotPrepAttempts(Guid queueItemId)
+    {
+        if (!_prepAttempts.TryGetValue(queueItemId, out var d))
+            return new Dictionary<string, PrepProviderAttemptStat>();
+        return d.ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
     public IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, long>> SnapshotMany(IEnumerable<Guid> ids)
     {
         var result = new Dictionary<Guid, IReadOnlyDictionary<string, long>>();
@@ -163,6 +206,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     {
         _usage.TryRemove(queueItemId, out _);
         _bytes.TryRemove(queueItemId, out _);
+        _prepAttempts.TryRemove(queueItemId, out _);
         _byteCaptureScopes.TryRemove(queueItemId, out _);
         _failoverSaves.TryRemove(queueItemId, out _);
         _prepStats.TryRemove(queueItemId, out _);
@@ -195,7 +239,19 @@ public sealed record PrepUsageSnapshot(
 public sealed record PrepProviderStat(
     string ProviderId,
     long Articles,
-    long Bytes);
+    long Bytes,
+    long Attempts = 0,
+    long Missing = 0,
+    long Timeouts = 0,
+    long Errors = 0,
+    long WorkMs = 0);
+
+public sealed record PrepProviderAttemptStat(
+    long Attempts,
+    long Missing,
+    long Timeouts,
+    long Errors,
+    long WorkMs);
 
 public sealed record HealthCheckUsageSnapshot(
     int TotalArticles,

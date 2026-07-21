@@ -113,14 +113,24 @@ public class PrepProviderRoutingTests
         await backupPool.PrewarmAsync(1);
         using var backup = CreateProvider(
             backupPool, "backup", 1, type: ProviderType.BackupOnly);
-        using var client = new MultiProviderNntpClient(
-            [primary, backup], new ProviderUsageTracker());
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using var client = new MultiProviderNntpClient([primary, backup], tracker);
 
-        var response = await client.DecodedBodyAsync("segment", CancellationToken.None);
-        await response.Stream.DisposeAsync();
+        using (tracker.BeginScope(queueId))
+        using (tracker.BeginPrepAttemptCapture())
+        {
+            var response = await client.DecodedBodyAsync("segment", CancellationToken.None);
+            await response.Stream.DisposeAsync();
+        }
 
         Assert.Equal(1, primaryTransport.BodyCalls);
         Assert.Equal(1, backupTransport.BodyCalls);
+        var attempts = tracker.SnapshotPrepAttempts(queueId);
+        Assert.Equal(1, attempts["primary"].Attempts);
+        Assert.Equal(1, attempts["primary"].Missing);
+        Assert.Equal(1, attempts["backup"].Attempts);
+        Assert.Equal(0, attempts["backup"].Missing);
     }
 
     [Fact]
@@ -167,6 +177,60 @@ public class PrepProviderRoutingTests
             providerOperationTimeout: TimeSpan.FromMilliseconds(100));
 
         await Assert.ThrowsAsync<CouldNotConnectToUsenetException>(() =>
+            client.DecodedBodyAsync("segment", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PrepMissingVerdictStaysRetryableWhenAnyProviderIsUnavailable(
+        bool stalledProviderFirst)
+    {
+        var stalledTransport = new BodyClient(stall: true);
+        await using var stalledPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(stalledTransport));
+        await stalledPool.PrewarmAsync(1);
+        using var stalled = CreateProvider(stalledPool, "stalled", 0);
+
+        var missingTransport = new BodyClient(articleFound: false);
+        await using var missingPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(missingTransport));
+        await missingPool.PrewarmAsync(1);
+        using var missing = CreateProvider(missingPool, "missing", 1);
+        var providers = stalledProviderFirst
+            ? new List<MultiConnectionNntpClient> { stalled, missing }
+            : [missing, stalled];
+        using var client = new MultiProviderNntpClient(
+            providers,
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromMilliseconds(150));
+
+        await Assert.ThrowsAsync<CouldNotConnectToUsenetException>(() =>
+            client.DecodedBodyAsync("segment", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PrepConfirmsMissingOnlyWhenEveryProviderAnswersMissing()
+    {
+        var firstTransport = new BodyClient(articleFound: false);
+        await using var firstPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(firstTransport));
+        await firstPool.PrewarmAsync(1);
+        using var first = CreateProvider(firstPool, "first", 0);
+
+        var secondTransport = new BodyClient(articleFound: false);
+        await using var secondPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(secondTransport));
+        await secondPool.PrewarmAsync(1);
+        using var second = CreateProvider(secondPool, "second", 1);
+        using var client = new MultiProviderNntpClient(
+            [first, second],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromMilliseconds(150));
+
+        await Assert.ThrowsAsync<UsenetArticleNotFoundException>(() =>
             client.DecodedBodyAsync("segment", CancellationToken.None));
     }
 

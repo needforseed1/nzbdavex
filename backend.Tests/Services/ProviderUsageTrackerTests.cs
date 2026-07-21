@@ -1,5 +1,6 @@
 using System.Text.Json;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 
@@ -111,18 +112,54 @@ public class ProviderUsageTrackerTests
     }
 
     [Fact]
+    public void PrepAttemptCaptureIncludesFailuresAndIgnoresWorkOutsideWindow()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using (tracker.BeginScope(queueId))
+        {
+            tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Missing, 99);
+            using (tracker.BeginPrepAttemptCapture())
+            {
+                tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Ok, 25);
+                tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Missing, 40);
+                tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Timeout, 5_000);
+                tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Network, 10);
+            }
+            tracker.RecordPrepAttempt("provider-id", SegmentFetch.FetchStatus.Timeout, 99);
+        }
+
+        var snapshot = tracker.SnapshotPrepAttempts(queueId);
+        var provider = Assert.Single(snapshot).Value;
+        Assert.Equal(4, provider.Attempts);
+        Assert.Equal(1, provider.Missing);
+        Assert.Equal(1, provider.Timeouts);
+        Assert.Equal(1, provider.Errors);
+        Assert.Equal(5_075, provider.WorkMs);
+    }
+
+    [Fact]
     public void PrepSnapshot_OlderJsonKeepsLastStageNullable()
     {
         const string json =
             """
             {"FileCount":1,"Connections":5,"QueueWaitMs":10,"FirstSegmentsMs":20,"Par2Ms":0,
-             "RarMs":0,"ProcessorsMs":0,"LazyRarMounted":false,"FirstSegmentFallbacks":0,"Providers":[]}
+             "RarMs":0,"ProcessorsMs":0,"LazyRarMounted":false,"FirstSegmentFallbacks":0,
+             "Providers":[{"ProviderId":"legacy","Articles":1,"Bytes":2}]}
             """;
 
         var snapshot = JsonSerializer.Deserialize<PrepUsageSnapshot>(json);
 
         Assert.NotNull(snapshot);
         Assert.Null(snapshot.LastStage);
+        Assert.All(snapshot.Providers, provider =>
+        {
+            Assert.Equal(0, provider.Attempts);
+            Assert.Equal(0, provider.Missing);
+            Assert.Equal(0, provider.Timeouts);
+            Assert.Equal(0, provider.Errors);
+            Assert.Equal(0, provider.WorkMs);
+        });
     }
 
     [Fact]

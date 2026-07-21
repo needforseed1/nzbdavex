@@ -155,7 +155,7 @@ public class HealthStatVerdictTests
         // The captured-run pathology: responsive providers probe 0/32 (release
         // absent on their backbones) while another provider's probe times out.
         // The responsive providers must carry every batch; the timed-out
-        // provider must see no lane traffic (one qualification probe plus one
+        // provider must see no lane traffic (one cold qualification probe plus one
         // coordinated recovery attempt) and the run must end unverifiable with
         // that provider named — not as thousands of failed batches.
         var firstResponsive = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -174,8 +174,61 @@ public class HealthStatVerdictTests
                 .WaitAsync(TestTimeout));
 
         Assert.Contains("unresponsive", exception.UnavailableProviders);
-        // One qualification probe plus one coordinated recovery attempt.
         Assert.Equal(2, unresponsive.Calls);
+    }
+
+    [Fact]
+    public async Task ZeroResponseProbeRetriesFreshSocketBeforeQuarantiningProvider()
+    {
+        // One stale socket must not quarantine an otherwise fast, full-coverage
+        // provider. The first 32-command qualification call stalls; the fresh
+        // socket retry succeeds and the provider then carries primary lanes.
+        var flaky = new VerdictStatClient(
+            (_, call) => call == 1 ? StatAnswer.Stall : StatAnswer.Found);
+        var missing = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var flakyProvider = Provider(flaky, "flaky", maxConnections: 8);
+        await flakyProvider.PrewarmAsync(2, CancellationToken.None);
+        using var client = CreateClient([
+            flakyProvider,
+            Provider(missing, "missing", maxConnections: 8),
+        ]);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        Assert.True(flaky.Calls > 2);
+        Assert.Equal([32, 32], flaky.BatchSizes.Take(2));
+    }
+
+    [Fact]
+    public async Task LargeIndeterminateRecoveryUsesSeveralEstablishedConnections()
+    {
+        // At one millisecond per answer, one socket needs more than four seconds
+        // for this recovery set. The four-second operation budget is deliberately
+        // impossible serially but comfortable when the established idle pool is
+        // partitioned across bounded recovery lanes.
+        var recovering = new VerdictStatClient(
+            (_, call) => call <= 2 ? StatAnswer.Stall : StatAnswer.Found,
+            TimeSpan.FromMilliseconds(1));
+        var recoveringProvider = Provider(recovering, "recovering", maxConnections: 8);
+        await recoveringProvider.PrewarmAsync(8, CancellationToken.None);
+
+        var missing = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        using var client = CreateClient([
+                recoveringProvider,
+                Provider(missing, "missing", maxConnections: 8),
+            ],
+            recoveryBudget: TimeSpan.FromSeconds(4));
+        var segments = Enumerable.Range(0, 4096).Select(i => $"s{i}").ToArray();
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        Assert.True(recovering.MaxConcurrentCalls >= 4);
+        Assert.Equal(segments.Length, recovering.BatchSizes.Skip(2).Sum());
     }
 
     [Fact]
@@ -210,7 +263,8 @@ public class HealthStatVerdictTests
             new ProviderUsageTracker(),
             providerAttemptTimeout: TimeSpan.FromMilliseconds(100),
             providerOperationTimeout: TimeSpan.FromMilliseconds(400),
-            indeterminateRecoveryBudget: recoveryBudget ?? TimeSpan.FromMilliseconds(400));
+            indeterminateRecoveryBudget: recoveryBudget ?? TimeSpan.FromMilliseconds(400),
+            bulkStatProbeTimeout: TimeSpan.FromMilliseconds(75));
 
     private static MultiConnectionNntpClient Provider(
         INntpClient transport,
@@ -243,10 +297,16 @@ public class HealthStatVerdictTests
     /// previously yielded results.
     /// </summary>
     private sealed class VerdictStatClient(
-        Func<string, int, StatAnswer> script) : NntpClient
+        Func<string, int, StatAnswer> script,
+        TimeSpan? resultDelay = null) : NntpClient
     {
         private int _calls;
+        private int _activeCalls;
+        private int _maxConcurrentCalls;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<int> _batchSizes = new();
         public int Calls => Volatile.Read(ref _calls);
+        public int MaxConcurrentCalls => Volatile.Read(ref _maxConcurrentCalls);
+        public int[] BatchSizes => _batchSizes.ToArray();
 
         public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
             IReadOnlyList<string> segmentIds,
@@ -254,25 +314,41 @@ public class HealthStatVerdictTests
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var call = Interlocked.Increment(ref _calls);
-            foreach (var segmentId in segmentIds)
+            _batchSizes.Enqueue(segmentIds.Count);
+            var active = Interlocked.Increment(ref _activeCalls);
+            int observed;
+            while (active > (observed = Volatile.Read(ref _maxConcurrentCalls)))
+                Interlocked.CompareExchange(ref _maxConcurrentCalls, active, observed);
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                switch (script(segmentId, call))
+                foreach (var segmentId in segmentIds)
                 {
-                    case StatAnswer.Stall:
-                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                        break;
-                    case StatAnswer.Error:
-                        throw new IOException("Scripted mid-batch failure.");
-                    case StatAnswer.Found:
-                        yield return new PipelinedStatResult { SegmentId = segmentId, Exists = true };
-                        break;
-                    case StatAnswer.Missing:
-                        yield return new PipelinedStatResult { SegmentId = segmentId, Exists = false };
-                        break;
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    switch (script(segmentId, call))
+                    {
+                        case StatAnswer.Stall:
+                            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                            break;
+                        case StatAnswer.Error:
+                            throw new IOException("Scripted mid-batch failure.");
+                        case StatAnswer.Found:
+                            if (resultDelay is not null)
+                                await Task.Delay(resultDelay.Value, cancellationToken);
+                            yield return new PipelinedStatResult { SegmentId = segmentId, Exists = true };
+                            break;
+                        case StatAnswer.Missing:
+                            if (resultDelay is not null)
+                                await Task.Delay(resultDelay.Value, cancellationToken);
+                            yield return new PipelinedStatResult { SegmentId = segmentId, Exists = false };
+                            break;
+                    }
 
-                await Task.Yield();
+                    await Task.Yield();
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeCalls);
             }
         }
 

@@ -1,5 +1,7 @@
 ﻿// ReSharper disable InconsistentNaming
 
+using System.Runtime.ExceptionServices;
+
 namespace NzbWebDAV.Extensions;
 
 public static class IEnumerableTaskExtensions
@@ -65,27 +67,83 @@ public static class IEnumerableTaskExtensions
     public static async IAsyncEnumerable<T> WithConcurrencyAsync<T>
     (
         this IEnumerable<Task<T>> tasks,
-        int concurrency
+        int concurrency,
+        bool drainOnFailure = false
     )
     {
         if (concurrency < 1)
             throw new ArgumentException("concurrency must be greater than zero.");
 
         var runningTasks = new HashSet<Task<T>>();
-        foreach (var task in tasks)
+        var shouldDrain = false;
+        try
         {
-            runningTasks.Add(task);
-            if (runningTasks.Count < concurrency) continue;
-            var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
-            runningTasks.Remove(completedTask);
-            yield return await completedTask.ConfigureAwait(false);
-        }
+            foreach (var task in tasks)
+            {
+                runningTasks.Add(task);
+                if (runningTasks.Count < concurrency) continue;
+                var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
+                runningTasks.Remove(completedTask);
+                var outcome = await ObserveTaskAsync(completedTask).ConfigureAwait(false);
+                if (outcome.Error is not null)
+                {
+                    shouldDrain = drainOnFailure &&
+                        !outcome.Error.SourceException.IsCancellationException();
+                    outcome.Error.Throw();
+                }
 
-        while (runningTasks.Count > 0)
+                yield return outcome.Result;
+            }
+
+            while (runningTasks.Count > 0)
+            {
+                var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
+                runningTasks.Remove(completedTask);
+                var outcome = await ObserveTaskAsync(completedTask).ConfigureAwait(false);
+                if (outcome.Error is not null)
+                {
+                    shouldDrain = drainOnFailure &&
+                        !outcome.Error.SourceException.IsCancellationException();
+                    outcome.Error.Throw();
+                }
+
+                yield return outcome.Result;
+            }
+        }
+        finally
         {
-            var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
-            runningTasks.Remove(completedTask);
-            yield return await completedTask.ConfigureAwait(false);
+            if (shouldDrain)
+                await ObserveRemainingTasksAsync(runningTasks).ConfigureAwait(false);
         }
     }
+
+    private static async Task<TaskOutcome<T>> ObserveTaskAsync<T>(Task<T> task)
+    {
+        try
+        {
+            return new TaskOutcome<T>(await task.ConfigureAwait(false), null);
+        }
+        catch (Exception e)
+        {
+            return new TaskOutcome<T>(default!, ExceptionDispatchInfo.Capture(e));
+        }
+    }
+
+    private static async Task ObserveRemainingTasksAsync<T>(IEnumerable<Task<T>> tasks)
+    {
+        // These tasks are already running concurrently. Await each only to let
+        // provider accounting finish and to observe every terminal exception.
+        foreach (var task in tasks)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private readonly record struct TaskOutcome<T>(T Result, ExceptionDispatchInfo? Error);
 }

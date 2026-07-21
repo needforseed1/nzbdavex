@@ -100,6 +100,11 @@ public partial class GetWatchdogEntriesController(
                     Nickname = configured?.Nickname,
                     Articles = stat.Articles,
                     Bytes = stat.Bytes,
+                    Attempts = stat.Attempts,
+                    Missing = stat.Missing,
+                    Timeouts = stat.Timeouts,
+                    Errors = stat.Errors,
+                    WorkMs = stat.WorkMs,
                 };
             }).OrderByDescending(x => x.Articles).ThenBy(x => x.Nickname ?? x.Host).ToList(),
         };

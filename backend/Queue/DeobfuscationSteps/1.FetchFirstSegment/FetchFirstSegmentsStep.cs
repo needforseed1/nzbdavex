@@ -19,13 +19,6 @@ public static class FetchFirstSegmentsStep
     // burst to two waves of the application's 32-slot connection-creation
     // budget; returned/replacement capacity keeps the queue moving from there.
     private const int MaxConcurrentFirstSegmentFetches = 64;
-    // One failed first-segment fetch must not force the entire prep step (and
-    // every already-completed fetch) to rerun. Each file gets a small number of
-    // bounded in-place retries; every attempt already walks all providers.
-    private const int MaxFetchAttemptsPerFile = 3;
-    private static readonly TimeSpan[] FetchRetryDelays =
-        [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(2)];
-
     public static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
     (
         List<NzbFile> nzbFiles,
@@ -42,7 +35,7 @@ public static class FetchFirstSegmentsStep
         var concurrency = ResolveConcurrency(files.Count, configManager.GetMaxQueueConnections());
         return await files
             .Select(x => FetchFirstSegment(x, probeClient, cancellationToken))
-            .WithConcurrencyAsync(concurrency)
+            .WithConcurrencyAsync(concurrency, drainOnFailure: true)
             .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
     }
 
@@ -75,25 +68,25 @@ public static class FetchFirstSegmentsStep
         if (Par2.IsRecoveryVolumeFileName(nzbFile.GetSubjectFileName()))
             return BuildMissingFirstSegment(nzbFile);
 
-        for (var attempt = 1;; attempt++)
+        try
         {
-            try
-            {
-                return await FetchFirstSegmentOnce(nzbFile, usenetClient, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception e) when (
-                attempt < MaxFetchAttemptsPerFile &&
-                !e.IsCancellationException() &&
-                e.IsRetryableDownloadException())
-            {
-                Log.Warning(
-                    "First-segment fetch failed for `{Subject}` " +
-                    "(attempt {Attempt}/{MaxAttempts}); retrying this file only -- {Error}",
-                    nzbFile.Subject, attempt, MaxFetchAttemptsPerFile, e.Message);
-                await Task.Delay(FetchRetryDelays[attempt - 1], cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            // A single attempt already walks the configured primary and backup
+            // provider chain. Repeating it here only duplicates the same burst
+            // and delays a useful Watchdog result when capacity is unavailable.
+            return await FetchFirstSegmentOnce(nzbFile, usenetClient, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (
+            !e.IsCancellationException() &&
+            e.IsRetryableDownloadException())
+        {
+            var firstSegment = nzbFile.Segments[0].MessageId;
+            var message =
+                $"Preparation could not verify first segment `{firstSegment}` for " +
+                $"`{nzbFile.Subject}` after one provider pass because one or more " +
+                $"providers were unavailable. Last provider error: {e.Message}";
+            Log.Warning(e, "{Error}", message);
+            throw new RetryableDownloadException(message, e);
         }
     }
 
@@ -142,9 +135,14 @@ public static class FetchFirstSegmentsStep
                 ReleaseDate = article.ArticleHeaders!.Date
             };
         }
-        catch (UsenetArticleNotFoundException)
+        catch (UsenetArticleNotFoundException e)
         {
-            return BuildMissingFirstSegment(nzbFile);
+            var firstSegment = nzbFile.Segments[0].MessageId;
+            var message =
+                $"Preparation failed: required first segment `{firstSegment}` for " +
+                $"`{nzbFile.Subject}` is missing from every available Usenet provider.";
+            Log.Error(e, "{Error}", message);
+            throw new NonRetryableDownloadException(message, e);
         }
     }
 

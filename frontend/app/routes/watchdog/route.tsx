@@ -305,7 +305,6 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             <div className={styles.attemptCardTitle} title={a.candidateTitle}>{a.candidateTitle || "—"}</div>
                             <div className={styles.attemptCardMeta}>
                                 <span className={styles.attemptCardProvider}>
-                                    <span aria-hidden="true">📡</span>
                                     <WatchdogProviderSummary
                                         providerHost={a.providerHost}
                                         providerNickname={a.providerNickname}
@@ -396,8 +395,11 @@ function RunStats({
                     <div className={styles.prepProviderList}>
                         <div className={styles.prepProviderHeader}>
                             <span>First-segment provider</span>
-                            <span>Articles</span>
                             <span>Downloaded</span>
+                            <span>Attempts</span>
+                            <span>Failed</span>
+                            <span>Work</span>
+                            <span>Data</span>
                             <span>Share</span>
                         </div>
                         {prepStats.providers.map(provider => {
@@ -411,10 +413,19 @@ function RunStats({
                                         <span className={styles.healthProviderName}>{label}</span>
                                         <span className={styles.healthProviderHost}>{provider.host}</span>
                                     </span>
-                                    <span className={styles.prepProviderCell} data-label="Articles">
+                                    <span className={styles.prepProviderCell} data-label="Downloaded">
                                         {formatCount(provider.articles)}
                                     </span>
-                                    <span className={styles.prepProviderCell} data-label="Downloaded">
+                                    <span className={styles.prepProviderCell} data-label="Attempts">
+                                        {formatCount(provider.attempts)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Failed">
+                                        {formatPrepFailures(provider)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Work">
+                                        {formatDuration(provider.workMs)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Data">
                                         {formatBytes(provider.bytes)}
                                     </span>
                                     <span className={styles.prepProviderCell} data-label="Share">{share}%</span>
@@ -652,6 +663,14 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
 
 function formatCount(value: number): string {
     return Math.max(0, value).toLocaleString();
+}
+
+function formatPrepFailures(provider: WatchdogPrepStats["providers"][number]): string {
+    const parts: string[] = [];
+    if (provider.missing > 0) parts.push(`${formatCount(provider.missing)} missing`);
+    if (provider.timeouts > 0) parts.push(`${formatCount(provider.timeouts)} timeout`);
+    if (provider.errors > 0) parts.push(`${formatCount(provider.errors)} error`);
+    return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
 function groupByClick(list: WatchdogEntry[]): ClickGroup[] {

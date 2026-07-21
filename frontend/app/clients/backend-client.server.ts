@@ -489,6 +489,11 @@ export type WatchdogPrepProvider = {
     nickname?: string | null,
     articles: number,
     bytes: number,
+    attempts: number,
+    missing: number,
+    timeouts: number,
+    errors: number,
+    workMs: number,
 }
 
 export type WatchdogHealthStats = {
