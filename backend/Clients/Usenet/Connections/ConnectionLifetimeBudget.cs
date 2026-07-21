@@ -10,8 +10,12 @@ public sealed class ConnectionLifetimeBudget
     private readonly SemaphoreSlim _connectionSlots;
     private readonly SemaphoreSlim _standardConnectionSlots;
     private readonly SemaphoreSlim _creationSlots;
+    private readonly SemaphoreSlim _foregroundCreationSlots;
+    private readonly SemaphoreSlim _speculativeCreationSlots;
     private readonly int _maxConnections;
     private readonly int _maxConcurrentCreations;
+    private readonly int _maxConcurrentForegroundCreations;
+    private readonly int _maxConcurrentSpeculativeCreations;
     private int _foregroundWaiters;
 
     public ConnectionLifetimeBudget(int maxConnections, int maxConcurrentCreations)
@@ -23,13 +27,27 @@ public sealed class ConnectionLifetimeBudget
 
         _maxConnections = maxConnections;
         _maxConcurrentCreations = maxConcurrentCreations;
+        _maxConcurrentSpeculativeCreations = maxConcurrentCreations == 1
+            ? 1
+            : Math.Max(1, maxConcurrentCreations / 4);
+        _maxConcurrentForegroundCreations = maxConcurrentCreations == 1
+            ? 1
+            : maxConcurrentCreations - _maxConcurrentSpeculativeCreations;
         _connectionSlots = new SemaphoreSlim(maxConnections, maxConnections);
         _standardConnectionSlots = new SemaphoreSlim(maxConnections, maxConnections);
         _creationSlots = new SemaphoreSlim(maxConcurrentCreations, maxConcurrentCreations);
+        _foregroundCreationSlots = new SemaphoreSlim(
+            _maxConcurrentForegroundCreations,
+            _maxConcurrentForegroundCreations);
+        _speculativeCreationSlots = new SemaphoreSlim(
+            _maxConcurrentSpeculativeCreations,
+            _maxConcurrentSpeculativeCreations);
     }
 
     internal int ReservedConnections => _maxConnections - _connectionSlots.CurrentCount;
     internal int ActiveCreations => _maxConcurrentCreations - _creationSlots.CurrentCount;
+    internal int ActiveSpeculativeCreations =>
+        _maxConcurrentSpeculativeCreations - _speculativeCreationSlots.CurrentCount;
     internal int ForegroundWaiters => Volatile.Read(ref _foregroundWaiters);
     internal int AvailableStandardCapacity => _standardConnectionSlots.CurrentCount;
 
@@ -47,25 +65,38 @@ public sealed class ConnectionLifetimeBudget
             // one of the longer-lived socket reservations. With the opposite
             // ordering, a saturated handshake gate could let queued attempts claim
             // every remaining socket slot without starting a single connection.
-            await _creationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _foregroundCreationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (!useRecoveryCapacity)
-                    await _standardConnectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await _creationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    return new CreationReservation(this, !useRecoveryCapacity);
+                    if (!useRecoveryCapacity)
+                        await _standardConnectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await _connectionSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        return new CreationReservation(
+                            this,
+                            !useRecoveryCapacity,
+                            speculative: false,
+                            foregroundLimited: true);
+                    }
+                    catch
+                    {
+                        if (!useRecoveryCapacity) _standardConnectionSlots.Release();
+                        throw;
+                    }
                 }
                 catch
                 {
-                    if (!useRecoveryCapacity) _standardConnectionSlots.Release();
+                    _creationSlots.Release();
                     throw;
                 }
             }
             catch
             {
-                _creationSlots.Release();
+                _foregroundCreationSlots.Release();
                 throw;
             }
         }
@@ -81,36 +112,65 @@ public sealed class ConnectionLifetimeBudget
     /// provider that is already using the application-wide socket budget.
     /// </summary>
     internal bool TryReserveCreation(out CreationReservation reservation)
-        => TryReserveCreation(useRecoveryCapacity: false, out reservation);
+        => TryReserveCreation(
+            useRecoveryCapacity: false,
+            allowWhileForegroundWaiting: false,
+            out reservation);
 
     internal bool TryReserveCreation(
         bool useRecoveryCapacity,
+        bool allowWhileForegroundWaiting,
         out CreationReservation reservation)
     {
         reservation = null!;
-        if (Volatile.Read(ref _foregroundWaiters) > 0) return false;
+        var foregroundWaiting = Volatile.Read(ref _foregroundWaiters) > 0;
+        if (!allowWhileForegroundWaiting && foregroundWaiting)
+            return false;
+        if (allowWhileForegroundWaiting &&
+            foregroundWaiting &&
+            !useRecoveryCapacity &&
+            _standardConnectionSlots.CurrentCount <= _maxConcurrentForegroundCreations)
+            return false;
+        if (!_speculativeCreationSlots.Wait(0)) return false;
 
         var standardReserved = false;
         if (!useRecoveryCapacity)
         {
-            if (!_standardConnectionSlots.Wait(0)) return false;
+            if (!_standardConnectionSlots.Wait(0))
+            {
+                _speculativeCreationSlots.Release();
+                return false;
+            }
             standardReserved = true;
         }
 
-        if (Volatile.Read(ref _foregroundWaiters) > 0 || !_connectionSlots.Wait(0))
+        foregroundWaiting = Volatile.Read(ref _foregroundWaiters) > 0;
+        if ((!allowWhileForegroundWaiting && foregroundWaiting) ||
+            (allowWhileForegroundWaiting &&
+             foregroundWaiting &&
+             !useRecoveryCapacity &&
+             _standardConnectionSlots.CurrentCount < _maxConcurrentForegroundCreations) ||
+            !_connectionSlots.Wait(0))
         {
             if (standardReserved) _standardConnectionSlots.Release();
+            _speculativeCreationSlots.Release();
             return false;
         }
 
-        if (Volatile.Read(ref _foregroundWaiters) > 0 || !_creationSlots.Wait(0))
+        if ((!allowWhileForegroundWaiting && Volatile.Read(ref _foregroundWaiters) > 0) ||
+            !_creationSlots.Wait(0))
         {
             _connectionSlots.Release();
             if (standardReserved) _standardConnectionSlots.Release();
+            _speculativeCreationSlots.Release();
             return false;
         }
 
-        reservation = new CreationReservation(this, standardReserved);
+        reservation = new CreationReservation(
+            this,
+            standardReserved,
+            speculative: true,
+            foregroundLimited: false);
         return true;
     }
 
@@ -142,11 +202,19 @@ public sealed class ConnectionLifetimeBudget
     {
         private ConnectionLifetimeBudget? _owner;
         private readonly bool _standardReserved;
+        private readonly bool _speculative;
+        private readonly bool _foregroundLimited;
 
-        public CreationReservation(ConnectionLifetimeBudget owner, bool standardReserved)
+        public CreationReservation(
+            ConnectionLifetimeBudget owner,
+            bool standardReserved,
+            bool speculative,
+            bool foregroundLimited)
         {
             _owner = owner;
             _standardReserved = standardReserved;
+            _speculative = speculative;
+            _foregroundLimited = foregroundLimited;
         }
 
         /// <summary>
@@ -156,7 +224,10 @@ public sealed class ConnectionLifetimeBudget
         public void Commit()
         {
             var current = Interlocked.Exchange(ref _owner, null);
-            current?._creationSlots.Release();
+            if (current is null) return;
+            current._creationSlots.Release();
+            if (_speculative) current._speculativeCreationSlots.Release();
+            if (_foregroundLimited) current._foregroundCreationSlots.Release();
         }
 
         public void Dispose()
@@ -164,6 +235,8 @@ public sealed class ConnectionLifetimeBudget
             var current = Interlocked.Exchange(ref _owner, null);
             if (current is null) return;
             current._creationSlots.Release();
+            if (_speculative) current._speculativeCreationSlots.Release();
+            if (_foregroundLimited) current._foregroundCreationSlots.Release();
             current._connectionSlots.Release();
             if (_standardReserved) current._standardConnectionSlots.Release();
         }

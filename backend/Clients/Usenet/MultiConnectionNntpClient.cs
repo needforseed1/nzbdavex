@@ -78,6 +78,11 @@ public class MultiConnectionNntpClient(
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 
+    internal Task PrewarmForDemandAsync(
+        int targetConnections,
+        CancellationToken cancellationToken) =>
+        connectionPool.PrewarmForDemandAsync(targetConnections, cancellationToken);
+
     public Task RefreshWarmConnectionsAsync(
         int count, int maxConcurrency, CancellationToken cancellationToken) =>
         connectionPool.RefreshWarmConnectionsAsync(count, maxConcurrency, cancellationToken);

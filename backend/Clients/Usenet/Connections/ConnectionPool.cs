@@ -160,7 +160,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     )
     {
         return await GetConnectionLockAsync(
-            priority, cancellationToken, false, false, false).ConfigureAwait(false);
+            priority, cancellationToken, false, false, false,
+            trackPendingAcquisition: true).ConfigureAwait(false);
     }
 
     internal void UpdatePriorityOdds(SemaphorePriorityOdds priorityOdds) =>
@@ -576,13 +577,27 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     }
 
     private async ValueTask<(bool Created, T Connection)> TryCreatePrewarmedConnectionAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool demandPrewarm)
     {
         if (_connectionBudget is null)
             return (true, await _factory(cancellationToken).ConfigureAwait(false));
 
-        if (!_connectionBudget.TryReserveCreation(_useRecoveryCapacity, out var reservation))
-            return (false, default!);
+        ConnectionLifetimeBudget.CreationReservation reservation;
+        while (!_connectionBudget.TryReserveCreation(
+                   _useRecoveryCapacity,
+                   allowWhileForegroundWaiting: demandPrewarm,
+                   out reservation))
+        {
+            if (!demandPrewarm) return (false, default!);
+
+            // An imminent queue/health burst is useful work, but it may use only
+            // the budget's small speculative quota. Waiting here lets that quota
+            // turn over while preserving the majority of handshake slots for
+            // real ARTICLE/STAT acquisitions.
+            await Task.Delay(CreationCapacityRetryDelay, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         using (reservation)
         {
@@ -964,6 +979,24 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     }
 
     public async Task PrewarmAsync(int count, CancellationToken cancellationToken = default)
+        => await PrewarmAsync(count, demandPrewarm: false, cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Prewarms for an imminent foreground workload. Unlike idle maintenance,
+    /// this may keep using the shared budget's bounded speculative quota while
+    /// unrelated foreground acquisitions are waiting.
+    /// </summary>
+    internal async Task PrewarmForDemandAsync(
+        int count,
+        CancellationToken cancellationToken = default)
+        => await PrewarmAsync(count, demandPrewarm: true, cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task PrewarmAsync(
+        int count,
+        bool demandPrewarm,
+        CancellationToken cancellationToken)
     {
         // Pools are deliberately cold when created unless their owner explicitly
         // activates the configured persistent floor. The first foreground prewarm
@@ -972,7 +1005,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
         using (maintenanceLease)
         {
-            await PrewarmWithLeaseAsync(count, cancellationToken, maintenanceLease.Token)
+            await PrewarmWithLeaseAsync(
+                    count, demandPrewarm, cancellationToken, maintenanceLease.Token)
                 .ConfigureAwait(false);
         }
     }
@@ -985,6 +1019,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private async Task PrewarmWithLeaseAsync(
         int count,
+        bool demandPrewarm,
         CancellationToken cancellationToken,
         CancellationToken maintenanceToken)
     {
@@ -1005,7 +1040,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     connectionsNeeded,
                     Math.Min(_maxConnections, ConcurrentConnectionCreationLimit));
                 var workers = Enumerable.Range(0, workerCount)
-                    .Select(_ => PrewarmWorkerAsync(target, linked.Token))
+                    .Select(_ => PrewarmWorkerAsync(target, demandPrewarm, linked.Token))
                     .ToArray();
                 await Task.WhenAll(workers).ConfigureAwait(false);
             }
@@ -1123,9 +1158,13 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task PrewarmWorkerAsync(int target, CancellationToken cancellationToken)
+    private async Task PrewarmWorkerAsync(
+        int target,
+        bool demandPrewarm,
+        CancellationToken cancellationToken)
     {
-        while (await CreatePrewarmedConnectionAsync(target, cancellationToken).ConfigureAwait(false))
+        while (await CreatePrewarmedConnectionAsync(
+                   target, demandPrewarm, cancellationToken).ConfigureAwait(false))
         {
         }
     }
@@ -1152,7 +1191,11 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         cancellationToken,
                         forceIdleValidation,
                         oldestFirst,
-                        preserveIdleAge: true)
+                        preserveIdleAge: true,
+                        // Background DATE refreshes must not look like queued
+                        // health demand. Primers execute real STAT work and remain
+                        // visible to routing and diagnostics.
+                        trackPendingAcquisition: primer is not null)
                     .ConfigureAwait(false);
                 if (primer is null) continue;
                 try
@@ -1171,7 +1214,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         await Task.WhenAll(workers).ConfigureAwait(false);
     }
 
-    private async Task<bool> CreatePrewarmedConnectionAsync(int target, CancellationToken cancellationToken)
+    private async Task<bool> CreatePrewarmedConnectionAsync(
+        int target,
+        bool demandPrewarm,
+        CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _sweepCts.Token, _capacityCts.Token);
@@ -1185,7 +1231,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             (bool Created, T Connection) speculative;
             try
             {
-                speculative = await TryCreatePrewarmedConnectionAsync(linked.Token).ConfigureAwait(false);
+                speculative = await TryCreatePrewarmedConnectionAsync(
+                        linked.Token, demandPrewarm)
+                    .ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -1248,10 +1296,12 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken,
         bool forceIdleValidation,
         bool oldestFirst,
-        bool preserveIdleAge)
+        bool preserveIdleAge,
+        bool trackPendingAcquisition)
     {
         BeginOperation();
-        Interlocked.Increment(ref _pendingAcquisitions);
+        if (trackPendingAcquisition)
+            Interlocked.Increment(ref _pendingAcquisitions);
         TriggerConnectionPoolChangedEvent();
         try
         {
@@ -1270,7 +1320,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _pendingAcquisitions);
+            if (trackPendingAcquisition)
+                Interlocked.Decrement(ref _pendingAcquisitions);
             TriggerConnectionPoolChangedEvent();
             EndOperation();
         }

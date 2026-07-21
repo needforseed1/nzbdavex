@@ -75,6 +75,37 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
+    public void HealthPrimerSamplesOnlyTheArticlePopulationTheFullCheckCovers()
+    {
+        // Par2/junk articles are excluded from the full health check, so the
+        // coverage sample must not judge providers on them.
+        var files = new[]
+        {
+            NzbFile("\"release.vol000-001.par2\"", 0, 5),
+            NzbFile("\"release.mkv\"", 5, 5),
+        };
+
+        var selected = QueueItemProcessor.SelectHealthPrimeSegmentIds(files, 3);
+
+        Assert.All(selected, segmentId => Assert.Contains(
+            int.Parse(segmentId["segment-".Length..]), Enumerable.Range(5, 5)));
+    }
+
+    [Fact]
+    public void HealthPrimerFallsBackToAllFilesWhenSubjectsAreObfuscated()
+    {
+        var files = new[]
+        {
+            NzbFile("adf8a7e2b9c1", 0, 5),
+            NzbFile("bd91c3a0e7f2", 5, 5),
+        };
+
+        var selected = QueueItemProcessor.SelectHealthPrimeSegmentIds(files, 4);
+
+        Assert.Equal(["segment-0", "segment-3", "segment-6", "segment-9"], selected);
+    }
+
+    [Fact]
     public async Task HealthStartsImmediatelyWhenWarmupAlreadyCompleted()
     {
         using var warmupCancellation = new CancellationTokenSource();

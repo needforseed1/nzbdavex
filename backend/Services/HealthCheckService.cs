@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
@@ -23,7 +24,7 @@ public class HealthCheckService : BackgroundService
     private readonly WebsocketManager _websocketManager;
     private readonly BenchmarkGate _benchmarkGate;
 
-    private static readonly HashSet<string> _missingSegmentIds = [];
+    private static readonly MissingSegmentCache _missingSegmentIds = new(TimeProvider.System);
 
     public HealthCheckService
     (
@@ -42,7 +43,7 @@ public class HealthCheckService : BackgroundService
         {
             // Provider changes can make articles available that were missing on the old set.
             if (!configEventArgs.ChangedConfig.ContainsKey("usenet.providers")) return;
-            lock (_missingSegmentIds) _missingSegmentIds.Clear();
+            _missingSegmentIds.Clear();
         };
     }
 
@@ -182,11 +183,38 @@ public class HealthCheckService : BackgroundService
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
             if (FilenameUtil.IsImportantFileType(davItem.Name))
-                lock (_missingSegmentIds)
-                    _missingSegmentIds.Add(e.SegmentId);
+                _missingSegmentIds.Add(e.SegmentId);
 
             // when usenet article is missing, perform repairs
             await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+        }
+        catch (UsenetArticleUnverifiableException e)
+        {
+            // Provider unavailability, not article absence: no repair, no
+            // missing-segment caching. Try again once providers settle.
+            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
+            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            var utcNow = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = utcNow;
+            davItem.NextHealthCheck = utcNow + TimeSpan.FromHours(1);
+            var providers = e.UnavailableProviders.Count > 0
+                ? string.Join(", ", e.UnavailableProviders)
+                : "unknown";
+            dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
+            {
+                Id = Guid.NewGuid(),
+                DavItemId = davItem.Id,
+                Path = davItem.Path,
+                CreatedAt = utcNow,
+                Result = HealthCheckResult.HealthResult.Unhealthy,
+                RepairStatus = HealthCheckResult.RepairAction.None,
+                Message = string.Join(" ", [
+                    "Temporarily unverifiable: article presence could not be confirmed",
+                    $"because provider(s) were unavailable ({providers}).",
+                    "No repair was performed. Will retry in 1 hour."
+                ])
+            }));
+            await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
         }
     }
 
@@ -366,11 +394,55 @@ public class HealthCheckService : BackgroundService
 
     public static void CheckCachedMissingSegmentIds(IEnumerable<string> segmentIds)
     {
-        lock (_missingSegmentIds)
+        foreach (var segmentId in segmentIds)
+            if (_missingSegmentIds.Contains(segmentId))
+                throw new UsenetArticleNotFoundException(segmentId);
+    }
+
+    /// <summary>
+    /// TTL + size bounded cache of segment ids confirmed missing by background
+    /// health checks. Entries expire so a propagation-delayed or transiently
+    /// unavailable article cannot poison future NZBs for the process lifetime.
+    /// Only confirmed-missing articles belong here — never unverifiable ones.
+    /// </summary>
+    internal sealed class MissingSegmentCache(TimeProvider timeProvider)
+    {
+        internal static readonly TimeSpan Ttl = TimeSpan.FromHours(6);
+        internal const int MaxEntries = 100_000;
+        private readonly ConcurrentDictionary<string, long> _entries = new(StringComparer.Ordinal);
+
+        internal int Count => _entries.Count;
+
+        public void Add(string segmentId)
         {
-            foreach (var segmentId in segmentIds)
-                if (_missingSegmentIds.Contains(segmentId))
-                    throw new UsenetArticleNotFoundException(segmentId);
+            var now = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+            _entries[segmentId] = now + (long)Ttl.TotalMilliseconds;
+            if (_entries.Count > MaxEntries) Compact(now);
+        }
+
+        public bool Contains(string segmentId)
+        {
+            if (!_entries.TryGetValue(segmentId, out var expiry)) return false;
+            if (timeProvider.GetUtcNow().ToUnixTimeMilliseconds() < expiry) return true;
+            _entries.TryRemove(segmentId, out _);
+            return false;
+        }
+
+        public void Clear() => _entries.Clear();
+
+        private void Compact(long now)
+        {
+            // Drop expired entries first — a plain scan, no sorting.
+            foreach (var entry in _entries)
+                if (entry.Value <= now)
+                    _entries.TryRemove(entry.Key, out _);
+
+            // Only a pathological volume of live entries reaches this point;
+            // evict the entries closest to expiry to get back under the cap.
+            var overflow = _entries.Count - MaxEntries;
+            if (overflow <= 0) return;
+            foreach (var entry in _entries.OrderBy(x => x.Value).Take(overflow))
+                _entries.TryRemove(entry.Key, out _);
         }
     }
 }

@@ -9,6 +9,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
@@ -36,11 +37,18 @@ public class QueueItemProcessor(
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
     ConcurrentDictionary<Guid, int> retryAttempts,
+    ConcurrentDictionary<Guid, int> unverifiableAttempts,
     Action firstSegmentsCompleted,
     CancellationToken ct
 )
 {
     private const int MaxProviderRetryAttempts = 20;
+    // Unverifiable results (providers unavailable, article presence unknown)
+    // get a much tighter bound than connection failures: one bounded retry,
+    // then fail into history/watchdog with an explicit unverifiable message.
+    // They must never cycle through the 20-attempt PauseUntil loop.
+    private const int MaxUnverifiableAttempts = 2;
+    private static readonly TimeSpan UnverifiableRetryBackoff = TimeSpan.FromSeconds(60);
     private const int HealthPrimeSegmentCount = 16;
     private static readonly TimeSpan HealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
@@ -78,6 +86,37 @@ public class QueueItemProcessor(
         {
             Log.Information($"Processing of queue item `{queueItem.JobName}` was cancelled.");
             dbClient.Ctx.ClearChangeTracker();
+        }
+
+        catch (UsenetArticleUnverifiableException e)
+        {
+            try
+            {
+                var attempt = unverifiableAttempts.AddOrUpdate(queueItem.Id, 1, (_, prev) => prev + 1);
+                if (attempt >= MaxUnverifiableAttempts)
+                {
+                    Log.Error(
+                        $"Giving up on `{queueItem.JobName}` after {attempt} unverifiable " +
+                        $"health checks -- {e.Message}");
+                    await MarkQueueItemCompleted(startTime, error: e.Message).ConfigureAwait(false);
+                    return;
+                }
+
+                Log.Warning(
+                    $"Health check for `{queueItem.JobName}` was unverifiable " +
+                    $"(attempt {attempt}/{MaxUnverifiableAttempts}); retrying in " +
+                    $"{UnverifiableRetryBackoff.TotalSeconds:0}s -- {e.Message}");
+                dbClient.Ctx.ClearChangeTracker();
+                queueItem.PauseUntil = DateTime.Now + UnverifiableRetryBackoff;
+                dbClient.Ctx.QueueItems.Attach(queueItem);
+                dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
+                await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
+                _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, ex.Message);
+            }
         }
 
         catch (Exception e) when (e.IsRetryableDownloadException())
@@ -192,7 +231,8 @@ public class QueueItemProcessor(
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
-        var prepConnections = Math.Min(nzbFiles.Count, configManager.GetMaxQueueConnections());
+        var prepConnections = FetchFirstSegmentsStep.ResolveConcurrency(
+            nzbFiles.Count, configManager.GetMaxQueueConnections());
         var queuedMs = Math.Max(0, (long)(DateTime.Now - queueItem.CreatedAt).TotalMilliseconds);
         var usageBeforeFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesBeforeFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
@@ -370,6 +410,21 @@ public class QueueItemProcessor(
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
             healthTimer = Stopwatch.StartNew();
+            if (!overlapsProcessors && connectionWarmer is not null)
+            {
+                // Deferred start: the prep-time warm bursts above the persistent
+                // floor decay after one minute of idleness, so a long processor
+                // backlog leaves the pools at floor level. Re-burst both pools on
+                // the still-live warmup CTS; the grace handoff below still starts
+                // health as soon as useful capacity exists and lets growth
+                // continue in parallel.
+                healthConnectionWarmupTask = Task.WhenAll(
+                    PrewarmHealthConnectionsDuringPrepAsync(
+                        connectionWarmer, queueItem, healthConnectionWarmupCts.Token),
+                    PrewarmPrimaryHealthConnectionsAfterPrepAsync(
+                        connectionWarmer, healthPrimeSegmentIds, healthPrimeDepth,
+                        queueItem, healthConnectionWarmupCts.Token));
+            }
             var healthWorkTask = RunHealthCheckAfterWarmupAsync(
                 healthConnectionWarmupTask,
                 healthConnectionWarmupCts,
@@ -719,6 +774,16 @@ public class QueueItemProcessor(
         IReadOnlyList<NzbFile> files,
         int targetCount)
     {
+        // Sample from the population the full health check will actually cover
+        // (RAR + important files) so coverage probes judge providers on relevant
+        // articles. Subject filenames are an approximation — exact
+        // classification is not available this early — and obfuscated subjects
+        // fall back to sampling every file.
+        var relevantFiles = files
+            .Where(file => FilenameUtil.IsImportantFileType(file.GetSubjectFileName()))
+            .ToList();
+        if (relevantFiles.Count > 0) files = relevantFiles;
+
         var total = files.Sum(file => (long)file.Segments.Count);
         var selectedCount = (int)Math.Min(Math.Max(0, targetCount), total);
         if (selectedCount == 0) return [];
@@ -945,6 +1010,7 @@ public class QueueItemProcessor(
         _ = RefreshMonitoredDownloads();
         RecordWatchdogAttemptIfExternal(startTime, error, providerUsage);
         retryAttempts.TryRemove(queueItem.Id, out _);
+        unverifiableAttempts.TryRemove(queueItem.Id, out _);
     }
 
     // Emits a Watchdog attempt entry for queue items that didn't come through
