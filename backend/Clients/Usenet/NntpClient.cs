@@ -232,6 +232,7 @@ public abstract class NntpClient : INntpClient
             var nextSegment = 0;
             var schedulerLock = new object();
             var batchDepth = Math.Clamp(depth, 1, 64);
+            var indeterminateSegments = new System.Collections.Concurrent.ConcurrentQueue<string>();
 
             IReadOnlyList<string>? TakeNextBatch()
             {
@@ -252,20 +253,65 @@ public abstract class NntpClient : INntpClient
                 }
             }
 
-            var laneTasks = Enumerable.Range(0, lanes)
-                .Select(_ => CheckPipelinedStatLaneAsync(TakeNextBatch, batchDepth, progress, childCt, token, () =>
-                    Interlocked.Increment(ref processedCount)))
-                .ToArray();
+            var laneTasks = new List<Task>(lanes);
+
+            void StartAdmittedLanes()
+            {
+                var admitted = Math.Clamp(GetPipelinedStatLaneTarget(lanes), 1, lanes);
+                while (laneTasks.Count < admitted)
+                {
+                    laneTasks.Add(CheckPipelinedStatLaneAsync(
+                        TakeNextBatch,
+                        batchDepth,
+                        progress,
+                        childCt,
+                        token,
+                        () => Interlocked.Increment(ref processedCount),
+                        indeterminateSegments.Enqueue));
+                }
+            }
 
             try
             {
-                await Task.WhenAll(laneTasks).ConfigureAwait(false);
-                return;
+                StartAdmittedLanes();
+                while (true)
+                {
+                    var allLanes = Task.WhenAll(laneTasks);
+                    if (allLanes.IsCompleted || laneTasks.Count == lanes)
+                    {
+                        await allLanes.ConfigureAwait(false);
+                        break;
+                    }
+
+                    // Multi-provider health starts only a bounded number of
+                    // lanes beyond established usable capacity. As successful
+                    // handshakes publish more sockets, admit more lanes without
+                    // ever pinning the run to its initial pool size.
+                    var rampDelay = Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+                    if (await Task.WhenAny(allLanes, rampDelay).ConfigureAwait(false) == allLanes)
+                    {
+                        await allLanes.ConfigureAwait(false);
+                        break;
+                    }
+
+                    await rampDelay.ConfigureAwait(false);
+                    StartAdmittedLanes();
+                }
             }
-            catch (Exception e) when (TryRethrowMissingArticle(e))
+            catch (Exception e) when (TryRethrowMissingArticle(e) || TryRethrowUnverifiableArticles(e))
             {
                 throw;
             }
+
+            if (indeterminateSegments.IsEmpty) return;
+            // Some segments could not be confirmed missing because one or more
+            // eligible providers never answered for them. Give unavailable
+            // providers one coordinated, bounded chance to answer before the
+            // operation concludes.
+            await ResolveIndeterminateSegmentsAsync(
+                indeterminateSegments.Distinct().ToArray(), depth, progress, cancellationToken)
+                .ConfigureAwait(false);
+            return;
         }
 
         var processed = 0;
@@ -301,7 +347,8 @@ public abstract class NntpClient : INntpClient
         IProgress<int>? progress,
         CancellationTokenSource childCt,
         CancellationToken cancellationToken,
-        Func<int> incrementProcessed)
+        Func<int> incrementProcessed,
+        Action<string> reportIndeterminate)
     {
         try
         {
@@ -313,6 +360,15 @@ public abstract class NntpClient : INntpClient
                     if (result.Exists)
                     {
                         progress?.Report(incrementProcessed());
+                        continue;
+                    }
+
+                    if (result.Indeterminate)
+                    {
+                        // Not every eligible provider answered for this segment;
+                        // defer to the coordinated recovery pass instead of
+                        // declaring the article missing on incomplete evidence.
+                        reportIndeterminate(result.SegmentId);
                         continue;
                     }
 
@@ -328,6 +384,33 @@ public abstract class NntpClient : INntpClient
         }
     }
 
+    /// <summary>
+    /// Called once per pipelined check when segments finished indeterminate:
+    /// no provider found them, but not every eligible provider answered.
+    /// Implementations must either resolve every segment (report progress for
+    /// segments confirmed found), throw <see cref="UsenetArticleNotFoundException"/>
+    /// when a segment is confirmed missing by every eligible provider, or throw
+    /// <see cref="UsenetArticleUnverifiableException"/> for what remains
+    /// unconfirmed. The default has no extra providers to consult, so it
+    /// reports the segments as unverifiable.
+    /// </summary>
+    protected virtual Task ResolveIndeterminateSegmentsAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken)
+    {
+        throw new UsenetArticleUnverifiableException(segmentIds, []);
+    }
+
+    /// <summary>
+    /// Returns how many of the requested pipelined STAT lanes may currently run.
+    /// Implementations can raise this value as usable connection capacity grows;
+    /// the scheduler polls it while work remains and never removes lanes already
+    /// admitted.
+    /// </summary>
+    protected virtual int GetPipelinedStatLaneTarget(int requestedLanes) => requestedLanes;
+
     private static int ResolvePipelinedStatLanes(int segmentCount, int fallbackConcurrency)
     {
         return Math.Max(1, Math.Min(fallbackConcurrency, segmentCount));
@@ -337,6 +420,14 @@ public abstract class NntpClient : INntpClient
     {
         if (!e.TryGetCausingException(out UsenetArticleNotFoundException? missing) || missing is null) return false;
         ExceptionDispatchInfo.Capture(missing).Throw();
+        return true;
+    }
+
+    private static bool TryRethrowUnverifiableArticles(Exception e)
+    {
+        if (!e.TryGetCausingException(out UsenetArticleUnverifiableException? unverifiable) ||
+            unverifiable is null) return false;
+        ExceptionDispatchInfo.Capture(unverifiable).Throw();
         return true;
     }
 

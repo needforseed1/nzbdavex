@@ -13,6 +13,20 @@ namespace NzbWebDAV.Tests.Queue;
 
 public class FetchFirstSegmentsStepTests
 {
+    [Theory]
+    [InlineData(286, 150, 64)]
+    [InlineData(40, 150, 40)]
+    [InlineData(286, 32, 37)]
+    public void FirstSegmentConcurrencyAvoidsConfiguredCapacityStampede(
+        int files,
+        int configuredConnections,
+        int expected)
+    {
+        Assert.Equal(
+            expected,
+            FetchFirstSegmentsStep.ResolveConcurrency(files, configuredConnections));
+    }
+
     [Fact]
     public async Task SingleTransientFailureRetriesOnlyThatFileNotTheCompletedOnes()
     {

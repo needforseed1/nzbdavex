@@ -13,6 +13,12 @@ namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
 public static class FetchFirstSegmentsStep
 {
+    // First-segment ARTICLE reads discard their sockets after the metadata
+    // prefix. Launching the full configured queue limit against a small ready
+    // floor therefore creates a pure authentication storm. Match the maximum
+    // burst to two waves of the application's 32-slot connection-creation
+    // budget; returned/replacement capacity keeps the queue moving from there.
+    private const int MaxConcurrentFirstSegmentFetches = 64;
     // One failed first-segment fetch must not force the entire prep step (and
     // every already-completed fetch) to rerun. Each file gets a small number of
     // bounded in-place retries; every attempt already walks all providers.
@@ -33,11 +39,17 @@ public static class FetchFirstSegmentsStep
         var probeClient = usenetClient is ArticleCachingNntpClient cachingClient
             ? cachingClient.FirstSegmentProbeClient
             : usenetClient;
+        var concurrency = ResolveConcurrency(files.Count, configManager.GetMaxQueueConnections());
         return await files
             .Select(x => FetchFirstSegment(x, probeClient, cancellationToken))
-            .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
+            .WithConcurrencyAsync(concurrency)
             .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
     }
+
+    internal static int ResolveConcurrency(int fileCount, int configuredConnections) =>
+        Math.Max(1, Math.Min(
+            fileCount,
+            Math.Min(MaxConcurrentFirstSegmentFetches, configuredConnections + 5)));
 
     private static NzbFileWithFirstSegment BuildMissingFirstSegment(NzbFile nzbFile) => new()
     {

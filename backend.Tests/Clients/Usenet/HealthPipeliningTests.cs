@@ -47,6 +47,29 @@ public class HealthPipeliningTests
         Assert.Equal(80, client.ProcessedSegments);
     }
 
+    [Fact]
+    public async Task LaneAdmissionRampsAsUsableCapacityGrows()
+    {
+        var client = new LaneCountingClient(initialLaneTarget: 2);
+        var segments = Enumerable.Range(0, 80).Select(x => $"segment-{x}").ToArray();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        var check = client.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 1, fallbackConcurrency: 4, progress: null, timeout.Token);
+
+        while (client.StartedLanes < 2)
+            await Task.Delay(5, timeout.Token);
+        Assert.Equal(2, client.MaxConcurrentLanes);
+
+        client.SetLaneTarget(4);
+        while (client.StartedLanes < 4)
+            await Task.Delay(5, timeout.Token);
+
+        Assert.Equal(4, client.MaxConcurrentLanes);
+        client.ReleaseLanes();
+        await check;
+    }
+
     private sealed class LaneCountingClient : NntpClient
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -55,10 +78,14 @@ public class HealthPipeliningTests
         private int _startedLanes;
         private int _maxConcurrentLanes;
         private int _processedSegments;
+        private int _laneTarget;
 
-        public LaneCountingClient(bool blockFirstLaneOnly = false)
+        public LaneCountingClient(
+            bool blockFirstLaneOnly = false,
+            int initialLaneTarget = int.MaxValue)
         {
             _blockFirstLaneOnly = blockFirstLaneOnly;
+            _laneTarget = initialLaneTarget;
         }
 
         public int StartedLanes => Volatile.Read(ref _startedLanes);
@@ -66,6 +93,10 @@ public class HealthPipeliningTests
         public int ProcessedSegments => Volatile.Read(ref _processedSegments);
 
         public void ReleaseLanes() => _release.TrySetResult();
+        public void SetLaneTarget(int target) => Volatile.Write(ref _laneTarget, target);
+
+        protected override int GetPipelinedStatLaneTarget(int requestedLanes) =>
+            Math.Min(requestedLanes, Volatile.Read(ref _laneTarget));
 
         public override async IAsyncEnumerable<PipelinedStatResult> StatsPipelinedAsync(
             IReadOnlyList<string> segmentIds,
