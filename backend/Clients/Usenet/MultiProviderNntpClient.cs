@@ -1894,7 +1894,12 @@ public class MultiProviderNntpClient(
             var (provider, targets) = candidate;
             IDisposable? lease = null;
             var received = 0;
+            var found = 0;
+            var missing = 0;
             var recoveryConnections = 0;
+            var attemptFailed = false;
+            var callerCancelled = false;
+            Stopwatch? attemptTimer = null;
             try
             {
                 if (provider.ProviderType == ProviderType.BackupOnly)
@@ -1905,6 +1910,7 @@ public class MultiProviderNntpClient(
                 var recoveryBatches = PartitionRecoveryTargets(
                     targets, ResolveRecoveryConcurrency(provider, targets.Length));
                 recoveryConnections = recoveryBatches.Count;
+                attemptTimer = Stopwatch.StartNew();
                 await Task.WhenAll(recoveryBatches.Select(async batch =>
                 {
                     var results = provider.IsTripped
@@ -1922,8 +1928,16 @@ public class MultiProviderNntpClient(
                             throw new InvalidDataException(
                                 $"Provider {provider.Host} returned an invalid recovery STAT response.");
 
-                        if (result.Exists) foundSegments.TryAdd(result.SegmentId, 0);
-                        else collector.RecordMissing(result.SegmentId, provider);
+                        if (result.Exists)
+                        {
+                            foundSegments.TryAdd(result.SegmentId, 0);
+                            Interlocked.Increment(ref found);
+                        }
+                        else
+                        {
+                            collector.RecordMissing(result.SegmentId, provider);
+                            Interlocked.Increment(ref missing);
+                        }
                         batchReceived++;
                         Interlocked.Increment(ref received);
                     }
@@ -1942,10 +1956,12 @@ public class MultiProviderNntpClient(
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                callerCancelled = true;
                 throw;
             }
             catch (OperationCanceledException)
             {
+                attemptFailed = true;
                 unavailableProviders.TryAdd(provider.Host, 0);
                 Log.Debug(
                     "health-stat recovery provider={Provider} status=budget-expired " +
@@ -1954,6 +1970,7 @@ public class MultiProviderNntpClient(
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
+                attemptFailed = true;
                 unavailableProviders.TryAdd(provider.Host, 0);
                 Log.Debug(e,
                     "health-stat recovery provider={Provider} status=failed targets={Targets} " +
@@ -1963,6 +1980,16 @@ public class MultiProviderNntpClient(
             finally
             {
                 lease?.Dispose();
+                // The bulk provider table must include the operation-wide
+                // recovery pass. Without this, a provider that timed out in a
+                // lane and then found the article during recovery was displayed
+                // as Found=0 with one failed batch even though it completed the
+                // health check. Gate waits are deliberately excluded: no NNTP
+                // provider attempt began until the command timer was created.
+                if (!callerCancelled && attemptTimer is not null)
+                    plan?.RecordAttempt(
+                        provider, targets.Length, received, found, missing,
+                        attemptTimer.ElapsedMilliseconds, attemptFailed);
             }
         })).ConfigureAwait(false);
 
@@ -2110,18 +2137,24 @@ public class MultiProviderNntpClient(
             {
                 if (provider.ProviderType == ProviderType.BackupOnly)
                 {
-                    // Lanes never queue on the backup-recovery gate. When all
-                    // slots are busy the provider is skipped for this batch —
-                    // its silence yields indeterminate verdicts that the
-                    // coordinated recovery pass resolves — and gate contention
-                    // is never accounted as a provider attempt or failure.
-                    recoveryLease = _backupRecovery.TryEnter(provider);
+                    // Health lanes use BackupOnly immediately only when an
+                    // authenticated idle socket is actually available and has
+                    // not already been claimed by another recovery lane. Cold
+                    // backups go directly to the single coordinated recovery
+                    // pass, which owns reserved creation capacity, instead of
+                    // first burning the ordinary five-second acquisition wait.
+                    // Calls outside a health-verdict scope retain the legacy
+                    // gate behavior because they have no coordinated pass.
+                    recoveryLease = collector is null
+                        ? _backupRecovery.TryEnter(provider)
+                        : _backupRecovery.TryEnterEstablished(provider);
                     if (recoveryLease is null)
                     {
                         gateSkipped = true;
                         Log.Debug(
-                            "Backup recovery slots busy; skipping provider {Provider} for a " +
-                            "pipelined STAT batch of {Count} segments.",
+                            "Backup provider {Provider} has no unclaimed authenticated idle " +
+                            "connection or recovery slots are busy; deferring {Count} " +
+                            "pipelined STAT segments to coordinated recovery.",
                             provider.Host, attempted.Count);
                         continue;
                     }
@@ -2223,6 +2256,22 @@ public class MultiProviderNntpClient(
             lock (_lock)
                 _active[provider] = _active.GetValueOrDefault(provider) + 1;
             return new Lease(this, provider);
+        }
+
+        /// <summary>
+        /// Non-blocking entry for health-lane fallback. Each admitted lane must
+        /// have a distinct authenticated idle socket available now; cold
+        /// providers and excess lanes are left for coordinated recovery.
+        /// </summary>
+        public IDisposable? TryEnterEstablished(MultiConnectionNntpClient provider)
+        {
+            lock (_lock)
+            {
+                var active = _active.GetValueOrDefault(provider);
+                if (active >= provider.IdleConnections || !_slots.Wait(0)) return null;
+                _active[provider] = active + 1;
+                return new Lease(this, provider);
+            }
         }
 
         private void Exit(MultiConnectionNntpClient provider)

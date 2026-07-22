@@ -128,6 +128,70 @@ public class HealthStatVerdictTests
     }
 
     [Fact]
+    public async Task ColdBackupOnlySkipsLaneWaitAndUsesOneCoordinatedRecoveryPass()
+    {
+        // Two responsive zero-coverage primaries create a bulk plan. The cold
+        // BackupOnly provider has no authenticated idle socket, so ordinary
+        // lanes must defer it instead of each waiting for connection creation.
+        // The operation-wide recovery pass opens it once and finds everything.
+        var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var backup = new VerdictStatClient((_, _) => StatAnswer.Found);
+        using var client = CreateClient([
+            Provider(firstPrimary, "first-primary", maxConnections: 8),
+            Provider(secondPrimary, "second-primary", maxConnections: 8),
+            Provider(backup, "backup", ProviderType.BackupOnly, maxConnections: 4),
+        ]);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        Assert.Equal(1, backup.Calls);
+        Assert.Equal(segments.Length, Assert.Single(backup.BatchSizes));
+    }
+
+    [Fact]
+    public async Task CoordinatedRecoveryFoundArticlesAppearInProviderStatistics()
+    {
+        // Reproduce the Doctor Who diagnostic: a warm BackupOnly socket stalls
+        // during the ordinary fallback lane, then its fresh coordinated
+        // recovery succeeds. The provider row must show both the failed batch
+        // and the articles it ultimately found.
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var backup = new VerdictStatClient(
+            (_, call) => call == 1 ? StatAnswer.Stall : StatAnswer.Found);
+        var backupProvider = Provider(
+            backup, "backup", ProviderType.BackupOnly, maxConnections: 4);
+        await backupProvider.PrewarmAsync(1, CancellationToken.None);
+        using var scope = tracker.BeginScope(queueId);
+        using var client = CreateClient([
+                Provider(firstPrimary, "first-primary", maxConnections: 8),
+                Provider(secondPrimary, "second-primary", maxConnections: 8),
+                backupProvider,
+            ],
+            usageTracker: tracker);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
+            tracker.SnapshotHealthCheck(queueId));
+        var backupStats = Assert.Single(snapshot.Providers, provider => provider.ProviderId == "backup");
+        Assert.Equal(segments.Length, backupStats.Found);
+        Assert.Equal(0, backupStats.Missing);
+        Assert.Equal(1, backupStats.Failures);
+        Assert.Equal(2, backupStats.Batches);
+        Assert.Equal(2, backup.Calls);
+    }
+
+    [Fact]
     public async Task PartialPipelineResponsesRemainResolved()
     {
         // The first provider answers one segment and then dies mid-batch. Its
@@ -257,10 +321,11 @@ public class HealthStatVerdictTests
 
     private static MultiProviderNntpClient CreateClient(
         List<MultiConnectionNntpClient> providers,
-        TimeSpan? recoveryBudget = null)
+        TimeSpan? recoveryBudget = null,
+        ProviderUsageTracker? usageTracker = null)
         => new(
             providers,
-            new ProviderUsageTracker(),
+            usageTracker ?? new ProviderUsageTracker(),
             providerAttemptTimeout: TimeSpan.FromMilliseconds(100),
             providerOperationTimeout: TimeSpan.FromMilliseconds(400),
             indeterminateRecoveryBudget: recoveryBudget ?? TimeSpan.FromMilliseconds(400),
