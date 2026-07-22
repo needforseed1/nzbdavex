@@ -190,8 +190,8 @@ public class HealthCheckService : BackgroundService
         }
         catch (UsenetArticleUnverifiableException e)
         {
-            // Provider unavailability, not article absence: no repair, no
-            // missing-segment caching. Try again once providers settle.
+            // An incomplete provider check is not article absence: do not
+            // repair or cache the segment as missing. Try again later.
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
             var utcNow = DateTimeOffset.UtcNow;
@@ -209,8 +209,8 @@ public class HealthCheckService : BackgroundService
                 Result = HealthCheckResult.HealthResult.Unhealthy,
                 RepairStatus = HealthCheckResult.RepairAction.None,
                 Message = string.Join(" ", [
-                    "Temporarily unverifiable: article presence could not be confirmed",
-                    $"because provider(s) were unavailable ({providers}).",
+                    "Temporarily unverified: no availability result was received from",
+                    $"{providers}.",
                     "No repair was performed. Will retry in 1 hour."
                 ])
             }));

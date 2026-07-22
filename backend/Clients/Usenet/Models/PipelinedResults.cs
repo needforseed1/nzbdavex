@@ -24,7 +24,7 @@ public sealed record PipelinedStatResult
     public required bool Exists { get; init; }
 
     // Meaningful only when Exists is false. True means not every eligible
-    // provider answered "missing" for this segment — some were unavailable —
-    // so absence is unconfirmed and the segment must not be reported missing.
+    // provider answered "missing" for this segment — some checks returned no
+    // result — so absence is unconfirmed and must not be reported as missing.
     public bool Indeterminate { get; init; }
 }

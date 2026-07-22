@@ -1,6 +1,7 @@
 // ReSharper disable InconsistentNaming
 
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -13,18 +14,35 @@ namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
 public static class FetchFirstSegmentsStep
 {
-    // First-segment ARTICLE reads discard their sockets after the metadata
-    // prefix. Launching the full configured queue limit against a small ready
-    // floor therefore creates a pure authentication storm. Match the maximum
-    // burst to two waves of the application's 32-slot connection-creation
-    // budget; returned/replacement capacity keeps the queue moving from there.
+    // First-segment ARTICLE reads consume only the metadata prefix, while the
+    // remaining article body is drained in the background before its socket is
+    // reusable. Bound the job-wide fan-out so those drains do not turn a cold
+    // pool into a connection and bandwidth burst.
     private const int MaxConcurrentFirstSegmentFetches = 64;
-    public static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
+    private static readonly TimeSpan FirstSegmentPrepRunTimeout = TimeSpan.FromSeconds(90);
+
+    public static Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
     (
         List<NzbFile> nzbFiles,
         INntpClient usenetClient,
         ConfigManager configManager,
         CancellationToken cancellationToken,
+        IProgress<int>? progress = null
+    ) => FetchFirstSegments(
+        nzbFiles,
+        usenetClient,
+        configManager,
+        cancellationToken,
+        FirstSegmentPrepRunTimeout,
+        progress);
+
+    internal static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
+    (
+        List<NzbFile> nzbFiles,
+        INntpClient usenetClient,
+        ConfigManager configManager,
+        CancellationToken cancellationToken,
+        TimeSpan prepRunTimeout,
         IProgress<int>? progress = null
     )
     {
@@ -33,10 +51,25 @@ public static class FetchFirstSegmentsStep
             ? cachingClient.FirstSegmentProbeClient
             : usenetClient;
         var concurrency = ResolveConcurrency(files.Count, configManager.GetMaxQueueConnections());
-        return await files
-            .Select(x => FetchFirstSegment(x, probeClient, cancellationToken))
-            .WithConcurrencyAsync(concurrency, drainOnFailure: true)
-            .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+        using var prepCts =
+            ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        prepCts.CancelAfter(prepRunTimeout);
+        using var fallbackContext = new PrepFallbackContext();
+        prepCts.SetContext(fallbackContext);
+        try
+        {
+            return await files
+                .Select(x => FetchFirstSegment(x, probeClient, prepCts.Token))
+                .WithConcurrencyAsync(concurrency, drainOnFailure: true)
+                .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new RetryableDownloadException(
+                $"Preparation stopped after {prepRunTimeout.TotalSeconds:0} seconds " +
+                "while checking first segments; provider work did not finish in time.",
+                e);
+        }
     }
 
     internal static int ResolveConcurrency(int fileCount, int configuredConnections) =>
@@ -82,9 +115,9 @@ public static class FetchFirstSegmentsStep
         {
             var firstSegment = nzbFile.Segments[0].MessageId;
             var message =
-                $"Preparation could not verify first segment `{firstSegment}` for " +
-                $"`{nzbFile.Subject}` after one provider pass because one or more " +
-                $"providers were unavailable. Last provider error: {e.Message}";
+                $"Preparation could not verify required first segment `{firstSegment}` for " +
+                $"`{nzbFile.Subject}` after one provider pass: one or more provider " +
+                "checks returned no result.";
             Log.Warning(e, "{Error}", message);
             throw new RetryableDownloadException(message, e);
         }

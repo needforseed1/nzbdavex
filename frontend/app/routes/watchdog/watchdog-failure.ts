@@ -26,12 +26,29 @@ export function summarizeFailure(reason?: string | null): string {
     const lower = value.toLowerCase();
     if (lower.includes("article with message-id") || lower.includes("missing article") ||
         lower.includes("reported article missing")) return "Missing articles";
+    if (lower.includes("could not verify") || lower.includes("unverified") ||
+        lower.includes("availability result")) return "Article availability unverified";
     if (lower.includes("timed out") || lower.includes("timeout")) return "Provider or operation timeout";
     if (lower.includes("no viable") || lower.includes("no provider") || lower.includes("connection issue"))
         return "Provider unavailable";
     if (lower.includes("duplicate nzb")) return "Duplicate NZB";
     if (lower.includes("nzb file could not be found")) return "NZB file missing";
     return value || "Run failed";
+}
+
+export function formatPrepFailures(provider: WatchdogPrepStats["providers"][number]): string {
+    const formatCount = (value: number) => Math.max(0, value).toLocaleString();
+    const parts: string[] = [];
+    if (provider.missing > 0) parts.push(`${formatCount(provider.missing)} missing`);
+    if (provider.timeouts > 0) {
+        const count = formatCount(provider.timeouts);
+        parts.push(`${count} ${provider.timeouts === 1 ? "no response" : "no responses"}`);
+    }
+    if (provider.errors > 0) {
+        const count = formatCount(provider.errors);
+        parts.push(`${count} ${provider.errors === 1 ? "error" : "errors"}`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
 export function deriveFailurePhase(prepStats?: WatchdogPrepStats | null): string | null {

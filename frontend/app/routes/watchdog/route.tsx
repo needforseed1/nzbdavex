@@ -15,6 +15,7 @@ import {
 } from "~/components/provider-summary/provider-summary";
 import {
     deriveFailurePhase,
+    formatPrepFailures,
     selectFailedDetailsAttempt,
     summarizeFailure,
 } from "./watchdog-failure";
@@ -663,14 +664,6 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
 
 function formatCount(value: number): string {
     return Math.max(0, value).toLocaleString();
-}
-
-function formatPrepFailures(provider: WatchdogPrepStats["providers"][number]): string {
-    const parts: string[] = [];
-    if (provider.missing > 0) parts.push(`${formatCount(provider.missing)} missing`);
-    if (provider.timeouts > 0) parts.push(`${formatCount(provider.timeouts)} timeout`);
-    if (provider.errors > 0) parts.push(`${formatCount(provider.errors)} error`);
-    return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
 function groupByClick(list: WatchdogEntry[]): ClickGroup[] {

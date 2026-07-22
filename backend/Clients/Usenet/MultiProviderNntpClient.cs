@@ -498,7 +498,10 @@ public class MultiProviderNntpClient(
     )
     {
         return RunFromPoolWithBackup(
-            (x, attemptToken) => x.DecodedArticleAsync(segmentId, attemptToken), cancellationToken);
+            (x, attemptToken) => x.DecodedArticleAsync(segmentId, attemptToken),
+            cancellationToken,
+            prepFallbackProbe: (x, attemptToken) =>
+                VerifyArticleExistsAsync(x, segmentId, attemptToken));
     }
 
     public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
@@ -558,7 +561,9 @@ public class MultiProviderNntpClient(
         {
             result = await RunFromPoolWithBackup(
                 (x, attemptToken) => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, attemptToken),
-                cancellationToken
+                cancellationToken,
+                prepFallbackProbe: (x, attemptToken) =>
+                    VerifyArticleExistsAsync(x, segmentId, attemptToken)
             ).ConfigureAwait(false);
         }
         catch
@@ -583,7 +588,8 @@ public class MultiProviderNntpClient(
     (
         Func<INntpClient, CancellationToken, Task<T>> task,
         CancellationToken cancellationToken,
-        bool statOperation = false
+        bool statOperation = false,
+        Func<INntpClient, CancellationToken, Task>? prepFallbackProbe = null
     ) where T : UsenetResponse
     {
         var attribution = AttributionContext.Value;
@@ -591,7 +597,8 @@ public class MultiProviderNntpClient(
         ExceptionDispatchInfo? lastException = null;
         List<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses = null;
         var attemptedProviders = 0;
-        var providerUnavailable = false;
+        var providerCheckIncomplete = false;
+        var prepFallback = cancellationToken.GetContext<PrepFallbackContext>();
         var orderedProviders = statOperation
             ? SelectOrderedProvidersForStat(cancellationToken, out var reserved)
             : SelectOrderedProviders(cancellationToken, out reserved);
@@ -601,13 +608,40 @@ public class MultiProviderNntpClient(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
-            if (remainingOperationTime <= TimeSpan.Zero)
+            if (prepFallback is null && remainingOperationTime <= TimeSpan.Zero)
             {
-                providerUnavailable = true;
+                providerCheckIncomplete = true;
                 break;
             }
             var provider = orderedProviders[i];
             var isLastProvider = i == orderedProviders.Count - 1;
+            PrepFallbackContext.PrepFallbackLease? fallbackAdmission = null;
+
+            if (prepFallback is not null && i > 0)
+            {
+                try
+                {
+                    fallbackAdmission = await prepFallback.EnterAsync(
+                        provider, cancellationToken).ConfigureAwait(false);
+                    if (fallbackAdmission is null)
+                    {
+                        providerCheckIncomplete = true;
+                        lastException ??= ExceptionDispatchInfo.Capture(new TimeoutException(
+                            $"Provider {provider.Host} was skipped after an earlier " +
+                            $"fallback attempt failed during this preparation run."));
+                        continue;
+                    }
+                }
+                catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
+                {
+                    providerCheckIncomplete = true;
+                    lastException = ExceptionDispatchInfo.Capture(new TimeoutException(
+                        $"Preparation was cancelled before provider {provider.Host} " +
+                        "could be attempted.", e));
+                    break;
+                }
+            }
+
             attemptedProviders++;
 
             if (lastException is not null)
@@ -616,25 +650,77 @@ public class MultiProviderNntpClient(
                 Log.Debug($"Encountered error during NNTP Operation: `{msg}`. Trying another provider.");
             }
 
-            var stopwatch = Stopwatch.StartNew();
-            var maximumAttemptTime = isLastProvider
+            var phaseSplitFallback = fallbackAdmission is not null;
+            var providerStopwatch = Stopwatch.StartNew();
+            remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
+            var maximumAttemptTime = prepFallback is not null
+                ? ProviderAttemptTimeout
+                : isLastProvider
                 ? ProviderOperationTimeout
                 : ProviderAttemptTimeout;
-            var attemptTimeout = maximumAttemptTime < remainingOperationTime
+            var attemptTimeout = prepFallback is not null
+                ? maximumAttemptTime
+                : maximumAttemptTime < remainingOperationTime
                 ? maximumAttemptTime
                 : remainingOperationTime;
-            var attemptCts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var attemptCts =
+                ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var attemptLifetimeTransferred = false;
-            attemptCts.CancelAfter(attemptTimeout);
+            if (phaseSplitFallback)
+            {
+                attemptCts.SetContext(new ProviderAttemptContext(
+                    attemptTimeout,
+                    attemptTimeout,
+                    () => attemptCts.CancelAfter(attemptTimeout)));
+            }
+            else
+                attemptCts.CancelAfter(attemptTimeout);
+            CancellationTokenRegistration hostFailureRegistration = default;
+            if (phaseSplitFallback)
+            {
+                hostFailureRegistration = fallbackAdmission!.HostFailureToken.Register(() =>
+                {
+                    try
+                    {
+                        attemptCts.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // The response won the race and detached from host-level
+                        // fail-fast cancellation before the callback ran.
+                    }
+                });
+            }
+            var checkingPrepAvailability =
+                phaseSplitFallback && prepFallbackProbe is not null;
             try
             {
+                if (checkingPrepAvailability)
+                {
+                    await prepFallbackProbe!(provider, attemptCts.Token)
+                        .ConfigureAwait(false);
+                    checkingPrepAvailability = false;
+                    // STAT and ARTICLE are independent NNTP commands. Stop
+                    // STAT's command timer before ARTICLE waits for its own
+                    // connection; MultiConnection arms a fresh command
+                    // window after that connection has been acquired.
+                    attemptCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                }
+
                 var result = await task.Invoke(provider, attemptCts.Token).ConfigureAwait(false);
-                stopwatch.Stop();
+                providerStopwatch.Stop();
+                // Once ARTICLE/BODY has returned a stream, do not let a timeout
+                // on another lane abort this successfully-started body. Its own
+                // caller/operation cancellation still remains linked.
+                hostFailureRegistration.Dispose();
+                if (phaseSplitFallback)
+                    prepFallback!.MarkResponsive(provider);
 
                 // if no article with that message-id is found, try again with the next provider.
                 if (!isLastProvider && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
                 {
-                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
+                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing,
+                        providerStopwatch.ElapsedMilliseconds, i);
                     (priorMisses ??= new()).Add((provider.Id, SegmentFetch.FetchStatus.Missing));
                     continue;
                 }
@@ -650,7 +736,8 @@ public class MultiProviderNntpClient(
                                           or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
                 {
                     usageTracker.RecordSuccess(provider.Id);
-                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Ok, stopwatch.ElapsedMilliseconds, i);
+                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Ok,
+                        providerStopwatch.ElapsedMilliseconds, i);
                     if (i > 0)
                     {
                         usageTracker.RecordFailoverSave();
@@ -660,56 +747,92 @@ public class MultiProviderNntpClient(
                 }
                 else
                 {
-                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing, stopwatch.ElapsedMilliseconds, i);
+                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing,
+                        providerStopwatch.ElapsedMilliseconds, i);
                 }
 
                 result = PreserveCallerCancellationForStreamingResult(
-                    result, attemptCts, out attemptLifetimeTransferred);
+                    result, attemptCts, fallbackAdmission, out attemptLifetimeTransferred);
+                if (attemptLifetimeTransferred) fallbackAdmission = null;
                 return result;
             }
             catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
             {
-                stopwatch.Stop();
-                providerUnavailable = true;
+                providerStopwatch.Stop();
+                providerCheckIncomplete = true;
+                var operationDescription = checkingPrepAvailability
+                    ? "preparation availability check"
+                    : prepFallback is not null
+                        ? "preparation article request"
+                        : "NNTP operation";
                 var providerTimeout = new TimeoutException(
-                    $"Provider {provider.Host} did not become usable within " +
+                    $"Provider {provider.Host} did not answer the {operationDescription} within " +
                     $"{attemptTimeout.TotalSeconds:0.#} seconds.", e);
-                RecordFetch(provider.Id, SegmentFetch.FetchStatus.Timeout, stopwatch.ElapsedMilliseconds, i);
+                RecordFetch(provider.Id, SegmentFetch.FetchStatus.Timeout,
+                    providerStopwatch.ElapsedMilliseconds, i);
                 (priorMisses ??= new()).Add((provider.Id, SegmentFetch.FetchStatus.Timeout));
                 lastException = ExceptionDispatchInfo.Capture(providerTimeout);
                 Log.Debug(providerTimeout,
-                    "Timed out waiting for NNTP provider {Provider}; trying another provider.",
+                    "{Operation} received no response from NNTP provider {Provider}; " +
+                    "discarding that connection and trying another provider.",
+                    operationDescription,
                     provider.Host);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
-                stopwatch.Stop();
+                providerStopwatch.Stop();
                 var reason = ClassifyException(e);
-                if (reason != SegmentFetch.FetchStatus.Missing)
-                    providerUnavailable = true;
-                RecordFetch(provider.Id, reason, stopwatch.ElapsedMilliseconds, i);
+                if (reason == SegmentFetch.FetchStatus.Missing)
+                {
+                    if (phaseSplitFallback)
+                        prepFallback!.MarkResponsive(provider);
+                }
+                else
+                {
+                    providerCheckIncomplete = true;
+                    if (phaseSplitFallback && !prepFallback!.MarkUnavailable(provider))
+                    {
+                        lastException = ExceptionDispatchInfo.Capture(e);
+                        continue;
+                    }
+                }
+                RecordFetch(provider.Id, reason, providerStopwatch.ElapsedMilliseconds, i);
                 (priorMisses ??= new()).Add((provider.Id, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
             finally
             {
+                hostFailureRegistration.Dispose();
                 if (!attemptLifetimeTransferred) attemptCts.Dispose();
+                fallbackAdmission?.Dispose();
             }
+
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (providerUnavailable || attemptedProviders < orderedProviders.Count)
+        if (providerCheckIncomplete || attemptedProviders < orderedProviders.Count)
         {
             var cause = lastException?.SourceException ?? new TimeoutException(
-                "The provider operation deadline expired before every provider was consulted.");
+                "One or more provider checks did not complete.");
             throw new CouldNotConnectToUsenetException(
-                "Article availability could not be verified because one or more " +
-                "Usenet providers were unavailable.",
+                "Article availability remains unverified because one or more " +
+                "provider checks returned no result.",
                 cause);
         }
 
         lastException?.Throw();
         throw new Exception("There are no usenet providers configured.");
+    }
+
+    private static async Task VerifyArticleExistsAsync(
+        INntpClient provider,
+        SegmentId segmentId,
+        CancellationToken cancellationToken)
+    {
+        var response = await provider.StatAsync(segmentId, cancellationToken)
+            .ConfigureAwait(false);
+        if (!response.ArticleExists)
+            throw new UsenetArticleNotFoundException(segmentId);
     }
 
     private void RecordFetch(string host, SegmentFetch.FetchStatus status, long durationMs, int retries)
@@ -770,6 +893,7 @@ public class MultiProviderNntpClient(
     private static T PreserveCallerCancellationForStreamingResult<T>(
         T result,
         ContextualCancellationTokenSource attemptCts,
+        IDisposable? accompanyingLifetime,
         out bool lifetimeTransferred) where T : UsenetResponse
     {
         lifetimeTransferred = false;
@@ -780,19 +904,40 @@ public class MultiProviderNntpClient(
                 lifetimeTransferred = true;
                 return (T)(object)(body with
                 {
-                    Stream = new LifetimeYencStream(body.Stream, attemptCts),
+                    Stream = new LifetimeYencStream(
+                        body.Stream,
+                        CombineLifetimes(attemptCts, accompanyingLifetime)),
                 });
             case UsenetDecodedArticleResponse article when article.Stream is not null:
                 attemptCts.CancelAfter(Timeout.InfiniteTimeSpan);
                 lifetimeTransferred = true;
                 return (T)(object)(article with
                 {
-                    Stream = new LifetimeYencStream(article.Stream, attemptCts),
+                    Stream = new LifetimeYencStream(
+                        article.Stream,
+                        CombineLifetimes(attemptCts, accompanyingLifetime)),
                 });
             default:
                 return result;
         }
     }
+
+    private static IDisposable CombineLifetimes(
+        ContextualCancellationTokenSource attemptCts,
+        IDisposable? accompanyingLifetime) =>
+        accompanyingLifetime is null
+            ? attemptCts
+            : new ScopeReleaser(() =>
+            {
+                try
+                {
+                    attemptCts.Dispose();
+                }
+                finally
+                {
+                    accompanyingLifetime.Dispose();
+                }
+            });
 
     private static SegmentFetch.FetchStatus ClassifyException(Exception ex)
     {
