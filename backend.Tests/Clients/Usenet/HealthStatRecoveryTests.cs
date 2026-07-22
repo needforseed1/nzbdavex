@@ -129,10 +129,16 @@ public class HealthStatRecoveryTests
             providerOperationTimeout: TimeSpan.FromMilliseconds(150));
 
         var timer = System.Diagnostics.Stopwatch.StartNew();
-        await Assert.ThrowsAsync<TimeoutException>(() => CollectAsync(
-                client.StatsPipelinedAsync(["a"], 1, CancellationToken.None))
-            .WaitAsync(TimeSpan.FromSeconds(10)));
+        // A batch that exhausts both the primary walk and the gated recovery
+        // pass fails as provider unavailability — explicitly not as a missing
+        // article — with the underlying timeout preserved for diagnostics.
+        var exception = await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleUnverifiableException>(
+            () => CollectAsync(
+                    client.StatsPipelinedAsync(["a"], 1, CancellationToken.None))
+                .WaitAsync(TimeSpan.FromSeconds(10)));
         Assert.True(timer.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.Contains("dead", exception.UnavailableProviders);
+        Assert.IsType<TimeoutException>(exception.InnerException);
     }
 
     [Fact]

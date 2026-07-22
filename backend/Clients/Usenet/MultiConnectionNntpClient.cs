@@ -78,6 +78,11 @@ public class MultiConnectionNntpClient(
     public Task PrewarmAsync(int targetConnections, CancellationToken cancellationToken) =>
         connectionPool.PrewarmAsync(targetConnections, cancellationToken);
 
+    internal Task PrewarmForDemandAsync(
+        int targetConnections,
+        CancellationToken cancellationToken) =>
+        connectionPool.PrewarmForDemandAsync(targetConnections, cancellationToken);
+
     public Task RefreshWarmConnectionsAsync(
         int count, int maxConcurrency, CancellationToken cancellationToken) =>
         connectionPool.RefreshWarmConnectionsAsync(count, maxConcurrency, cancellationToken);
@@ -279,6 +284,7 @@ public class MultiConnectionNntpClient(
         if (!circuitBreaker.TryBeginAttempt(out var halfOpenProbe))
             throw new ProviderCircuitOpenException(Host);
 
+        var attempt = ct.GetContext<ProviderAttemptContext>();
         try
         {
             while (retryCount >= 0)
@@ -289,7 +295,9 @@ public class MultiConnectionNntpClient(
                 ArticleBodyResult? deferredConnectionResult = null;
                 try
                 {
-                    connectionLock = await connectionPool.GetConnectionLockAsync(priority, ct).ConfigureAwait(false);
+                    connectionLock = await AcquireProviderConnectionAsync(
+                        priority, attempt, ct).ConfigureAwait(false);
+                    attempt?.ArmCommandTimeout?.Invoke();
                 }
                 catch (Exception e) when (e.IsCancellationException())
                 {
@@ -299,7 +307,8 @@ public class MultiConnectionNntpClient(
                 }
                 catch (Exception e)
                 {
-                    if (!e.TryGetCausingException(out UsenetConnectionLimitException _))
+                    if (e is not ConnectionAcquisitionTimeoutException &&
+                        !e.TryGetCausingException(out UsenetConnectionLimitException _))
                         circuitBreaker.RecordFailure(halfOpenProbe);
                     LogException(() => connectionLock?.Replace());
                     LogException(() => connectionLock?.Dispose());
@@ -475,7 +484,7 @@ public class MultiConnectionNntpClient(
         var attempt = cancellationToken.GetContext<ProviderAttemptContext>();
         try
         {
-            var connectionLock = await AcquirePipelinedConnectionAsync(
+            var connectionLock = await AcquireProviderConnectionAsync(
                 priority, attempt, cancellationToken).ConfigureAwait(false);
             var completed = false;
             var received = 0;
@@ -549,7 +558,7 @@ public class MultiConnectionNntpClient(
         }
     }
 
-    private async Task<ConnectionLock<INntpClient>> AcquirePipelinedConnectionAsync(
+    private async Task<ConnectionLock<INntpClient>> AcquireProviderConnectionAsync(
         SemaphorePriority priority,
         ProviderAttemptContext? attempt,
         CancellationToken cancellationToken)
@@ -569,11 +578,15 @@ public class MultiConnectionNntpClient(
         catch (OperationCanceledException e) when (
             acquisitionCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException(
+            throw new ConnectionAcquisitionTimeoutException(
                 $"Provider {Host} had no usable connection within " +
                 $"{attempt.AcquisitionTimeout.TotalSeconds:0.#} seconds.", e);
         }
     }
+
+    private sealed class ConnectionAcquisitionTimeoutException(
+        string message,
+        Exception innerException) : TimeoutException(message, innerException);
 
     private static SemaphorePriority GetDownloadPriority(CancellationToken ct)
     {

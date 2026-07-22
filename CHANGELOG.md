@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.3.16](https://github.com/needforseed1/nzbdavex/compare/v1.3.15...v1.3.16) (2026-07-22)
+
+This release replaces the fragile preparation and health-check fallback behavior in 1.3.15 with bounded, evidence-based provider routing. Normal complete releases retain the fast parallel path, while incomplete releases can consult backup providers without leaving queue work pinned indefinitely or treating an unavailable provider as proof that an article is missing.
+
+### Fixes
+
+* Bulk health checks now distribute primary lanes using established usable connections, keep failed probes out of normal batch chains, and let cold providers join after a successful late probe. Deferred checks refresh their warm capacity before starting, and foreground demand can continue growing beyond the initial ready-connection floor.
+* Article verdicts now distinguish **confirmed missing** from **temporarily unverifiable**. Missing is reported only after every eligible provider answers; unavailable providers produce a bounded retryable result and cannot trigger an incorrect repair or poison the missing-article cache.
+* Unresolved health batches receive one coordinated, time-bounded recovery pass. Cold plain Backup providers enter that pass directly instead of first burning a normal lane timeout, and their answers are included accurately in Watchdog provider statistics.
+* First-segment preparation now uses one bounded provider pass with per-host backup admission, availability probing, and separate connection-acquisition and NNTP-command deadlines. Missing articles fail clearly, provider outages remain distinguishable, and a bad NZB no longer cycles indefinitely in the queue.
+* The confirmed-missing cache now expires entries after six hours, caps itself at 100,000 segments, and still clears immediately when provider configuration changes.
+
+### Improvements
+
+* Queue rows show a restrained live notice only while preparation or health checking is actively consulting fallback providers. Completed recovery and failure details remain in the persistent Watchdog report.
+* Watchdog records the full overlapped health runtime separately from the time health checking blocks after preparation. Compact cards show **Prep**, blocking **Health**, and their press-to-play **Total**; expanded statistics retain both health measurements and detailed preparation attempts, misses, unanswered checks, work time, and data use per provider.
+* Existing providers can be saved without opening a test connection when their host, port, SSL mode, username, and password are unchanged. **Test Connection** remains available as a separate action and is still required for new or changed connection details.
+
+### Notes
+
+* A backup-heavy or genuinely incomplete NZB can take longer than a complete release because nzbdavex deliberately asks additional eligible providers before declaring an article missing. That search is bounded and its active fallback state is visible in the queue.
+* A queue item can remain visible at 100% briefly after health checking finishes while nzbdavex creates WebDAV mount metadata and saves the import to its database. This local import phase is not a stalled provider health check.
+
 ## [1.3.15](https://github.com/needforseed1/nzbdavex/compare/v1.3.14...v1.3.15) (2026-07-19)
 
 ### Fixes

@@ -15,9 +15,11 @@ import {
 } from "~/components/provider-summary/provider-summary";
 import {
     deriveFailurePhase,
+    formatPrepFailures,
     selectFailedDetailsAttempt,
     summarizeFailure,
 } from "./watchdog-failure";
+import { selectHealthSummaryTiming, selectTotalSummaryTiming } from "./watchdog-timing";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -191,6 +193,14 @@ function ClickCard({ group }: { group: ClickGroup }) {
     const failedAttempt = !winner && group.allResolved ? selectFailedDetailsAttempt(group.attempts) : undefined;
     const detailsAttempt = winner ?? failedAttempt;
     const showingFailure = detailsAttempt != null && !detailsAttempt.isWinner;
+    const healthSummary = detailsAttempt == null
+        ? null
+        : selectHealthSummaryTiming(
+            detailsAttempt.healthDurationMs,
+            detailsAttempt.healthWaitDurationMs);
+    const totalSummaryDurationMs = selectTotalSummaryTiming(
+        detailsAttempt?.prepDurationMs,
+        healthSummary);
 
     return (
         <div className={styles.clickCard}>
@@ -219,17 +229,18 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     title="Show run statistics">
                     <span>{showingFailure ? "Failed via " : "Resolved via "}<span className={styles.winnerIndexer}>{detailsAttempt.indexerName}</span></span>
                     <span className={styles.timingBoxes}>
-                        {detailsAttempt.prepDurationMs != null || detailsAttempt.healthDurationMs != null ? <>
+                        {detailsAttempt.prepDurationMs != null &&
                             <TimingBox label="Prep" value={formatDuration(detailsAttempt.prepDurationMs)} />
+                        }
+                        {healthSummary &&
                             <TimingBox
-                                label="Health"
-                                value={detailsAttempt.healthDurationMs != null
-                                    ? formatDuration(detailsAttempt.healthDurationMs)
-                                    : "Not run"}
+                                label={healthSummary.label}
+                                value={formatDuration(healthSummary.durationMs)}
                             />
-                        </> : (
-                            <TimingBox label="Total" value={formatDuration(detailsAttempt.durationMs)} />
-                        )}
+                        }
+                        {totalSummaryDurationMs != null &&
+                            <TimingBox label="Total" value={formatDuration(totalSummaryDurationMs)} />
+                        }
                     </span>
                     {detailsAttempt.size > 0 && <>
                         <span className={styles.winnerDot}>·</span>
@@ -248,6 +259,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         prepStats={detailsAttempt.prepStats}
                         healthStats={detailsAttempt.healthStats}
                         healthDurationMs={detailsAttempt.healthDurationMs}
+                        healthWaitDurationMs={detailsAttempt.healthWaitDurationMs}
                         failReason={showingFailure ? detailsAttempt.failReason : null}
                         failed={showingFailure}
                         providerHost={detailsAttempt.providerHost}
@@ -305,7 +317,6 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             <div className={styles.attemptCardTitle} title={a.candidateTitle}>{a.candidateTitle || "—"}</div>
                             <div className={styles.attemptCardMeta}>
                                 <span className={styles.attemptCardProvider}>
-                                    <span aria-hidden="true">📡</span>
                                     <WatchdogProviderSummary
                                         providerHost={a.providerHost}
                                         providerNickname={a.providerNickname}
@@ -330,6 +341,7 @@ function RunStats({
     prepStats,
     healthStats,
     healthDurationMs,
+    healthWaitDurationMs,
     failReason,
     failed,
     providerHost,
@@ -339,6 +351,7 @@ function RunStats({
     prepStats?: WatchdogPrepStats | null,
     healthStats?: WatchdogHealthStats | null,
     healthDurationMs?: number | null,
+    healthWaitDurationMs?: number | null,
     failReason?: string | null,
     failed: boolean,
     providerHost?: string | null,
@@ -396,8 +409,11 @@ function RunStats({
                     <div className={styles.prepProviderList}>
                         <div className={styles.prepProviderHeader}>
                             <span>First-segment provider</span>
-                            <span>Articles</span>
                             <span>Downloaded</span>
+                            <span>Attempts</span>
+                            <span>Failed</span>
+                            <span>Work</span>
+                            <span>Data</span>
                             <span>Share</span>
                         </div>
                         {prepStats.providers.map(provider => {
@@ -411,10 +427,19 @@ function RunStats({
                                         <span className={styles.healthProviderName}>{label}</span>
                                         <span className={styles.healthProviderHost}>{provider.host}</span>
                                     </span>
-                                    <span className={styles.prepProviderCell} data-label="Articles">
+                                    <span className={styles.prepProviderCell} data-label="Downloaded">
                                         {formatCount(provider.articles)}
                                     </span>
-                                    <span className={styles.prepProviderCell} data-label="Downloaded">
+                                    <span className={styles.prepProviderCell} data-label="Attempts">
+                                        {formatCount(provider.attempts)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Failed">
+                                        {formatPrepFailures(provider)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Work">
+                                        {formatDuration(provider.workMs)}
+                                    </span>
+                                    <span className={styles.prepProviderCell} data-label="Data">
                                         {formatBytes(provider.bytes)}
                                     </span>
                                     <span className={styles.prepProviderCell} data-label="Share">{share}%</span>
@@ -438,7 +463,10 @@ function RunStats({
                             {outcomeKnown && (missingArticles === 0
                                 ? " · complete"
                                 : ` · ${formatCount(missingArticles)} unavailable`)}
-                            {healthDurationMs != null ? ` · ${formatDuration(healthDurationMs)}` : ""}
+                            {healthDurationMs != null ? ` · ${formatDuration(healthDurationMs)} total` : ""}
+                            {healthWaitDurationMs != null
+                                ? ` · ${formatDuration(healthWaitDurationMs)} after prep`
+                                : ""}
                             {healthRate != null ? ` · ${formatCount(healthRate)}/s` : ""}
                         </span>
                     )}
@@ -642,6 +670,7 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
         if (x.durationMs !== y.durationMs) return false;
         if (x.prepDurationMs !== y.prepDurationMs) return false;
         if (x.healthDurationMs !== y.healthDurationMs) return false;
+        if (x.healthWaitDurationMs !== y.healthWaitDurationMs) return false;
         if (JSON.stringify(x.prepStats) !== JSON.stringify(y.prepStats)) return false;
         if (JSON.stringify(x.healthStats) !== JSON.stringify(y.healthStats)) return false;
         if (x.size !== y.size) return false;

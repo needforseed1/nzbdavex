@@ -48,6 +48,7 @@ public partial class GetWatchdogEntriesController(
             DurationMs = a.DurationMs,
             PrepDurationMs = a.PrepDurationMs,
             HealthDurationMs = a.HealthDurationMs,
+            HealthWaitDurationMs = a.HealthWaitDurationMs,
             PrepStats = BuildPrepStats(a.PrepStatsJson, providersById),
             HealthStats = BuildHealthStats(a.HealthStatsJson, providersById),
             IsWinner = a.IsWinner,
@@ -100,6 +101,11 @@ public partial class GetWatchdogEntriesController(
                     Nickname = configured?.Nickname,
                     Articles = stat.Articles,
                     Bytes = stat.Bytes,
+                    Attempts = stat.Attempts,
+                    Missing = stat.Missing,
+                    Timeouts = stat.Timeouts,
+                    Errors = stat.Errors,
+                    WorkMs = stat.WorkMs,
                 };
             }).OrderByDescending(x => x.Articles).ThenBy(x => x.Nickname ?? x.Host).ToList(),
         };

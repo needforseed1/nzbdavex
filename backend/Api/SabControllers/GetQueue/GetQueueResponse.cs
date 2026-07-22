@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.SabControllers.GetQueue;
 
@@ -63,6 +64,9 @@ public class GetQueueResponse : SabBaseResponse
         [JsonPropertyName("providers")]
         public List<ProviderUsage>? Providers { get; init; }
 
+        [JsonPropertyName("recovery_notice")]
+        public QueueRecoveryNotice? RecoveryNotice { get; init; }
+
         public static QueueSlot FromQueueItem
         (
             QueueItem queueItem,
@@ -70,7 +74,8 @@ public class GetQueueResponse : SabBaseResponse
             int progressPercentage = 0,
             string status = "Queued",
             IReadOnlyDictionary<string, long>? providerUsage = null,
-            IReadOnlyDictionary<string, string?>? nicknamesByHost = null
+            IReadOnlyDictionary<string, string?>? nicknamesByHost = null,
+            QueueRecoveryNotice? recoveryNotice = null
         )
         {
             var visibleProgress = Math.Clamp(progressPercentage, 0, 100);
@@ -100,6 +105,7 @@ public class GetQueueResponse : SabBaseResponse
                         })
                         .ToList()
                     : null,
+                RecoveryNotice = recoveryNotice,
             };
         }
 

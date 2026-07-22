@@ -51,7 +51,10 @@ public class GetQueueController(
                 var status = isInProgress ? "Downloading" : "Queued";
                 var providerUsage = ProviderUsageTracker.ToDisplayHosts(
                     providerUsageTracker.Snapshot(queueItem!.Id), configuredProviders);
-                return GetQueueResponse.QueueSlot.FromQueueItem(queueItem!, index, percentage, status, providerUsage, nicknamesByHost);
+                var recoveryNotice = providerUsageTracker.SnapshotRecoveryNotice(queueItem.Id);
+                return GetQueueResponse.QueueSlot.FromQueueItem(
+                    queueItem, index, percentage, status, providerUsage, nicknamesByHost,
+                    recoveryNotice);
             })
             .ToList();
 

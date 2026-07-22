@@ -191,6 +191,35 @@
     gap: 10px;
 }
 
+.statusWithNotice {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    max-width: 180px;
+}
+
+.recoveryNotice {
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 500;
+    line-height: 1.25;
+    text-align: center;
+    white-space: normal;
+}
+
+.recoveryNotice::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    margin-right: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+    vertical-align: 1px;
+}
+
 /* desktop */
 @media (min-width: 900px) {
     .mobile {

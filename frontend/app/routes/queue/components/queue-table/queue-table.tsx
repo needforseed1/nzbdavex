@@ -228,6 +228,7 @@ export const QueueRow = memo(({ slot, onIsSelectedChanged, onIsRemovingChanged, 
                 error={slot.error}
                 indexer={slot.indexer}
                 providers={slot.providers}
+                recoveryNotice={slot.recovery_notice}
             />
             <ConfirmModal
                 show={isConfirmingRemoval}

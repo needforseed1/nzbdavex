@@ -1,6 +1,7 @@
 // ReSharper disable InconsistentNaming
 
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -13,19 +14,35 @@ namespace NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 
 public static class FetchFirstSegmentsStep
 {
-    // One failed first-segment fetch must not force the entire prep step (and
-    // every already-completed fetch) to rerun. Each file gets a small number of
-    // bounded in-place retries; every attempt already walks all providers.
-    private const int MaxFetchAttemptsPerFile = 3;
-    private static readonly TimeSpan[] FetchRetryDelays =
-        [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(2)];
+    // First-segment ARTICLE reads consume only the metadata prefix, while the
+    // remaining article body is drained in the background before its socket is
+    // reusable. Bound the job-wide fan-out so those drains do not turn a cold
+    // pool into a connection and bandwidth burst.
+    private const int MaxConcurrentFirstSegmentFetches = 64;
+    private static readonly TimeSpan FirstSegmentPrepRunTimeout = TimeSpan.FromSeconds(90);
 
-    public static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
+    public static Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
     (
         List<NzbFile> nzbFiles,
         INntpClient usenetClient,
         ConfigManager configManager,
         CancellationToken cancellationToken,
+        IProgress<int>? progress = null
+    ) => FetchFirstSegments(
+        nzbFiles,
+        usenetClient,
+        configManager,
+        cancellationToken,
+        FirstSegmentPrepRunTimeout,
+        progress);
+
+    internal static async Task<List<NzbFileWithFirstSegment>> FetchFirstSegments
+    (
+        List<NzbFile> nzbFiles,
+        INntpClient usenetClient,
+        ConfigManager configManager,
+        CancellationToken cancellationToken,
+        TimeSpan prepRunTimeout,
         IProgress<int>? progress = null
     )
     {
@@ -33,11 +50,32 @@ public static class FetchFirstSegmentsStep
         var probeClient = usenetClient is ArticleCachingNntpClient cachingClient
             ? cachingClient.FirstSegmentProbeClient
             : usenetClient;
-        return await files
-            .Select(x => FetchFirstSegment(x, probeClient, cancellationToken))
-            .WithConcurrencyAsync(configManager.GetMaxQueueConnections() + 5)
-            .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+        var concurrency = ResolveConcurrency(files.Count, configManager.GetMaxQueueConnections());
+        using var prepCts =
+            ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        prepCts.CancelAfter(prepRunTimeout);
+        using var fallbackContext = new PrepFallbackContext();
+        prepCts.SetContext(fallbackContext);
+        try
+        {
+            return await files
+                .Select(x => FetchFirstSegment(x, probeClient, prepCts.Token))
+                .WithConcurrencyAsync(concurrency, drainOnFailure: true)
+                .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new RetryableDownloadException(
+                $"Preparation stopped after {prepRunTimeout.TotalSeconds:0} seconds " +
+                "while checking first segments; provider work did not finish in time.",
+                e);
+        }
     }
+
+    internal static int ResolveConcurrency(int fileCount, int configuredConnections) =>
+        Math.Max(1, Math.Min(
+            fileCount,
+            Math.Min(MaxConcurrentFirstSegmentFetches, configuredConnections + 5)));
 
     private static NzbFileWithFirstSegment BuildMissingFirstSegment(NzbFile nzbFile) => new()
     {
@@ -63,25 +101,25 @@ public static class FetchFirstSegmentsStep
         if (Par2.IsRecoveryVolumeFileName(nzbFile.GetSubjectFileName()))
             return BuildMissingFirstSegment(nzbFile);
 
-        for (var attempt = 1;; attempt++)
+        try
         {
-            try
-            {
-                return await FetchFirstSegmentOnce(nzbFile, usenetClient, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception e) when (
-                attempt < MaxFetchAttemptsPerFile &&
-                !e.IsCancellationException() &&
-                e.IsRetryableDownloadException())
-            {
-                Log.Warning(
-                    "First-segment fetch failed for `{Subject}` " +
-                    "(attempt {Attempt}/{MaxAttempts}); retrying this file only -- {Error}",
-                    nzbFile.Subject, attempt, MaxFetchAttemptsPerFile, e.Message);
-                await Task.Delay(FetchRetryDelays[attempt - 1], cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            // A single attempt already walks the configured primary and backup
+            // provider chain. Repeating it here only duplicates the same burst
+            // and delays a useful Watchdog result when capacity is unavailable.
+            return await FetchFirstSegmentOnce(nzbFile, usenetClient, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (
+            !e.IsCancellationException() &&
+            e.IsRetryableDownloadException())
+        {
+            var firstSegment = nzbFile.Segments[0].MessageId;
+            var message =
+                $"Preparation could not verify required first segment `{firstSegment}` for " +
+                $"`{nzbFile.Subject}` after one provider pass: one or more provider " +
+                "checks returned no result.";
+            Log.Warning(e, "{Error}", message);
+            throw new RetryableDownloadException(message, e);
         }
     }
 
@@ -130,9 +168,14 @@ public static class FetchFirstSegmentsStep
                 ReleaseDate = article.ArticleHeaders!.Date
             };
         }
-        catch (UsenetArticleNotFoundException)
+        catch (UsenetArticleNotFoundException e)
         {
-            return BuildMissingFirstSegment(nzbFile);
+            var firstSegment = nzbFile.Segments[0].MessageId;
+            var message =
+                $"Preparation failed: required first segment `{firstSegment}` for " +
+                $"`{nzbFile.Subject}` is missing from every available Usenet provider.";
+            Log.Error(e, "{Error}", message);
+            throw new NonRetryableDownloadException(message, e);
         }
     }
 

@@ -409,6 +409,12 @@ export type QueueSlot = {
     mbleft: string,
     indexer?: string | null,
     providers?: ProviderUsage[] | null,
+    recovery_notice?: QueueRecoveryNotice | null,
+}
+
+export type QueueRecoveryNotice = {
+    phase: "prep" | "health",
+    count: number,
 }
 
 export type ProviderUsage = {
@@ -462,6 +468,7 @@ export type WatchdogEntry = {
     durationMs: number,
     prepDurationMs?: number | null,
     healthDurationMs?: number | null,
+    healthWaitDurationMs?: number | null,
     prepStats?: WatchdogPrepStats | null,
     healthStats?: WatchdogHealthStats | null,
     isWinner: boolean,
@@ -489,6 +496,11 @@ export type WatchdogPrepProvider = {
     nickname?: string | null,
     articles: number,
     bytes: number,
+    attempts: number,
+    missing: number,
+    timeouts: number,
+    errors: number,
+    workMs: number,
 }
 
 export type WatchdogHealthStats = {

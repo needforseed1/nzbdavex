@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 using UsenetSharp.Models;
@@ -13,49 +15,123 @@ namespace NzbWebDAV.Tests.Queue;
 
 public class FetchFirstSegmentsStepTests
 {
+    [Theory]
+    [InlineData(286, 150, 64)]
+    [InlineData(40, 150, 40)]
+    [InlineData(286, 32, 37)]
+    public void FirstSegmentConcurrencyAvoidsConfiguredCapacityStampede(
+        int files,
+        int configuredConnections,
+        int expected)
+    {
+        Assert.Equal(
+            expected,
+            FetchFirstSegmentsStep.ResolveConcurrency(files, configuredConnections));
+    }
+
     [Fact]
-    public async Task SingleTransientFailureRetriesOnlyThatFileNotTheCompletedOnes()
+    public async Task TransientProviderFailureIsNotRetriedDuringPreparation()
     {
         var files = Enumerable.Range(0, 5).Select(NzbFile).ToList();
         var client = new FlakyFirstSegmentClient(
             failuresBySegment: new() { ["file-3-segment"] = 1 });
 
-        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
-            files, client, new ConfigManager(), CancellationToken.None);
+        var error = await Assert.ThrowsAsync<RetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), CancellationToken.None));
 
-        Assert.Equal(5, results.Count);
-        Assert.All(results, result => Assert.False(result.MissingFirstSegment));
-        Assert.Equal(2, client.Attempts["file-3-segment"]);
-        foreach (var other in files.Where(x => x.Subject != "file-3"))
-            Assert.Equal(1, client.Attempts[other.Segments[0].MessageId]);
+        Assert.Equal(1, client.Attempts["file-3-segment"]);
+        Assert.Contains("after one provider pass", error.Message);
     }
 
     [Fact]
-    public async Task PersistentRetryableFailureStillFailsTheStepAfterBoundedAttempts()
+    public async Task PersistentProviderFailureRemainsDescribedAsUnverified()
     {
         var files = new List<NzbFile> { NzbFile(0) };
         var client = new FlakyFirstSegmentClient(
             failuresBySegment: new() { ["file-0-segment"] = int.MaxValue });
 
-        await Assert.ThrowsAsync<CouldNotConnectToUsenetException>(() =>
+        var error = await Assert.ThrowsAsync<RetryableDownloadException>(() =>
             FetchFirstSegmentsStep.FetchFirstSegments(
                 files, client, new ConfigManager(), CancellationToken.None));
 
-        Assert.Equal(3, client.Attempts["file-0-segment"]);
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.True(error.IsRetryableDownloadException());
+        Assert.False(error.IsNonRetryableDownloadException());
+        Assert.IsType<CouldNotConnectToUsenetException>(error.InnerException);
+        Assert.Contains("Preparation could not verify", error.Message);
+        Assert.Contains("file-0-segment", error.Message);
+        Assert.Contains("file-0", error.Message);
+        Assert.Contains("after one provider pass", error.Message);
+        Assert.Contains("provider checks returned no result", error.Message);
+        Assert.DoesNotContain("provider unavailable", error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task MissingArticleIsNotRetried()
+    public async Task CallerCancellationIsNotConvertedToPreparationFailure()
+    {
+        var files = new List<NzbFile> { NzbFile(0) };
+        var client = new FlakyFirstSegmentClient(
+            failuresBySegment: new() { ["file-0-segment"] = int.MaxValue });
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), cancellation.Token));
+
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+    }
+
+    [Fact]
+    public async Task FirstSegmentPrepRunDeadlineBecomesAReportedFailure()
+    {
+        var files = new List<NzbFile> { NzbFile(0) };
+        var client = new FlakyFirstSegmentClient(
+            stalledSegments: ["file-0-segment"]);
+
+        var error = await Assert.ThrowsAsync<RetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files,
+                client,
+                new ConfigManager(),
+                CancellationToken.None,
+                TimeSpan.FromMilliseconds(50)));
+
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.Contains("Preparation stopped after", error.Message);
+        Assert.Contains("provider work did not finish in time", error.Message);
+    }
+
+    [Fact]
+    public async Task ConfirmedMissingRequiredArticleFailsPreparationWithoutRetry()
     {
         var files = new List<NzbFile> { NzbFile(0) };
         var client = new FlakyFirstSegmentClient(
             missingSegments: ["file-0-segment"]);
 
-        var results = await FetchFirstSegmentsStep.FetchFirstSegments(
+        var error = await Assert.ThrowsAsync<NonRetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                files, client, new ConfigManager(), CancellationToken.None));
+
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.Contains("missing from every available Usenet provider", error.Message);
+    }
+
+    [Fact]
+    public async Task PreparationSharesOneFallbackAdmissionContextAcrossFirstSegments()
+    {
+        var files = Enumerable.Range(0, 3).Select(NzbFile).ToList();
+        var client = new FlakyFirstSegmentClient();
+
+        await FetchFirstSegmentsStep.FetchFirstSegments(
             files, client, new ConfigManager(), CancellationToken.None);
 
-        Assert.True(Assert.Single(results).MissingFirstSegment);
-        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        var contexts = client.FallbackContexts.ToArray();
+        Assert.Equal(3, contexts.Length);
+        Assert.DoesNotContain(contexts, context => context is null);
+        Assert.Single(contexts.Distinct(ReferenceEqualityComparer.Instance));
     }
 
     private static NzbFile NzbFile(int index)
@@ -71,21 +147,28 @@ public class FetchFirstSegmentsStepTests
 
     private sealed class FlakyFirstSegmentClient(
         Dictionary<string, int>? failuresBySegment = null,
-        IReadOnlyCollection<string>? missingSegments = null) : NntpClient
+        IReadOnlyCollection<string>? missingSegments = null,
+        IReadOnlyCollection<string>? stalledSegments = null) : NntpClient
     {
         private readonly ConcurrentDictionary<string, int> _remainingFailures =
             new(failuresBySegment ?? []);
 
         public ConcurrentDictionary<string, int> Attempts { get; } = new();
+        public ConcurrentBag<PrepFallbackContext?> FallbackContexts { get; } = [];
 
-        public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
+        public override async Task<UsenetDecodedArticleResponse> DecodedArticleAsync(
             SegmentId segmentId, CancellationToken cancellationToken)
         {
             var id = segmentId.ToString();
             Attempts.AddOrUpdate(id, 1, (_, previous) => previous + 1);
+            FallbackContexts.Add(cancellationToken.GetContext<PrepFallbackContext>());
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (missingSegments?.Contains(id) == true)
                 throw new UsenetArticleNotFoundException(id);
+
+            if (stalledSegments?.Contains(id) == true)
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 
             var shouldFail = false;
             _remainingFailures.AddOrUpdate(
@@ -103,14 +186,14 @@ public class FetchFirstSegmentsStepTests
 
             // A minimal valid yEnc body: bytes {1, 2, 3} encode to "+,-".
             var body = "=ybegin line=128 size=3 name=test\r\n+,-\r\n=yend size=3\r\n"u8.ToArray();
-            return Task.FromResult(new UsenetDecodedArticleResponse
+            return new UsenetDecodedArticleResponse
             {
                 SegmentId = segmentId,
                 ResponseCode = (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow,
                 ResponseMessage = "220 article follows",
                 ArticleHeaders = new UsenetArticleHeader { Headers = new Dictionary<string, string>() },
                 Stream = new YencStream(new MemoryStream(body)),
-            });
+            };
         }
 
         public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync(

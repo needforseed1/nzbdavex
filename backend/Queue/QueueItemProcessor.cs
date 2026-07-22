@@ -9,6 +9,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
@@ -36,22 +37,40 @@ public class QueueItemProcessor(
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
     ConcurrentDictionary<Guid, int> retryAttempts,
+    ConcurrentDictionary<Guid, int> unverifiableAttempts,
     Action firstSegmentsCompleted,
     CancellationToken ct
 )
 {
-    private const int MaxProviderRetryAttempts = 20;
+    // Retry a transient provider failure observed after preparation once, then
+    // fail into History/Watchdog. Preparation itself deliberately gets no
+    // whole-job retry because each first-segment attempt walks all providers.
+    private const int MaxProviderFailureAttempts = 2;
+    // Unverifiable results (providers unavailable, article presence unknown)
+    // get a much tighter bound than connection failures: one bounded retry,
+    // then fail into history/watchdog with an explicit unverifiable message.
+    // They must never cycle through the 20-attempt PauseUntil loop.
+    private const int MaxUnverifiableAttempts = 2;
+    private static readonly TimeSpan UnverifiableRetryBackoff = TimeSpan.FromSeconds(60);
     private const int HealthPrimeSegmentCount = 16;
     private static readonly TimeSpan HealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
     private int? _prepDurationMs;
     private int? _healthDurationMs;
+    private int? _healthWaitDurationMs;
+    private bool _preparationCompleted;
 
     private static TimeSpan GetProviderRetryBackoff(int attempt)
     {
         var seconds = Math.Min(60d, 10d * Math.Pow(2, attempt - 1));
         return TimeSpan.FromSeconds(seconds);
     }
+
+    internal static bool ShouldRetryWholeQueueItem(Exception exception, bool preparationCompleted) =>
+        preparationCompleted && exception.IsRetryableDownloadException();
+
+    internal static bool HasExhaustedProviderFailureBudget(int failureCount) =>
+        failureCount >= MaxProviderFailureAttempts;
 
     internal static bool ShouldDeferHealthCheck(int processorCount, int processorConcurrency)
     {
@@ -65,6 +84,11 @@ public class QueueItemProcessor(
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Downloading");
 
         using var providerScope = providerUsageTracker.BeginScope(queueItem.Id);
+        using var recoveryNoticeCapture = providerUsageTracker.BeginRecoveryNoticeCapture(notice =>
+            _ = websocketManager.SendMessage(
+                WebsocketTopic.QueueItemRecoveryNotice,
+                $"{queueItem.Id}|{(notice is null ? string.Empty : notice.ToJson())}"));
+        providerUsageTracker.ReportRecoveryNotice(null);
 
         // process the job
         try
@@ -80,14 +104,46 @@ public class QueueItemProcessor(
             dbClient.Ctx.ClearChangeTracker();
         }
 
-        catch (Exception e) when (e.IsRetryableDownloadException())
+        catch (UsenetArticleUnverifiableException e)
+        {
+            try
+            {
+                var attempt = unverifiableAttempts.AddOrUpdate(queueItem.Id, 1, (_, prev) => prev + 1);
+                if (attempt >= MaxUnverifiableAttempts)
+                {
+                    Log.Error(
+                        $"Giving up on `{queueItem.JobName}` after {attempt} unverifiable " +
+                        $"health checks -- {e.Message}");
+                    await MarkQueueItemCompleted(startTime, error: e.Message).ConfigureAwait(false);
+                    return;
+                }
+
+                Log.Warning(
+                    $"Health check for `{queueItem.JobName}` was unverifiable " +
+                    $"(attempt {attempt}/{MaxUnverifiableAttempts}); retrying in " +
+                    $"{UnverifiableRetryBackoff.TotalSeconds:0}s -- {e.Message}");
+                dbClient.Ctx.ClearChangeTracker();
+                queueItem.PauseUntil = DateTime.Now + UnverifiableRetryBackoff;
+                dbClient.Ctx.QueueItems.Attach(queueItem);
+                dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
+                await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
+                providerUsageTracker.ReportRecoveryNotice(null);
+                _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, ex.Message);
+            }
+        }
+
+        catch (Exception e) when (ShouldRetryWholeQueueItem(e, _preparationCompleted))
         {
             try
             {
                 var attempt = retryAttempts.AddOrUpdate(queueItem.Id, 1, (_, prev) => prev + 1);
-                if (attempt > MaxProviderRetryAttempts)
+                if (HasExhaustedProviderFailureBudget(attempt))
                 {
-                    Log.Error($"Giving up on `{queueItem.JobName}` after {attempt - 1} provider-connection " +
+                    Log.Error($"Giving up on `{queueItem.JobName}` after {attempt} provider-connection " +
                               $"failures -- {e.Message}");
                     await MarkQueueItemCompleted(startTime, error: e.Message).ConfigureAwait(false);
                     return;
@@ -95,12 +151,13 @@ public class QueueItemProcessor(
 
                 var backoff = GetProviderRetryBackoff(attempt);
                 Log.Warning($"Provider connection issue for `{queueItem.JobName}` " +
-                            $"(attempt {attempt}/{MaxProviderRetryAttempts}); retrying in {backoff.TotalSeconds:0}s -- {e.Message}");
+                            $"(attempt {attempt}/{MaxProviderFailureAttempts}); retrying in {backoff.TotalSeconds:0}s -- {e.Message}");
                 dbClient.Ctx.ClearChangeTracker();
                 queueItem.PauseUntil = DateTime.Now + backoff;
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
+                providerUsageTracker.ReportRecoveryNotice(null);
                 _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
             }
             catch (Exception ex)
@@ -192,16 +249,19 @@ public class QueueItemProcessor(
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
-        var prepConnections = Math.Min(nzbFiles.Count, configManager.GetMaxQueueConnections());
+        var prepConnections = FetchFirstSegmentsStep.ResolveConcurrency(
+            nzbFiles.Count, configManager.GetMaxQueueConnections());
         var queuedMs = Math.Max(0, (long)(DateTime.Now - queueItem.CreatedAt).TotalMilliseconds);
         var usageBeforeFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesBeforeFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
+        var attemptsBeforeFirstSegments = providerUsageTracker.SnapshotPrepAttempts(queueItem.Id);
         var failoversBeforeFirstSegments = providerUsageTracker.GetFailoverSaves(queueItem.Id);
         Log.Information(
             "queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files} connections={Connections} queuedMs={QueuedMs}",
             queueItem.Id, queueItem.JobName, nzbFiles.Count, prepConnections, queuedMs);
         List<FetchFirstSegmentsStep.NzbFileWithFirstSegment> segments;
         using (providerUsageTracker.BeginByteCapture())
+        using (providerUsageTracker.BeginPrepAttemptCapture())
         {
             try
             {
@@ -215,7 +275,9 @@ public class QueueItemProcessor(
                     usageBeforeFirstSegments,
                     providerUsageTracker.Snapshot(queueItem.Id),
                     bytesBeforeFirstSegments,
-                    providerUsageTracker.SnapshotBytes(queueItem.Id));
+                    providerUsageTracker.SnapshotBytes(queueItem.Id),
+                    attemptsBeforeFirstSegments,
+                    providerUsageTracker.SnapshotPrepAttempts(queueItem.Id));
                 var partialFallbacks = Math.Max(0,
                     providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
                 _prepDurationMs = ToDurationMs(elapsedMs);
@@ -243,9 +305,14 @@ public class QueueItemProcessor(
         var bytesAfterFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
         var firstSegmentProviders = BuildPrepProviderStats(
             usageBeforeFirstSegments, usageAfterFirstSegments,
-            bytesBeforeFirstSegments, bytesAfterFirstSegments);
+            bytesBeforeFirstSegments, bytesAfterFirstSegments,
+            attemptsBeforeFirstSegments, providerUsageTracker.SnapshotPrepAttempts(queueItem.Id));
         var firstSegmentFallbacks = Math.Max(0,
             providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
+        // The queue-row notice is live state, not a short-lived result summary.
+        // Provider recovery details remain available in the persisted Watchdog
+        // statistics after this stage completes.
+        providerUsageTracker.ReportRecoveryNotice(null);
         void RecordPrepProgress(string lastStage, long par2Ms = 0, long rarMs = 0,
             long processorsMs = 0, bool lazyRarMounted = false)
         {
@@ -370,6 +437,21 @@ public class QueueItemProcessor(
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
                 configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
             healthTimer = Stopwatch.StartNew();
+            if (!overlapsProcessors && connectionWarmer is not null)
+            {
+                // Deferred start: the prep-time warm bursts above the persistent
+                // floor decay after one minute of idleness, so a long processor
+                // backlog leaves the pools at floor level. Re-burst both pools on
+                // the still-live warmup CTS; the grace handoff below still starts
+                // health as soon as useful capacity exists and lets growth
+                // continue in parallel.
+                healthConnectionWarmupTask = Task.WhenAll(
+                    PrewarmHealthConnectionsDuringPrepAsync(
+                        connectionWarmer, queueItem, healthConnectionWarmupCts.Token),
+                    PrewarmPrimaryHealthConnectionsAfterPrepAsync(
+                        connectionWarmer, healthPrimeSegmentIds, healthPrimeDepth,
+                        queueItem, healthConnectionWarmupCts.Token));
+            }
             var healthWorkTask = RunHealthCheckAfterWarmupAsync(
                 healthConnectionWarmupTask,
                 healthConnectionWarmupCts,
@@ -432,6 +514,10 @@ public class QueueItemProcessor(
         // health range before the processor phase has reached 100%.
         deferredHealthProgress?.Enable();
         if (deferHealthCheck) StartHealthCheck(overlapsProcessors: false);
+        // Preparation provider failures go straight to Watchdog. Only failures
+        // observed from the subsequent health phase retain the bounded queue
+        // retry policy.
+        _preparationCompleted = true;
         var healthWaitTimer = Stopwatch.StartNew();
         if (healthCheckTask is not null)
         {
@@ -448,12 +534,14 @@ public class QueueItemProcessor(
             finally
             {
                 _healthDurationMs = ToDurationMs(healthTimer?.ElapsedMilliseconds ?? 0);
+                _healthWaitDurationMs = ToDurationMs(healthWaitTimer.ElapsedMilliseconds);
             }
         }
         var msHealthWait = healthWaitTimer.ElapsedMilliseconds;
         var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
         _prepDurationMs = ToDurationMs(msFirstSeg + msPar2 + msRar + msProcessors);
         _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : _healthDurationMs;
+        _healthWaitDurationMs = checkedFullHealth ? ToDurationMs(msHealthWait) : _healthWaitDurationMs;
         if (checkedFullHealth)
         {
             var statRate = msHealth > 0
@@ -719,6 +807,16 @@ public class QueueItemProcessor(
         IReadOnlyList<NzbFile> files,
         int targetCount)
     {
+        // Sample from the population the full health check will actually cover
+        // (RAR + important files) so coverage probes judge providers on relevant
+        // articles. Subject filenames are an approximation — exact
+        // classification is not available this early — and obfuscated subjects
+        // fall back to sampling every file.
+        var relevantFiles = files
+            .Where(file => FilenameUtil.IsImportantFileType(file.GetSubjectFileName()))
+            .ToList();
+        if (relevantFiles.Count > 0) files = relevantFiles;
+
         var total = files.Sum(file => (long)file.Segments.Count);
         var selectedCount = (int)Math.Min(Math.Max(0, targetCount), total);
         if (selectedCount == 0) return [];
@@ -909,6 +1007,7 @@ public class QueueItemProcessor(
             DownloadTimeSeconds = (int)(DateTime.Now - jobStartTime).TotalSeconds,
             PrepDurationMs = _prepDurationMs,
             HealthDurationMs = _healthDurationMs,
+            HealthWaitDurationMs = _healthWaitDurationMs,
             FailMessage = errorMessage,
             DownloadDirId = mountFolder?.Id,
             NzbBlobId = queueItem.Id,
@@ -945,6 +1044,7 @@ public class QueueItemProcessor(
         _ = RefreshMonitoredDownloads();
         RecordWatchdogAttemptIfExternal(startTime, error, providerUsage);
         retryAttempts.TryRemove(queueItem.Id, out _);
+        unverifiableAttempts.TryRemove(queueItem.Id, out _);
     }
 
     // Emits a Watchdog attempt entry for queue items that didn't come through
@@ -981,6 +1081,7 @@ public class QueueItemProcessor(
             DurationMs = durationMs,
             PrepDurationMs = _prepDurationMs,
             HealthDurationMs = _healthDurationMs,
+            HealthWaitDurationMs = _healthWaitDurationMs,
             PrepStatsJson = SerializePrepStats(providerUsageTracker.SnapshotPrep(queueItem.Id)),
             HealthStatsJson = SerializeHealthStats(providerUsageTracker.SnapshotHealthCheck(queueItem.Id)),
             IsWinner = error == null,
@@ -997,14 +1098,27 @@ public class QueueItemProcessor(
         IReadOnlyDictionary<string, long> usageBefore,
         IReadOnlyDictionary<string, long> usageAfter,
         IReadOnlyDictionary<string, long> bytesBefore,
-        IReadOnlyDictionary<string, long> bytesAfter) =>
+        IReadOnlyDictionary<string, long> bytesAfter,
+        IReadOnlyDictionary<string, PrepProviderAttemptStat> attemptsBefore,
+        IReadOnlyDictionary<string, PrepProviderAttemptStat> attemptsAfter) =>
         usageAfter.Keys
             .Union(bytesAfter.Keys)
+            .Union(attemptsAfter.Keys)
             .Select(providerId => new PrepProviderStat(
                 providerId,
                 Math.Max(0, usageAfter.GetValueOrDefault(providerId) - usageBefore.GetValueOrDefault(providerId)),
-                Math.Max(0, bytesAfter.GetValueOrDefault(providerId) - bytesBefore.GetValueOrDefault(providerId))))
-            .Where(stat => stat.Articles > 0 || stat.Bytes > 0)
+                Math.Max(0, bytesAfter.GetValueOrDefault(providerId) - bytesBefore.GetValueOrDefault(providerId)),
+                Math.Max(0, attemptsAfter.GetValueOrDefault(providerId)?.Attempts -
+                    (attemptsBefore.GetValueOrDefault(providerId)?.Attempts ?? 0) ?? 0),
+                Math.Max(0, attemptsAfter.GetValueOrDefault(providerId)?.Missing -
+                    (attemptsBefore.GetValueOrDefault(providerId)?.Missing ?? 0) ?? 0),
+                Math.Max(0, attemptsAfter.GetValueOrDefault(providerId)?.Timeouts -
+                    (attemptsBefore.GetValueOrDefault(providerId)?.Timeouts ?? 0) ?? 0),
+                Math.Max(0, attemptsAfter.GetValueOrDefault(providerId)?.Errors -
+                    (attemptsBefore.GetValueOrDefault(providerId)?.Errors ?? 0) ?? 0),
+                Math.Max(0, attemptsAfter.GetValueOrDefault(providerId)?.WorkMs -
+                    (attemptsBefore.GetValueOrDefault(providerId)?.WorkMs ?? 0) ?? 0)))
+            .Where(stat => stat.Articles > 0 || stat.Bytes > 0 || stat.Attempts > 0)
             .OrderByDescending(stat => stat.Articles)
             .ThenBy(stat => stat.ProviderId)
             .ToArray();

@@ -561,7 +561,7 @@
 .prepProviderHeader,
 .prepProviderRow {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) minmax(72px, .25fr) minmax(72px, .25fr) minmax(54px, .2fr);
+    grid-template-columns: minmax(150px, 1.2fr) repeat(5, minmax(62px, .32fr)) minmax(48px, .22fr);
     gap: 10px;
     align-items: center;
     padding: 7px 10px;

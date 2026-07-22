@@ -6,6 +6,7 @@ const topicNames = {
     queueItemStatus: 'qs',
     queueItemPercentage: 'qp',
     queueItemProviders: 'qpv',
+    queueItemRecoveryNotice: 'qrn',
     queueItemAdded: 'qa',
     queueItemRemoved: 'qr',
     historyItemAdded: 'ha',
@@ -16,6 +17,7 @@ const topicSubscriptions = {
     [topicNames.queueItemStatus]: 'state',
     [topicNames.queueItemPercentage]: 'state',
     [topicNames.queueItemProviders]: 'state',
+    [topicNames.queueItemRecoveryNotice]: 'state',
     [topicNames.queueItemAdded]: 'event',
     [topicNames.queueItemRemoved]: 'event',
     [topicNames.historyItemAdded]: 'event',
@@ -41,6 +43,8 @@ export function initializeQueueHistoryWebsocket(
             queueEvents.onChangeQueueSlotPercentage(message);
         else if (topic == topicNames.queueItemProviders)
             queueEvents.onChangeQueueSlotProviders(message);
+        else if (topic == topicNames.queueItemRecoveryNotice)
+            queueEvents.onChangeQueueSlotRecoveryNotice(message);
         else if (topic == topicNames.historyItemAdded) {
             if (isHistoryLive) historyEvents.onAddHistorySlot(JSON.parse(message));
         }

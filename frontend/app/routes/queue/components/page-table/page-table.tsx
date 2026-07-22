@@ -6,8 +6,9 @@ import { Truncate } from "../truncate/truncate";
 import { StatusBadge } from "../status-badge/status-badge";
 import { formatFileSize } from "~/utils/file-size";
 import { classNames } from "~/utils/styling";
-import type { ProviderUsage } from "~/clients/backend-client.server";
+import type { ProviderUsage, QueueRecoveryNotice } from "~/clients/backend-client.server";
 import { ProviderSummary } from "~/components/provider-summary/provider-summary";
+import { presentQueueRecoveryNotice } from "../status-badge/queue-recovery-notice";
 
 export type PageTableProps = {
     children?: ReactNode,
@@ -59,6 +60,7 @@ export type PageRowProps = {
     actions: ReactNode,
     indexer?: string | null,
     providers?: ProviderUsage[] | null,
+    recoveryNotice?: QueueRecoveryNotice | null,
     onRowSelectionChanged: (isSelected: boolean) => void
 }
 export function PageRow(props: PageRowProps) {
@@ -74,7 +76,7 @@ export function PageRow(props: PageRowProps) {
                     <Truncate>{props.name}</Truncate>
                     <div className={styles.mobile}>
                         <div className={styles.badges}>
-                            <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
+                            <QueueStatus {...props} />
                             <CategoryBadge category={props.category} />
                             {props.indexer && <IndexerBadge indexer={props.indexer} />}
                             {props.providers && props.providers.length > 0 && <ProvidersBadge providers={props.providers} />}
@@ -95,7 +97,7 @@ export function PageRow(props: PageRowProps) {
                     : <span className={styles.emptyCell}>—</span>}
             </td>
             <td className={styles.desktop}>
-                <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
+                <QueueStatus {...props} />
             </td>
             <td className={styles.desktop}>
                 {formatFileSize(props.fileSizeBytes)}
@@ -106,6 +108,23 @@ export function PageRow(props: PageRowProps) {
                 </div>
             </td>
         </tr>
+    );
+}
+
+function QueueStatus(props: Pick<PageRowProps,
+    "status" | "percentage" | "error" | "recoveryNotice">) {
+    const notice = props.recoveryNotice
+        ? presentQueueRecoveryNotice(props.recoveryNotice)
+        : null;
+    return (
+        <div className={styles.statusWithNotice}>
+            <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
+            {notice && (
+                <span className={styles.recoveryNotice} title={notice.title}>
+                    {notice.text}
+                </span>
+            )}
+        </div>
     );
 }
 

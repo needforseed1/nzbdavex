@@ -351,6 +351,29 @@ public class ConnectionPoolTests
     }
 
     [Fact]
+    public async Task OverlappingSuspensionsKeepPrewarmingSuspendedUntilAllAreReleased()
+    {
+        // Two concurrent health plans can suspend the same pool. Releasing one
+        // plan's suspension must not resume speculative prewarming while the
+        // other still holds it.
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })));
+
+        await pool.PrewarmAsync(4);
+        var first = pool.SuspendPrewarming(1, out _);
+        var second = pool.SuspendPrewarming(0, out _);
+
+        first.Dispose();
+        await pool.PrewarmAsync(4);
+        Assert.Equal(0, pool.LiveConnections);
+
+        second.Dispose();
+        await pool.PrewarmAsync(4);
+        Assert.Equal(4, pool.LiveConnections);
+    }
+
+    [Fact]
     public async Task PrewarmSuspensionCancelsInFlightSpeculativeConnections()
     {
         var attempt = 0;
@@ -890,6 +913,95 @@ public class ConnectionPoolTests
         using var lease = await foreground.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(2, lease.Connection.Id);
         Assert.Equal(0, backgroundPool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task DemandPrewarmUsesReservedHandshakeSlotDuringForegroundBurst()
+    {
+        var budget = new ConnectionLifetimeBudget(16, 4);
+        var foregroundStarted = 0;
+        var threeForegroundStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseForeground = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var foregroundPool = new ConnectionPool<TrackedConnection>(
+            4,
+            async ct =>
+            {
+                if (Interlocked.Increment(ref foregroundStarted) == 3)
+                    threeForegroundStarted.TrySetResult();
+                await releaseForeground.Task.WaitAsync(ct);
+                return new TrackedConnection(1, () => { });
+            },
+            connectionBudget: budget);
+        await using var demandWarmPool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(2, () => { })),
+            connectionBudget: budget);
+        await using var idleWarmPool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(3, () => { })),
+            connectionBudget: budget);
+
+        var foreground = Enumerable.Range(0, 4)
+            .Select(_ => foregroundPool.GetConnectionLockAsync(SemaphorePriority.Low))
+            .ToArray();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await threeForegroundStarted.Task.WaitAsync(timeout.Token);
+        while (budget.ForegroundWaiters == 0)
+            await Task.Delay(5, timeout.Token);
+
+        // Ordinary idle maintenance still yields, while the imminent-work
+        // prewarm can use the one speculative slot reserved from this four-slot
+        // foreground handshake burst.
+        await idleWarmPool.PrewarmAsync(1, timeout.Token);
+        await demandWarmPool.PrewarmForDemandAsync(1, timeout.Token);
+
+        Assert.Equal(0, idleWarmPool.LiveConnections);
+        Assert.Equal(1, demandWarmPool.LiveConnections);
+        Assert.Equal(3, Volatile.Read(ref foregroundStarted));
+
+        releaseForeground.TrySetResult();
+        var leases = await Task.WhenAll(foreground).WaitAsync(timeout.Token);
+        foreach (var lease in leases) lease.Dispose();
+    }
+
+    [Fact]
+    public async Task IdleValidationReplacementDoesNotCountAsForegroundPendingDemand()
+    {
+        var created = 0;
+        var replacementStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReplacement = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            2,
+            async ct =>
+            {
+                var id = Interlocked.Increment(ref created);
+                if (id > 1)
+                {
+                    replacementStarted.TrySetResult();
+                    await releaseReplacement.Task.WaitAsync(ct);
+                }
+                return new TrackedConnection(id, () => { });
+            },
+            connectionValidator: (_, _) => ValueTask.FromResult(false),
+            validateAfterIdle: TimeSpan.Zero,
+            minimumIdleConnections: 1,
+            minimumWarmConnections: 1);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        await pool.PrewarmAsync(1, timeout.Token);
+        var refresh = pool.RefreshWarmConnectionsAsync(1, 1, timeout.Token);
+        await replacementStarted.Task.WaitAsync(timeout.Token);
+
+        Assert.Equal(0, pool.PendingAcquisitions);
+
+        releaseReplacement.TrySetResult();
+        await refresh;
+        Assert.Equal(1, pool.LiveConnections);
+        Assert.Equal(1, pool.IdleConnections);
     }
 
     [Fact]

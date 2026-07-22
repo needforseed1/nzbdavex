@@ -101,8 +101,13 @@ public class PipelinedFallbackTests
             providerAttemptTimeout: TimeSpan.FromMilliseconds(25),
             providerOperationTimeout: TimeSpan.FromMilliseconds(75));
 
-        await Assert.ThrowsAsync<TimeoutException>(() => CollectAsync(
-            client.StatsPipelinedAsync(["a"], 1, CancellationToken.None)));
+        // Total outage aborts in bounded time and is classified as provider
+        // unavailability — not a timeout mistaken for evidence about the
+        // article — with the underlying timeout kept as the inner exception.
+        var exception = await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleUnverifiableException>(
+            () => CollectAsync(
+                client.StatsPipelinedAsync(["a"], 1, CancellationToken.None)));
+        Assert.IsType<TimeoutException>(exception.InnerException);
     }
 
     [Fact]

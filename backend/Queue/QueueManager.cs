@@ -17,6 +17,7 @@ public class QueueManager : IDisposable
     private InProgressQueueItem? _inProgressQueueItem;
 
     private readonly ConcurrentDictionary<Guid, int> _retryAttempts = new();
+    private readonly ConcurrentDictionary<Guid, int> _unverifiableAttempts = new();
 
     private readonly UsenetStreamingClient _usenetClient;
     private readonly CancellationTokenSource? _cancellationTokenSource;
@@ -141,7 +142,11 @@ public class QueueManager : IDisposable
 
             await dbClient.RemoveQueueItemsAsync(queueItemIds, ct).ConfigureAwait(false);
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
-            foreach (var id in queueItemIds) _retryAttempts.TryRemove(id, out _);
+            foreach (var id in queueItemIds)
+            {
+                _retryAttempts.TryRemove(id, out _);
+                _unverifiableAttempts.TryRemove(id, out _);
+            }
         }).ConfigureAwait(false);
     }
 
@@ -266,7 +271,7 @@ public class QueueManager : IDisposable
         inProgressQueueItem.ProcessingTask = new QueueItemProcessor(
             queueItem, queueNzbStream, dbClient, usenetClient,
             _configManager, _websocketManager, _providerUsageTracker,
-            _watchdogLog, _sourceTracker, progressHook, _retryAttempts,
+            _watchdogLog, _sourceTracker, progressHook, _retryAttempts, _unverifiableAttempts,
             EndQueuePrewarm, cts.Token
         ).ProcessAsync();
         return inProgressQueueItem;
