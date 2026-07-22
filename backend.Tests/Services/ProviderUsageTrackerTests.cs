@@ -95,7 +95,7 @@ public class ProviderUsageTrackerTests
         using (tracker.BeginScope(queueId))
         using (tracker.BeginRecoveryNoticeCapture(notice => published = notice))
         {
-            var notice = new QueueRecoveryNotice("health", "searching", 3);
+            var notice = new QueueRecoveryNotice("health", 3);
             tracker.ReportRecoveryNotice(notice);
 
             Assert.Equal(notice, tracker.SnapshotRecoveryNotice(queueId));

@@ -15,3 +15,11 @@ export function selectHealthSummaryTiming(
     }
     return null;
 }
+
+export function selectTotalSummaryTiming(
+    prepDurationMs?: number | null,
+    healthSummary?: HealthSummaryTiming | null,
+): number | null {
+    if (prepDurationMs == null || healthSummary == null) return null;
+    return prepDurationMs + healthSummary.durationMs;
+}

@@ -309,5 +309,4 @@ public sealed record HealthProviderStat(
 
 public sealed record QueueRecoveryNotice(
     [property: JsonPropertyName("phase")] string Phase,
-    [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("count")] int Count);

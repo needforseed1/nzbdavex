@@ -620,7 +620,7 @@ public class MultiProviderNntpClient(
             if (prepFallback is not null && i > 0)
             {
                 usageTracker.ReportRecoveryNotice(
-                    new QueueRecoveryNotice("prep", "searching", 0));
+                    new QueueRecoveryNotice("prep", 0));
                 try
                 {
                     fallbackAdmission = await prepFallback.EnterAsync(
@@ -1886,7 +1886,7 @@ public class MultiProviderNntpClient(
             segmentIds.Count,
             string.Join(',', candidates.Select(candidate => candidate.Provider.Host)));
         usageTracker.ReportRecoveryNotice(
-            new QueueRecoveryNotice("health", "searching", segmentIds.Count));
+            new QueueRecoveryNotice("health", segmentIds.Count));
 
         var foundSegments = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var unavailableProviders = new ConcurrentDictionary<string, byte>();
@@ -2028,21 +2028,17 @@ public class MultiProviderNntpClient(
 
         if (confirmedMissing is not null)
         {
-            usageTracker.ReportRecoveryNotice(
-                new QueueRecoveryNotice("health", "missing", 1));
+            usageTracker.ReportRecoveryNotice(null);
             throw new UsenetArticleNotFoundException(confirmedMissing);
         }
         if (stillUnresolved.Count > 0)
         {
-            usageTracker.ReportRecoveryNotice(
-                new QueueRecoveryNotice("health", "unverifiable", stillUnresolved.Count));
+            usageTracker.ReportRecoveryNotice(null);
             throw new UsenetArticleUnverifiableException(
                 stillUnresolved,
                 unavailableProviders.Keys.OrderBy(host => host).ToArray());
         }
-        if (!foundSegments.IsEmpty)
-            usageTracker.ReportRecoveryNotice(
-                new QueueRecoveryNotice("health", "recovered", foundSegments.Count));
+        usageTracker.ReportRecoveryNotice(null);
     }
 
     private static int ResolveRecoveryConcurrency(

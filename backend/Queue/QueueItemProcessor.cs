@@ -309,9 +309,10 @@ public class QueueItemProcessor(
             attemptsBeforeFirstSegments, providerUsageTracker.SnapshotPrepAttempts(queueItem.Id));
         var firstSegmentFallbacks = Math.Max(0,
             providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
-        providerUsageTracker.ReportRecoveryNotice(firstSegmentFallbacks > 0
-            ? new QueueRecoveryNotice("prep", "recovered", (int)Math.Min(int.MaxValue, firstSegmentFallbacks))
-            : null);
+        // The queue-row notice is live state, not a short-lived result summary.
+        // Provider recovery details remain available in the persisted Watchdog
+        // statistics after this stage completes.
+        providerUsageTracker.ReportRecoveryNotice(null);
         void RecordPrepProgress(string lastStage, long par2Ms = 0, long rarMs = 0,
             long processorsMs = 0, bool lazyRarMounted = false)
         {

@@ -189,9 +189,7 @@ public class HealthStatVerdictTests
         Assert.Equal(1, backupStats.Failures);
         Assert.Equal(2, backupStats.Batches);
         Assert.Equal(2, backup.Calls);
-        Assert.Equal(
-            new QueueRecoveryNotice("health", "recovered", segments.Length),
-            tracker.SnapshotRecoveryNotice(queueId));
+        Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
     }
 
     [Fact]

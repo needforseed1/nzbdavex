@@ -19,7 +19,7 @@ import {
     selectFailedDetailsAttempt,
     summarizeFailure,
 } from "./watchdog-failure";
-import { selectHealthSummaryTiming } from "./watchdog-timing";
+import { selectHealthSummaryTiming, selectTotalSummaryTiming } from "./watchdog-timing";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -198,6 +198,9 @@ function ClickCard({ group }: { group: ClickGroup }) {
         : selectHealthSummaryTiming(
             detailsAttempt.healthDurationMs,
             detailsAttempt.healthWaitDurationMs);
+    const totalSummaryDurationMs = selectTotalSummaryTiming(
+        detailsAttempt?.prepDurationMs,
+        healthSummary);
 
     return (
         <div className={styles.clickCard}>
@@ -234,6 +237,9 @@ function ClickCard({ group }: { group: ClickGroup }) {
                                 label={healthSummary.label}
                                 value={formatDuration(healthSummary.durationMs)}
                             />
+                        }
+                        {totalSummaryDurationMs != null &&
+                            <TimingBox label="Total" value={formatDuration(totalSummaryDurationMs)} />
                         }
                     </span>
                     {detailsAttempt.size > 0 && <>

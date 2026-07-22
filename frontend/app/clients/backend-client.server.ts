@@ -414,7 +414,6 @@ export type QueueSlot = {
 
 export type QueueRecoveryNotice = {
     phase: "prep" | "health",
-    state: "searching" | "recovered" | "missing" | "unverifiable",
     count: number,
 }
 
