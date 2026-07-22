@@ -57,6 +57,7 @@ public class QueueItemProcessor(
     private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
     private int? _prepDurationMs;
     private int? _healthDurationMs;
+    private int? _healthWaitDurationMs;
     private bool _preparationCompleted;
 
     private static TimeSpan GetProviderRetryBackoff(int attempt)
@@ -522,12 +523,14 @@ public class QueueItemProcessor(
             finally
             {
                 _healthDurationMs = ToDurationMs(healthTimer?.ElapsedMilliseconds ?? 0);
+                _healthWaitDurationMs = ToDurationMs(healthWaitTimer.ElapsedMilliseconds);
             }
         }
         var msHealthWait = healthWaitTimer.ElapsedMilliseconds;
         var msHealth = healthTimer?.ElapsedMilliseconds ?? 0;
         _prepDurationMs = ToDurationMs(msFirstSeg + msPar2 + msRar + msProcessors);
         _healthDurationMs = checkedFullHealth ? ToDurationMs(msHealth) : _healthDurationMs;
+        _healthWaitDurationMs = checkedFullHealth ? ToDurationMs(msHealthWait) : _healthWaitDurationMs;
         if (checkedFullHealth)
         {
             var statRate = msHealth > 0
@@ -993,6 +996,7 @@ public class QueueItemProcessor(
             DownloadTimeSeconds = (int)(DateTime.Now - jobStartTime).TotalSeconds,
             PrepDurationMs = _prepDurationMs,
             HealthDurationMs = _healthDurationMs,
+            HealthWaitDurationMs = _healthWaitDurationMs,
             FailMessage = errorMessage,
             DownloadDirId = mountFolder?.Id,
             NzbBlobId = queueItem.Id,
@@ -1066,6 +1070,7 @@ public class QueueItemProcessor(
             DurationMs = durationMs,
             PrepDurationMs = _prepDurationMs,
             HealthDurationMs = _healthDurationMs,
+            HealthWaitDurationMs = _healthWaitDurationMs,
             PrepStatsJson = SerializePrepStats(providerUsageTracker.SnapshotPrep(queueItem.Id)),
             HealthStatsJson = SerializeHealthStats(providerUsageTracker.SnapshotHealthCheck(queueItem.Id)),
             IsWinner = error == null,

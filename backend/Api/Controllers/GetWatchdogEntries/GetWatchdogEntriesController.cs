@@ -48,6 +48,7 @@ public partial class GetWatchdogEntriesController(
             DurationMs = a.DurationMs,
             PrepDurationMs = a.PrepDurationMs,
             HealthDurationMs = a.HealthDurationMs,
+            HealthWaitDurationMs = a.HealthWaitDurationMs,
             PrepStats = BuildPrepStats(a.PrepStatsJson, providersById),
             HealthStats = BuildHealthStats(a.HealthStatsJson, providersById),
             IsWinner = a.IsWinner,

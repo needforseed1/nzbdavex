@@ -462,6 +462,7 @@ export type WatchdogEntry = {
     durationMs: number,
     prepDurationMs?: number | null,
     healthDurationMs?: number | null,
+    healthWaitDurationMs?: number | null,
     prepStats?: WatchdogPrepStats | null,
     healthStats?: WatchdogHealthStats | null,
     isWinner: boolean,

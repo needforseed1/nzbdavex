@@ -25,6 +25,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("durationMs")] public required int DurationMs { get; init; }
         [JsonPropertyName("prepDurationMs")] public int? PrepDurationMs { get; init; }
         [JsonPropertyName("healthDurationMs")] public int? HealthDurationMs { get; init; }
+        [JsonPropertyName("healthWaitDurationMs")] public int? HealthWaitDurationMs { get; init; }
         [JsonPropertyName("prepStats")] public PrepStatsDto? PrepStats { get; init; }
         [JsonPropertyName("healthStats")] public HealthStatsDto? HealthStats { get; init; }
         [JsonPropertyName("isWinner")] public required bool IsWinner { get; init; }

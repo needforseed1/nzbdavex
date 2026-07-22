@@ -282,6 +282,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<int?>("HealthDurationMs")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("HealthWaitDurationMs")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("FailMessage")
                         .HasColumnType("TEXT");
 
@@ -379,6 +382,9 @@ namespace NzbWebDAV.Database.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("HealthDurationMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("HealthWaitDurationMs")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("HealthStatsJson")
