@@ -11,6 +11,7 @@ public class WebsocketTopic
     public static readonly WebsocketTopic QueueItemStatus = new("qs", TopicType.State);
     public static readonly WebsocketTopic QueueItemProgress = new("qp", TopicType.State);
     public static readonly WebsocketTopic QueueItemProviders = new("qpv", TopicType.State);
+    public static readonly WebsocketTopic QueueItemRecoveryNotice = new("qrn", TopicType.State);
     public static readonly WebsocketTopic HealthItemStatus = new("hs", TopicType.State);
     public static readonly WebsocketTopic HealthItemProgress = new("hp", TopicType.State);
     public static readonly WebsocketTopic LiveStats = new("ls", TopicType.State);

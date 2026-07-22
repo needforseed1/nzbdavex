@@ -9,7 +9,8 @@ export type QueueEvents = {
     onRemoveQueueSlots: (ids: Set<string>) => void,
     onChangeQueueSlotStatus: (message: string) => void,
     onChangeQueueSlotPercentage: (message: string) => void,
-    onChangeQueueSlotProviders: (message: string) => void
+    onChangeQueueSlotProviders: (message: string) => void,
+    onChangeQueueSlotRecoveryNotice: (message: string) => void,
 };
 
 export type HistoryEvents = {
@@ -84,6 +85,21 @@ export function useQueueEvents(
         }));
     }, [setQueueSlots]);
 
+    const onChangeQueueSlotRecoveryNotice = useCallback((message: string) => {
+        const sep = message.indexOf('|');
+        if (sep < 0) return;
+        const nzo_id = message.slice(0, sep);
+        const payload = message.slice(sep + 1);
+        try {
+            const recovery_notice = payload ? JSON.parse(payload) : null;
+            setQueueSlots(slots => slots.map(slot =>
+                slot.nzo_id === nzo_id ? { ...slot, recovery_notice } : slot));
+        } catch {
+            // Ignore a malformed best-effort live update; the next loader fetch
+            // still carries the current backend snapshot.
+        }
+    }, [setQueueSlots]);
+
     return memoize({
         onAddQueueSlot,
         onSelectQueueSlots,
@@ -91,7 +107,8 @@ export function useQueueEvents(
         onRemoveQueueSlots,
         onChangeQueueSlotStatus,
         onChangeQueueSlotPercentage,
-        onChangeQueueSlotProviders
+        onChangeQueueSlotProviders,
+        onChangeQueueSlotRecoveryNotice,
     });
 }
 

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json.Serialization;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models.Metrics;
 
@@ -13,6 +14,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
 {
     private static readonly AsyncLocal<Guid?> CurrentScope = new();
     private static readonly AsyncLocal<int> PrepAttemptCaptureDepth = new();
+    private static readonly AsyncLocal<Action<QueueRecoveryNotice?>?> RecoveryNoticeCallback = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _usage = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _bytes = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, PrepProviderAttemptStat>> _prepAttempts = new();
@@ -22,6 +24,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     private readonly ConcurrentDictionary<Guid, int> _healthCheckTotals = new();
     private readonly ConcurrentDictionary<Guid, HealthCheckOutcome> _healthCheckOutcomes = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, HealthProviderStat>> _healthStats = new();
+    private readonly ConcurrentDictionary<Guid, QueueRecoveryNotice> _recoveryNotices = new();
 
     public IDisposable BeginScope(Guid queueItemId)
     {
@@ -29,6 +32,34 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         CurrentScope.Value = queueItemId;
         return new Releaser(() => CurrentScope.Value = previous);
     }
+
+    public IDisposable BeginRecoveryNoticeCapture(Action<QueueRecoveryNotice?> callback)
+    {
+        var previous = RecoveryNoticeCallback.Value;
+        RecoveryNoticeCallback.Value = callback;
+        return new Releaser(() => RecoveryNoticeCallback.Value = previous);
+    }
+
+    public void ReportRecoveryNotice(QueueRecoveryNotice? notice)
+    {
+        var id = CurrentScope.Value;
+        if (id is null) return;
+
+        if (notice is null)
+        {
+            if (!_recoveryNotices.TryRemove(id.Value, out _)) return;
+        }
+        else
+        {
+            if (_recoveryNotices.TryGetValue(id.Value, out var current) && current == notice)
+                return;
+            _recoveryNotices[id.Value] = notice;
+        }
+        RecoveryNoticeCallback.Value?.Invoke(notice);
+    }
+
+    public QueueRecoveryNotice? SnapshotRecoveryNotice(Guid queueItemId) =>
+        _recoveryNotices.GetValueOrDefault(queueItemId);
 
     public void RecordSuccess(string providerHost)
     {
@@ -213,6 +244,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         _healthCheckTotals.TryRemove(queueItemId, out _);
         _healthCheckOutcomes.TryRemove(queueItemId, out _);
         _healthStats.TryRemove(queueItemId, out _);
+        _recoveryNotices.TryRemove(queueItemId, out _);
     }
 
     private sealed class Releaser(Action onDispose) : IDisposable
@@ -274,3 +306,8 @@ public sealed record HealthProviderStat(
     long WorkMs,
     long Rate,
     string? ProbeStatus = null);
+
+public sealed record QueueRecoveryNotice(
+    [property: JsonPropertyName("phase")] string Phase,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("count")] int Count);

@@ -86,6 +86,28 @@ public class ProviderUsageTrackerTests
     }
 
     [Fact]
+    public void RecoveryNotice_IsScopedSnapshottedAndPublished()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        QueueRecoveryNotice? published = null;
+
+        using (tracker.BeginScope(queueId))
+        using (tracker.BeginRecoveryNoticeCapture(notice => published = notice))
+        {
+            var notice = new QueueRecoveryNotice("health", "searching", 3);
+            tracker.ReportRecoveryNotice(notice);
+
+            Assert.Equal(notice, tracker.SnapshotRecoveryNotice(queueId));
+            Assert.Equal(notice, published);
+
+            tracker.ReportRecoveryNotice(null);
+            Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
+            Assert.Null(published);
+        }
+    }
+
+    [Fact]
     public void PrepSnapshot_PreservesStageTimingsAndStableProviderIds()
     {
         var tracker = new ProviderUsageTracker();

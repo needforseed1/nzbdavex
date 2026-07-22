@@ -84,6 +84,11 @@ public class QueueItemProcessor(
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Downloading");
 
         using var providerScope = providerUsageTracker.BeginScope(queueItem.Id);
+        using var recoveryNoticeCapture = providerUsageTracker.BeginRecoveryNoticeCapture(notice =>
+            _ = websocketManager.SendMessage(
+                WebsocketTopic.QueueItemRecoveryNotice,
+                $"{queueItem.Id}|{(notice is null ? string.Empty : notice.ToJson())}"));
+        providerUsageTracker.ReportRecoveryNotice(null);
 
         // process the job
         try
@@ -122,6 +127,7 @@ public class QueueItemProcessor(
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
+                providerUsageTracker.ReportRecoveryNotice(null);
                 _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
             }
             catch (Exception ex)
@@ -151,6 +157,7 @@ public class QueueItemProcessor(
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
+                providerUsageTracker.ReportRecoveryNotice(null);
                 _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
             }
             catch (Exception ex)
@@ -302,6 +309,9 @@ public class QueueItemProcessor(
             attemptsBeforeFirstSegments, providerUsageTracker.SnapshotPrepAttempts(queueItem.Id));
         var firstSegmentFallbacks = Math.Max(0,
             providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
+        providerUsageTracker.ReportRecoveryNotice(firstSegmentFallbacks > 0
+            ? new QueueRecoveryNotice("prep", "recovered", (int)Math.Min(int.MaxValue, firstSegmentFallbacks))
+            : null);
         void RecordPrepProgress(string lastStage, long par2Ms = 0, long rarMs = 0,
             long processorsMs = 0, bool lazyRarMounted = false)
         {

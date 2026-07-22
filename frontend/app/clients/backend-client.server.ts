@@ -409,6 +409,13 @@ export type QueueSlot = {
     mbleft: string,
     indexer?: string | null,
     providers?: ProviderUsage[] | null,
+    recovery_notice?: QueueRecoveryNotice | null,
+}
+
+export type QueueRecoveryNotice = {
+    phase: "prep" | "health",
+    state: "searching" | "recovered" | "missing" | "unverifiable",
+    count: number,
 }
 
 export type ProviderUsage = {
