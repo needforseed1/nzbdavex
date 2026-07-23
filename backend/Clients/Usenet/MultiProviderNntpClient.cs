@@ -31,7 +31,8 @@ public class MultiProviderNntpClient(
     TimeSpan? providerOperationTimeout = null,
     ConnectionLifetimeBudget? connectionBudget = null,
     TimeSpan? indeterminateRecoveryBudget = null,
-    TimeSpan? bulkStatProbeTimeout = null
+    TimeSpan? bulkStatProbeTimeout = null,
+    TimeSpan? pipelinedStatResponseInactivityTimeout = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int HealthPrimeConnectionLimitPerProvider = 4;
@@ -49,6 +50,8 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultProviderOperationTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DefaultPipelinedStatResponseInactivityTimeout =
+        TimeSpan.FromMilliseconds(1500);
     private const int StatRecoveryConcurrencyLimit = 4;
     private const int HealthLaneGrowthHeadroom =
         UsenetStreamingClient.ConcurrentConnectionAttemptLimit;
@@ -106,6 +109,8 @@ public class MultiProviderNntpClient(
         ApplicationConnectionLimit);
     private TimeSpan ProviderAttemptTimeout => providerAttemptTimeout ?? DefaultProviderAttemptTimeout;
     private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
+    private TimeSpan PipelinedStatResponseInactivityTimeout =>
+        pipelinedStatResponseInactivityTimeout ?? DefaultPipelinedStatResponseInactivityTimeout;
     private TimeSpan BulkProbeTimeout => bulkStatProbeTimeout ?? BulkStatProbeTimeout;
     private TimeSpan IndeterminateRecoveryBudget =>
         indeterminateRecoveryBudget ?? DefaultIndeterminateRecoveryBudget;
@@ -2133,7 +2138,9 @@ public class MultiProviderNntpClient(
             using var attemptCts =
                 ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             attemptCts.SetContext(new ProviderAttemptContext(
-                acquisitionTimeout, commandTimeout));
+                acquisitionTimeout,
+                commandTimeout,
+                ResponseInactivityTimeout: PipelinedStatResponseInactivityTimeout));
             var attempted = pending;
             var batch = attempted.Select(index => segmentIds[index]).ToArray();
             var stillPending = new List<int>(attempted.Count);

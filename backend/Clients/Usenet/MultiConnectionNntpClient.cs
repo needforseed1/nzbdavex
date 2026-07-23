@@ -495,7 +495,12 @@ public class MultiConnectionNntpClient(
                 ? null
                 : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             commandCts?.CancelAfter(attempt!.CommandTimeout);
-            var commandToken = commandCts?.Token ?? cancellationToken;
+            using var inactivityCts = attempt?.ResponseInactivityTimeout is null
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(
+                    commandCts?.Token ?? cancellationToken);
+            var commandToken = inactivityCts?.Token ?? commandCts?.Token ?? cancellationToken;
+            inactivityCts?.CancelAfter(attempt!.ResponseInactivityTimeout!.Value);
             await using var enumerator = batchFactory(connectionLock.Connection, commandToken)
                 .GetAsyncEnumerator(commandToken);
             try
@@ -517,10 +522,26 @@ public class MultiConnectionNntpClient(
                         }
 
                         current = enumerator.Current;
+                        inactivityCts?.CancelAfter(attempt!.ResponseInactivityTimeout!.Value);
                         received++;
                         if (received > expectedCount)
                             throw new IOException(
                                 $"Pipelined batch returned more than the expected {expectedCount} responses.");
+                    }
+                    catch (OperationCanceledException e) when (
+                        inactivityCts?.IsCancellationRequested == true &&
+                        commandCts?.IsCancellationRequested != true &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        // A connected health STAT socket that stops producing
+                        // responses is already a straggler. Rotate it before the
+                        // absolute command deadline so only its unresolved
+                        // articles wait for fallback.
+                        connectionLock.Replace();
+                        throw new TimeoutException(
+                            $"Provider {Host} did not return the next pipelined response within " +
+                            $"{attempt!.ResponseInactivityTimeout!.Value.TotalSeconds:0.###} seconds.",
+                            e);
                     }
                     catch (OperationCanceledException e) when (
                         commandCts?.IsCancellationRequested == true &&

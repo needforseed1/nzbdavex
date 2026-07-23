@@ -89,6 +89,76 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task ResponseInactivityRetriesSilentBatchBeforeAbsoluteDeadline()
+    {
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        var backupClient = new RecordingPipelineClient([true, true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromSeconds(1),
+            providerOperationTimeout: TimeSpan.FromSeconds(2),
+            pipelinedStatResponseInactivityTimeout: TimeSpan.FromMilliseconds(40));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b"], 2, deadline.Token));
+
+        Assert.All(results, result => Assert.True(result.Exists));
+        Assert.Single(stalledClient.Batches);
+        Assert.Equal(["a", "b"], backupClient.Batches.Single());
+    }
+
+    [Fact]
+    public async Task ResponseInactivityRetriesOnlyUnreturnedSegments()
+    {
+        var stalledClient = new RecordingPipelineClient(
+            [true], stallAfterResults: true);
+        var backupClient = new RecordingPipelineClient([true, true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromSeconds(1),
+            providerOperationTimeout: TimeSpan.FromSeconds(2),
+            pipelinedStatResponseInactivityTimeout: TimeSpan.FromMilliseconds(40));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b", "c"], 3, deadline.Token));
+
+        Assert.All(results, result => Assert.True(result.Exists));
+        Assert.Equal(["b", "c"], backupClient.Batches.Single());
+    }
+
+    [Fact]
+    public async Task ResponseInactivityAcrossAllProvidersRemainsUnverifiable()
+    {
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromSeconds(1),
+            providerOperationTimeout: TimeSpan.FromSeconds(2),
+            pipelinedStatResponseInactivityTimeout: TimeSpan.FromMilliseconds(40));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        var exception = await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleUnverifiableException>(
+            () => CollectAsync(client.StatsPipelinedAsync(["a"], 1, deadline.Token)));
+
+        var timeout = Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.Contains("next pipelined response", timeout.Message);
+    }
+
+    [Fact]
     public async Task StalledFinalProviderCannotHoldPipelinedHealthForever()
     {
         var stalledClient = new CoveragePipelineClient(

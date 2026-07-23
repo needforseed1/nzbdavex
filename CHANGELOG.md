@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.17](https://github.com/needforseed1/nzbdavex/compare/v1.3.16...v1.3.17) (2026-07-23)
+
+### Fixes
+
+* Health checks now detect connected provider sockets that stop returning STAT responses and promptly retry only unanswered articles on another provider. This prevents an isolated stalled batch from holding the queue at 99% while preserving full article verification and treating provider outages as unverifiable rather than missing.
+
 ## [1.3.16](https://github.com/needforseed1/nzbdavex/compare/v1.3.15...v1.3.16) (2026-07-22)
 
 This release replaces the fragile preparation and health-check fallback behavior in 1.3.15 with bounded, evidence-based provider routing. Normal complete releases retain the fast parallel path, while incomplete releases can consult backup providers without leaving queue work pinned indefinitely or treating an unavailable provider as proof that an article is missing.
