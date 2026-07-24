@@ -26,6 +26,16 @@ public class HealthCheckService : BackgroundService
 
     private static readonly MissingSegmentCache _missingSegmentIds = new(TimeProvider.System);
 
+    /// <summary>
+    /// Backoff used when an item has no usable release date to scale against.
+    /// </summary>
+    internal static readonly TimeSpan UnknownReleaseDateRecheckInterval = TimeSpan.FromDays(1);
+
+    /// <summary>
+    /// Backoff used when a check could not be completed at all.
+    /// </summary>
+    internal static readonly TimeSpan IncompleteCheckRetryInterval = TimeSpan.FromHours(1);
+
     public HealthCheckService
     (
         ConfigManager configManager,
@@ -164,14 +174,15 @@ public class HealthCheckService : BackgroundService
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
 
             // update the database
-            davItem.LastHealthCheck = DateTimeOffset.UtcNow;
-            davItem.NextHealthCheck = davItem.ReleaseDate + 2 * (davItem.LastHealthCheck - davItem.ReleaseDate);
+            var checkedAt = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = checkedAt;
+            davItem.NextHealthCheck = GetNextHealthCheck(davItem.ReleaseDate, checkedAt);
             dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
             {
                 Id = Guid.NewGuid(),
                 DavItemId = davItem.Id,
                 Path = davItem.Path,
-                CreatedAt = DateTimeOffset.UtcNow,
+                CreatedAt = checkedAt,
                 Result = HealthCheckResult.HealthResult.Healthy,
                 RepairStatus = HealthCheckResult.RepairAction.None,
                 Message = "File is healthy."
@@ -196,7 +207,7 @@ public class HealthCheckService : BackgroundService
             _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
             var utcNow = DateTimeOffset.UtcNow;
             davItem.LastHealthCheck = utcNow;
-            davItem.NextHealthCheck = utcNow + TimeSpan.FromHours(1);
+            davItem.NextHealthCheck = utcNow + IncompleteCheckRetryInterval;
             var providers = e.UnavailableProviders.Count > 0
                 ? string.Join(", ", e.UnavailableProviders)
                 : "unknown";
@@ -216,6 +227,49 @@ public class HealthCheckService : BackgroundService
             }));
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
         }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            // The queue is ordered by NextHealthCheck, and a null keeps this item
+            // permanently at its head. Any check that ends without a verdict must
+            // still schedule the next attempt, or one broken item stalls the whole
+            // background queue and rewrites its result row every few seconds.
+            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
+            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+            Log.Warning(e, "Health check for {Path} could not be completed: {Message}",
+                davItem.Path, e.Message);
+            var utcNow = DateTimeOffset.UtcNow;
+            davItem.LastHealthCheck = utcNow;
+            davItem.NextHealthCheck = utcNow + IncompleteCheckRetryInterval;
+            dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
+            {
+                Id = Guid.NewGuid(),
+                DavItemId = davItem.Id,
+                Path = davItem.Path,
+                CreatedAt = utcNow,
+                Result = HealthCheckResult.HealthResult.Unhealthy,
+                RepairStatus = HealthCheckResult.RepairAction.None,
+                Message = string.Join(" ", [
+                    $"The health check could not be completed: {e.Message}",
+                    "No repair was performed. Will retry in 1 hour."
+                ])
+            }));
+            await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Age-proportional backoff: an item that has already survived its own age
+    /// is rechecked after twice that age. Without a usable release date there is
+    /// no age to scale, so a fixed interval applies. The result is never null
+    /// and never in the past.
+    /// </summary>
+    internal static DateTimeOffset GetNextHealthCheck(
+        DateTimeOffset? releaseDate,
+        DateTimeOffset checkedAt)
+    {
+        if (releaseDate is not { } release || release >= checkedAt)
+            return checkedAt + UnknownReleaseDateRecheckInterval;
+        return release + 2 * (checkedAt - release);
     }
 
     private async Task UpdateReleaseDate(DavItem davItem, List<string> segments, CancellationToken ct)
@@ -223,7 +277,11 @@ public class HealthCheckService : BackgroundService
         var firstSegmentId = StringUtil.EmptyToNull(segments.FirstOrDefault());
         if (firstSegmentId == null) return;
         var articleHeadersResponse = await _usenetClient.HeadAsync(firstSegmentId, ct).ConfigureAwait(false);
-        var articleHeaders = articleHeadersResponse.ArticleHeaders!;
+        // No provider returned headers for an article they all answered for:
+        // the article is gone. HEAD does not throw for that, so classify it here
+        // and let the repair path handle it.
+        if (articleHeadersResponse.ArticleHeaders is not { } articleHeaders)
+            throw new UsenetArticleNotFoundException(firstSegmentId);
         davItem.ReleaseDate = articleHeaders.Date;
     }
 
