@@ -1,8 +1,10 @@
-﻿using NzbWebDAV.Clients.Usenet.Concurrency;
+﻿using System.Diagnostics;
+using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Config;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Services;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
@@ -119,7 +121,7 @@ public class DownloadingNntpClient : WrappingNntpClient
             return default;
 
         var semaphore = semaphorePriority == SemaphorePriority.High ? _streamingSemaphore : _queueSemaphore;
-        await semaphore.WaitAsync(semaphorePriority, cancellationToken).ConfigureAwait(false);
+        await WaitForPermitAsync(semaphore, semaphorePriority, cancellationToken).ConfigureAwait(false);
         return new DownloadPermit(semaphore);
     }
 
@@ -153,7 +155,7 @@ public class DownloadingNntpClient : WrappingNntpClient
     {
         var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
         var semaphore = priority == SemaphorePriority.High ? _streamingSemaphore : _queueSemaphore;
-        await semaphore.WaitAsync(priority, cancellationToken).ConfigureAwait(false);
+        await WaitForPermitAsync(semaphore, priority, cancellationToken).ConfigureAwait(false);
         try
         {
             await foreach (var result in base.DecodedBodiesPipelinedAsync(segmentIds, depth, cancellationToken)
@@ -172,7 +174,7 @@ public class DownloadingNntpClient : WrappingNntpClient
     {
         var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
         var semaphore = priority == SemaphorePriority.High ? _streamingSemaphore : _queueSemaphore;
-        await semaphore.WaitAsync(priority, cancellationToken).ConfigureAwait(false);
+        await WaitForPermitAsync(semaphore, priority, cancellationToken).ConfigureAwait(false);
         try
         {
             await foreach (var result in base.DecodedArticlesPipelinedAsync(segmentIds, depth, cancellationToken)
@@ -182,6 +184,28 @@ public class DownloadingNntpClient : WrappingNntpClient
         finally
         {
             semaphore.Release();
+        }
+    }
+
+    private static async Task WaitForPermitAsync(
+        PrioritizedSemaphore semaphore,
+        SemaphorePriority priority,
+        CancellationToken cancellationToken)
+    {
+        var timer = Stopwatch.StartNew();
+        var acquired = false;
+        try
+        {
+            await semaphore.WaitAsync(priority, cancellationToken).ConfigureAwait(false);
+            acquired = true;
+        }
+        finally
+        {
+            timer.Stop();
+            PlaybackDiagnosticContext.Current?.RecordConnectionPermitWait(
+                timer.ElapsedMilliseconds,
+                priority.ToString(),
+                acquired ? "acquired" : "interrupted");
         }
     }
 

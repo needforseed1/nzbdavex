@@ -4,6 +4,9 @@ using NWebDav.Server.Handlers;
 using NWebDav.Server.Helpers;
 using NWebDav.Server.Props;
 using NWebDav.Server.Stores;
+using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Config;
+using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.WebDav.Base;
@@ -23,15 +26,18 @@ public class GetAndHeadHandlerPatch : IRequestHandler
     private readonly IStore _store;
     private readonly ProviderUsageTracker _providerUsageTracker;
     private readonly ActiveReadRegistry _activeReadRegistry;
+    private readonly ConfigManager _configManager;
 
     public GetAndHeadHandlerPatch(
         IStore store,
         ProviderUsageTracker providerUsageTracker,
-        ActiveReadRegistry activeReadRegistry)
+        ActiveReadRegistry activeReadRegistry,
+        ConfigManager configManager)
     {
         _store = store;
         _providerUsageTracker = providerUsageTracker;
         _activeReadRegistry = activeReadRegistry;
+        _configManager = configManager;
     }
     
     /// <summary>
@@ -93,144 +99,215 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                 response.Headers.ContentLanguage = contentLanguage;
         }
 
-        // Stream the actual entry
-        var stream = await entry.GetReadableStreamAsync(httpContext.RequestAborted).ConfigureAwait(false);
-        await using (stream.ConfigureAwait(false))
+        var playbackPath = request.GetUri().AbsolutePath;
+        var playbackFileName = entry switch
         {
-            if (stream != Stream.Null)
+            NzbWebDAV.WebDav.DatabaseStoreIdFile idFile => idFile.FriendlyName,
+            _ => !string.IsNullOrEmpty(entry.Name)
+                ? entry.Name
+                : System.IO.Path.GetFileName(playbackPath)
+        };
+        Guid? sessionId = null;
+        PlaybackRequestDiagnostics? diagnostics = null;
+        if (!isHeadRequest)
+        {
+            var clientKey = $"{httpContext.Connection.RemoteIpAddress}|{request.Headers.UserAgent}";
+            sessionId = _activeReadRegistry.GetOrCreate(
+                playbackPath, clientKey, playbackFileName, fileSize: null);
+            _activeReadRegistry.MarkRequestStarted(
+                sessionId.Value,
+                httpContext.Connection.RemoteIpAddress?.ToString(),
+                request.Headers.UserAgent.ToString());
+            diagnostics = new PlaybackRequestDiagnostics(
+                sessionId.Value,
+                playbackPath,
+                playbackFileName,
+                FormatRange(range?.Start, range?.End),
+                range?.Start ?? 0);
+        }
+
+        using var usageScope = sessionId.HasValue
+            ? _providerUsageTracker.BeginScope(sessionId.Value)
+            : null;
+        using var byteCapture = sessionId.HasValue
+            ? _providerUsageTracker.BeginByteCapture()
+            : null;
+        using var readSessionScope = sessionId.HasValue
+            ? MultiProviderNntpClient.BeginReadSessionScope(sessionId.Value)
+            : null;
+        using var diagnosticScope = diagnostics is not null
+            ? PlaybackDiagnosticContext.Begin(diagnostics)
+            : null;
+
+        var reason = "completed";
+        var endReason = ReadSession.EndReasonCode.Completed;
+        Exception? terminalException = null;
+        try
+        {
+            // Stream construction stays inside the scopes so buffered
+            // background segment tasks inherit this playback session.
+            var stream = await entry.GetReadableStreamAsync(httpContext.RequestAborted)
+                .ConfigureAwait(false);
+            await using (stream.ConfigureAwait(false))
             {
-                // Set the response
-                response.SetStatus(DavStatusCode.Ok);
-
-                // Set the expected content length
-                try
+                if (stream != Stream.Null)
                 {
-                    // We can only specify the Content-Length header if the
-                    // length is known (this is typically true for seekable streams)
-                    if (stream.CanSeek)
+                    var streamLength = TryGetLength(stream);
+                    diagnostics?.MarkStreamOpened(
+                        playbackFileName,
+                        streamLength,
+                        range?.Start ?? 0);
+                    if (sessionId.HasValue)
+                        _activeReadRegistry.UpdateInfo(
+                            sessionId.Value,
+                            playbackFileName,
+                            streamLength);
+
+                    response.SetStatus(DavStatusCode.Ok);
+
+                    try
                     {
-                        // Add a header that we accept ranges (bytes only)
-                        response.Headers.AcceptRanges = "bytes";
-
-                        // Determine the total length
-                        var length = stream.Length;
-
-                        // Check if a range was specified
-                        if (range != null)
+                        if (stream.CanSeek)
                         {
-                            var start = range.Start ?? 0;
-                            var end = Math.Min(range.End ?? long.MaxValue, length - 1);
+                            response.Headers.AcceptRanges = "bytes";
+                            var length = stream.Length;
 
-                            // Return 416 if the range start is beyond the end of the file
-                            if (start > end)
+                            if (range != null)
                             {
-                                response.Headers.ContentRange = $"bytes */{stream.Length}";
-                                response.SetStatus((DavStatusCode)416);
-                                return true;
+                                var start = range.Start ?? 0;
+                                var end = Math.Min(range.End ?? long.MaxValue, length - 1);
+                                if (start > end)
+                                {
+                                    response.Headers.ContentRange = $"bytes */{stream.Length}";
+                                    response.SetStatus((DavStatusCode)416);
+                                    return true;
+                                }
+
+                                length = end - start + 1;
+                                response.Headers.ContentRange = $"bytes {start}-{end}/{stream.Length}";
+                                if (length < stream.Length)
+                                    response.SetStatus(DavStatusCode.PartialContent);
                             }
 
-                            length = end - start + 1;
-
-                            // Write the range
-                            response.Headers.ContentRange = $"bytes {start}-{end}/{stream.Length}";
-
-                            // Set status to partial result if not all data can be sent
-                            if (length < stream.Length)
-                                response.SetStatus(DavStatusCode.PartialContent);
+                            response.ContentLength = length;
                         }
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // If the content length is not supported, skip it.
+                    }
 
-                        // Set the header, so the client knows how much data is required
-                        response.ContentLength = length;
+                    if (etag != null && request.Headers.IfNoneMatch == etag)
+                    {
+                        response.ContentLength = 0;
+                        response.SetStatus(DavStatusCode.NotModified);
+                        return true;
+                    }
+
+                    if (!isHeadRequest && diagnostics is not null && sessionId.HasValue)
+                    {
+                        await PlaybackTransferPump.CopyAsync(
+                                stream,
+                                response.Body,
+                                diagnostics,
+                                range?.Start ?? 0,
+                                range?.End,
+                                seekSource: true,
+                                onBytesServed: (bytes, position) =>
+                                    _activeReadRegistry.Touch(sessionId.Value, bytes, position),
+                                onSourceError: null,
+                                cancellationToken: httpContext.RequestAborted)
+                            .ConfigureAwait(false);
                     }
                 }
-                catch (NotSupportedException)
+                else
                 {
-                    // If the content length is not supported, then we just skip it
+                    response.SetStatus(DavStatusCode.NoContent);
                 }
+            }
 
-                // Do not return the actual item data if ETag matches
-                if (etag != null && request.Headers.IfNoneMatch == etag)
-                {
-                    response.ContentLength = 0;
-                    response.SetStatus(DavStatusCode.NotModified);
-                    return true;
-                }
-
-                // HEAD method doesn't require the actual item data
-                if (!isHeadRequest)
-                {
-                    var path = request.GetUri().AbsolutePath;
-                    var clientKey = $"{httpContext.Connection.RemoteIpAddress}|{request.Headers.UserAgent}";
-                    // DatabaseStoreIdFile.Name returns the GUID (it backs rclone symlink
-                    // targets), so prefer FriendlyName when that's what we got.
-                    var fileName = entry switch
-                    {
-                        NzbWebDAV.WebDav.DatabaseStoreIdFile idFile => idFile.FriendlyName,
-                        _ => !string.IsNullOrEmpty(entry.Name) ? entry.Name : System.IO.Path.GetFileName(path)
-                    };
-                    var sessionId = _activeReadRegistry.GetOrCreate(
-                        path, clientKey, fileName, stream.CanSeek ? stream.Length : null);
-                    using var scope = _providerUsageTracker.BeginScope(sessionId);
-                    await CopyToAsync(stream, response.Body, range?.Start ?? 0, range?.End,
-                        (n, pos) => _activeReadRegistry.Touch(sessionId, n, pos),
-                        httpContext.RequestAborted).ConfigureAwait(false);
-                }
+            return true;
+        }
+        catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
+        {
+            reason = "client-abort";
+            endReason = ReadSession.EndReasonCode.Aborted;
+            throw;
+        }
+        catch (Exception exception)
+        {
+            terminalException = exception;
+            if (ContainsTimeout(exception))
+            {
+                reason = "timeout";
+                endReason = ReadSession.EndReasonCode.Timeout;
             }
             else
             {
-                // Set the response
-                response.SetStatus(DavStatusCode.NoContent);
+                reason = "error";
+                endReason = ReadSession.EndReasonCode.Error;
+            }
+            throw;
+        }
+        finally
+        {
+            if (sessionId.HasValue && diagnostics is not null)
+            {
+                _activeReadRegistry.MarkRequestEnded(sessionId.Value, endReason);
+                CompletePlaybackDiagnostics(diagnostics, reason, terminalException);
             }
         }
-        return true;
     }
 
-    private async Task CopyToAsync(
-        Stream src,
-        Stream dest,
-        long start,
-        long? end,
-        Action<long, long>? onBytesServed,
-        CancellationToken cancellationToken)
+    private void CompletePlaybackDiagnostics(
+        PlaybackRequestDiagnostics diagnostics,
+        string reason,
+        Exception? terminalException)
     {
-        // Skip to the first offset
-        if (start > 0)
-        {
-            // We prefer seeking instead of draining data
-            if (!src.CanSeek)
-                throw new IOException("Cannot use range, because the source stream isn't seekable");
+        var usage = ProviderUsageTracker.ToDisplayHosts(
+            _providerUsageTracker.Snapshot(diagnostics.SessionId),
+            _configManager.GetUsenetProviderConfig().Providers);
+        var providerSummary = usage.Count == 0
+            ? "none"
+            : string.Join(
+                ',',
+                usage.OrderByDescending(x => x.Value)
+                    .Select(x => $"{x.Key}:{x.Value}"));
+        var bytesFetched = _providerUsageTracker
+            .SnapshotBytes(diagnostics.SessionId)
+            .Values
+            .Sum();
+        diagnostics.Complete(
+            reason,
+            providerSummary,
+            bytesFetched,
+            _providerUsageTracker.GetFailoverSaves(diagnostics.SessionId),
+            terminalException);
+    }
 
-            src.Seek(start, SeekOrigin.Begin);
+    private static string? FormatRange(long? start, long? end) =>
+        start is null && end is null
+            ? null
+            : $"bytes={start?.ToString() ?? ""}-{end?.ToString() ?? ""}";
+
+    private static bool ContainsTimeout(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+            if (current is TimeoutException)
+                return true;
+        return false;
+    }
+
+    private static long? TryGetLength(Stream stream)
+    {
+        if (!stream.CanSeek) return null;
+        try
+        {
+            return stream.Length;
         }
-
-        // Determine the number of bytes to read
-        var bytesToRead = end - start + 1 ?? long.MaxValue;
-
-        // Read in 64KB blocks
-        var buffer = new byte[64 * 1024];
-        var position = start;
-
-        // Copy, until we don't get any data anymore
-        while (bytesToRead > 0)
+        catch (NotSupportedException)
         {
-            // Read the requested bytes into memory
-            var requestedBytes = (int)Math.Min(bytesToRead, buffer.Length);
-            var bytesRead = await src.ReadAsync(buffer, 0, requestedBytes, cancellationToken).ConfigureAwait(false);
-
-            // We're done, if we cannot read any data anymore
-            if (bytesRead == 0)
-                return;
-
-            // Write the data to the destination stream
-            await dest.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
-
-            // Report chunk size + new absolute file position so dashboards can
-            // surface real playback location (not cumulative transferred bytes).
-            position += bytesRead;
-            onBytesServed?.Invoke(bytesRead, position);
-
-            // Decrement the number of bytes left to read
-            bytesToRead -= bytesRead;
+            return null;
         }
     }
 }

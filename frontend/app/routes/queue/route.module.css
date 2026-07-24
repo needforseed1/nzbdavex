@@ -24,7 +24,8 @@
 .sectionTitle {
     display: flex;
     gap: 10px;
-    align-items: baseline;
+    align-items: center;
+    flex-wrap: wrap;
 
     h3 {
         margin: 0;
@@ -33,6 +34,35 @@
         font-weight: 600;
         letter-spacing: -0.02em;
     }
+}
+
+.historyCategoryControl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.historyCategoryFilter {
+    min-width: 120px;
+    height: 28px;
+    padding: 0 26px 0 9px;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.historyCategoryFilter:hover,
+.historyCategoryFilter:focus-visible {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
 }
 
 .tableFooter {

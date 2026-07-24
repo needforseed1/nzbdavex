@@ -1013,6 +1013,7 @@ public class QueueItemProcessor(
             NzbBlobId = queueItem.Id,
             IndexerName = queueItem.IndexerName,
             ContentGroupKey = queueItem.ContentGroupKey,
+            SubmissionSource = queueItem.SubmissionSource,
         };
     }
 

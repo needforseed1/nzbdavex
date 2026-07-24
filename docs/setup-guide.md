@@ -360,6 +360,12 @@ http://davex:3000/adapters/addon/{token}/manifest.json
 
 The manifest advertises the resources the client may request for `movie` and `series` types (keyed by IMDB ids). When the user picks a title in the client, the client calls back into NzbDavEx and receives a list of release candidates with an `url` field that, when followed, triggers on-demand fetch + mount and redirects to a playable URL served by NzbDavEx's WebDAV mount.
 
+When configuring the NzbDav service in AIOStreams, enter the NzbDavEx API key as
+`streaming:<NZBDAV API key>`. Keep the API key stored in NzbDavEx unchanged; add
+the `streaming:` prefix only to the value in the AIOStreams service settings.
+This identifies AIOStreams submissions as on-demand playback so NzbDavEx can
+separate them from normal Radarr and Sonarr imports in history.
+
 ### 5.3 Example: JSON Search API from a custom client
 
 `GET /api/search/{token}/lookup?type=movie&id=tt0111161` returns vendor-neutral JSON of the form:

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.Streams;
 using Serilog;
 using UsenetSharp.Models;
@@ -42,9 +43,11 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         string id = segmentId;
         if (TryServeFromCache(id, out var cached))
         {
+            PlaybackDiagnosticContext.Current?.RecordCacheHit();
             onConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
             return cached!;
         }
+        PlaybackDiagnosticContext.Current?.RecordCacheMiss();
 
         var response = await base.DecodedBodyAsync(segmentId, onConnectionReadyAgain, ct).ConfigureAwait(false);
         return await WrapForCachingAsync(id, response, ct).ConfigureAwait(false);
@@ -67,9 +70,11 @@ public sealed class SegmentCacheNntpClient : WrappingNntpClient
         string id = segmentId;
         if (TryServeFromCache(id, out var cached))
         {
+            PlaybackDiagnosticContext.Current?.RecordCacheHit();
             exclusiveConnection.OnConnectionReadyAgain?.Invoke(ArticleBodyResult.Retrieved);
             return cached!;
         }
+        PlaybackDiagnosticContext.Current?.RecordCacheMiss();
 
         var response = await base.DecodedBodyAsync(segmentId, exclusiveConnection, ct).ConfigureAwait(false);
         return await WrapForCachingAsync(id, response, ct).ConfigureAwait(false);

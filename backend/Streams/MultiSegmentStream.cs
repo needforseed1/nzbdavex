@@ -5,6 +5,7 @@ using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Services;
 using Serilog;
 using UsenetSharp.Streams;
 
@@ -21,6 +22,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     private readonly int _pipeliningDepth;
     private readonly Channel<Task<Stream>> _streamTasks;
     private readonly ContextualCancellationTokenSource _cts;
+    private readonly PlaybackRequestDiagnostics? _playbackDiagnostics;
     private Stream? _stream;
     private bool _disposed;
 
@@ -59,6 +61,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         _failFastOnFirstSegment = failFastOnFirstSegment;
         _streamTasks = Channel.CreateBounded<Task<Stream>>(articleBufferSize);
         _cts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _playbackDiagnostics = PlaybackDiagnosticContext.Current;
         _ = pipeliningDepth > 0
             ? DownloadSegmentsPipelined(pipeliningDepth, _cts.Token)
             : DownloadSegments(_cts.Token);
@@ -75,12 +78,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
                 await _streamTasks.Writer.WaitToWriteAsync(cancellationToken);
                 var connection = await _usenetClient.AcquireExclusiveConnectionAsync(segmentId, cancellationToken);
-                var streamTask = DownloadSegment(segmentId, connection, isFirstSegment: i == 0, cancellationToken);
+                var streamTask = DownloadSegmentTracked(
+                    segmentId, connection, isFirstSegment: i == 0, cancellationToken);
                 if (_streamTasks.Writer.TryWrite(streamTask)) continue;
 
                 // if we never get a chance to write the stream to the writer
                 // then make sure the stream gets disposed.
-                _ = Task.Run(async () => await (await streamTask).DisposeAsync(), CancellationToken.None);
+                _ = DisposeBufferedTaskAsync(streamTask);
                 break;
             }
         }
@@ -94,6 +98,27 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         }
 
         return;
+    }
+
+    private async Task<Stream> DownloadSegmentTracked(
+        string segmentId,
+        UsenetExclusiveConnection exclusiveConnection,
+        bool isFirstSegment,
+        CancellationToken cancellationToken)
+    {
+        _playbackDiagnostics?.UpstreamOperationStarted();
+        try
+        {
+            var stream = await DownloadSegment(
+                    segmentId, exclusiveConnection, isFirstSegment, cancellationToken)
+                .ConfigureAwait(false);
+            _playbackDiagnostics?.SegmentBuffered();
+            return stream;
+        }
+        finally
+        {
+            _playbackDiagnostics?.UpstreamOperationCompleted();
+        }
     }
 
     private async Task<Stream> DownloadSegment
@@ -159,6 +184,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     private async Task DownloadSegmentsPipelined(int depth, CancellationToken cancellationToken)
     {
         Exception? failure = null;
+        _playbackDiagnostics?.UpstreamOperationStarted();
         try
         {
             var segmentIds = _segmentIds.ToArray();
@@ -169,10 +195,10 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 await _streamTasks.Writer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
                 var isFirstSegment = index == 0;
                 index++;
-                var streamTask = MaterializeSegment(result, isFirstSegment, cancellationToken);
+                var streamTask = MaterializeSegmentTracked(result, isFirstSegment, cancellationToken);
                 if (_streamTasks.Writer.TryWrite(streamTask)) continue;
 
-                _ = Task.Run(async () => await (await streamTask).DisposeAsync(), CancellationToken.None);
+                _ = DisposeBufferedTaskAsync(streamTask);
                 break;
             }
         }
@@ -183,7 +209,19 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         finally
         {
             _streamTasks.Writer.TryComplete(failure);
+            _playbackDiagnostics?.UpstreamOperationCompleted();
         }
+    }
+
+    private async Task<Stream> MaterializeSegmentTracked(
+        PipelinedBodyResult result,
+        bool isFirstSegment,
+        CancellationToken cancellationToken)
+    {
+        var stream = await MaterializeSegment(result, isFirstSegment, cancellationToken)
+            .ConfigureAwait(false);
+        _playbackDiagnostics?.SegmentBuffered();
+        return stream;
     }
 
     private async Task<Stream> MaterializeSegment(PipelinedBodyResult result, bool isFirstSegment,
@@ -248,6 +286,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 if (!await _streamTasks.Reader.WaitToReadAsync(cancellationToken)) return 0;
                 if (!_streamTasks.Reader.TryRead(out var streamTask)) return 0;
                 _stream = await streamTask;
+                _playbackDiagnostics?.SegmentDequeued();
             }
 
             // read from the stream
@@ -279,8 +318,23 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
         // ensure that streams that were never read from the channel get disposed
         while (_streamTasks.Reader.TryRead(out var streamTask))
-            _ = Task.Run(async () => await (await streamTask).DisposeAsync(), CancellationToken.None);
+            _ = DisposeBufferedTaskAsync(streamTask);
 
         base.Dispose();
+    }
+
+    private async Task DisposeBufferedTaskAsync(Task<Stream> streamTask)
+    {
+        try
+        {
+            var stream = await streamTask.ConfigureAwait(false);
+            _playbackDiagnostics?.SegmentDequeued();
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // The producer completes the channel with fetch failures. Cleanup
+            // must not create a second unobserved task fault.
+        }
     }
 }

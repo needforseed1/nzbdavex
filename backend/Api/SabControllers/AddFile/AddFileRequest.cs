@@ -16,6 +16,7 @@ public class AddFileRequest()
     public DateTime? PauseUntil { get; init; }
     public string? IndexerName { get; init; }
     public string? ContentGroupKey { get; init; }
+    public string? SubmissionSource { get; init; }
     public CancellationToken CancellationToken { get; init; }
 
     public static async Task<AddFileRequest> New(HttpContext context, ConfigManager configManager)
@@ -31,6 +32,10 @@ public class AddFileRequest()
             ContentType = file.ContentType,
             NzbFileStream = file.OpenReadStream(),
             Category = context.GetRequestParam("cat") ?? configManager.GetManualUploadCategory(),
+            SubmissionSource = SabRequestSource.IsStreamingApiKey(
+                context.GetRequestApiKey(), configManager.GetApiKey())
+                ? SabRequestSource.StreamingSubmissionSource
+                : null,
             Priority = MapPriorityOption(context.GetRequestParam("priority")),
             PostProcessing = MapPostProcessingOption(context.GetRequestParam("pp")),
             CancellationToken = context.RequestAborted

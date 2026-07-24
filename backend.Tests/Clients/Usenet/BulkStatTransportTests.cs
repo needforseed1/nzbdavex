@@ -54,6 +54,66 @@ public class BulkStatTransportTests
     }
 
     [Fact]
+    public async Task BulkStatYieldsEachResponseBeforeTheBatchCompletes()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var releaseSecondResponse = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = RunIncrementalServerAsync(
+            listener, releaseSecondResponse.Task, timeout.Token);
+
+        using var client = new BaseNntpClient();
+        await client.ConnectAsync("127.0.0.1", port, false, timeout.Token);
+        await client.AuthenticateAsync("user", "pass", timeout.Token);
+        await using var results = client
+            .StatsPipelinedAsync(["a", "b"], 2, timeout.Token)
+            .GetAsyncEnumerator(timeout.Token);
+
+        Assert.True(await results.MoveNextAsync());
+        Assert.Equal("a", results.Current.SegmentId);
+        Assert.True(results.Current.Exists);
+        Assert.False(server.IsCompleted);
+
+        releaseSecondResponse.TrySetResult();
+        Assert.True(await results.MoveNextAsync());
+        Assert.Equal("b", results.Current.SegmentId);
+        Assert.True(results.Current.Exists);
+        Assert.False(await results.MoveNextAsync());
+        await server;
+    }
+
+    [Fact]
+    public async Task AbandonedStreamingBatchCannotReuseConnectionWithUnreadReplies()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var releaseSecondResponse = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = RunIncrementalServerAsync(
+            listener, releaseSecondResponse.Task, timeout.Token);
+
+        using var client = new BaseNntpClient();
+        await client.ConnectAsync("127.0.0.1", port, false, timeout.Token);
+        await client.AuthenticateAsync("user", "pass", timeout.Token);
+        var results = client
+            .StatsPipelinedAsync(["a", "b"], 2, timeout.Token)
+            .GetAsyncEnumerator(timeout.Token);
+
+        Assert.True(await results.MoveNextAsync());
+        await results.DisposeAsync();
+        releaseSecondResponse.TrySetResult();
+
+        await Assert.ThrowsAsync<IOException>(
+            () => client.StatAsync("later-command", timeout.Token));
+        await server;
+    }
+
+    [Fact]
     public async Task BulkStatCancellationInterruptsResponseRead()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -96,6 +156,30 @@ public class BulkStatTransportTests
             Assert.Equal($"STAT <{expectedId}>", await reader.ReadLineAsync(cancellationToken));
         foreach (var response in responses)
             await writer.WriteLineAsync(response);
+    }
+
+    private static async Task RunIncrementalServerAsync(
+        TcpListener listener,
+        Task releaseSecondResponse,
+        CancellationToken cancellationToken)
+    {
+        using var socket = await listener.AcceptTcpClientAsync(cancellationToken);
+        await using var stream = socket.GetStream();
+        using var reader = new StreamReader(stream, Encoding.Latin1, leaveOpen: true);
+        await using var writer = new StreamWriter(stream, Encoding.Latin1, leaveOpen: true)
+        {
+            AutoFlush = true,
+        };
+
+        await writer.WriteLineAsync("200 ready");
+        Assert.StartsWith("AUTHINFO USER", await reader.ReadLineAsync(cancellationToken));
+        await writer.WriteLineAsync("281 authenticated");
+        Assert.Equal("STAT <a>", await reader.ReadLineAsync(cancellationToken));
+        Assert.Equal("STAT <b>", await reader.ReadLineAsync(cancellationToken));
+
+        await writer.WriteLineAsync("223 0 <a>");
+        await releaseSecondResponse.WaitAsync(cancellationToken);
+        await writer.WriteLineAsync("223 0 <b>");
     }
 
     private static async Task RunStallingServerAsync(

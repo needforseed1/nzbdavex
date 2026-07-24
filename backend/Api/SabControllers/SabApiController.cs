@@ -141,13 +141,13 @@ public class SabApiController(
             if (RequiresAuthentication)
             {
                 var apiKey = httpContext.GetRequestApiKey();
-                var isValidKey = apiKey?.IsAny(
+                if (apiKey == null)
+                    throw new UnauthorizedAccessException("API Key Required");
+                if (!SabRequestSource.IsValidApiKey(
+                    apiKey,
                     configManager.GetApiKey(),
                     EnvironmentUtil.GetRequiredVariable("FRONTEND_BACKEND_API_KEY")
-                );
-                if (!isValidKey.HasValue)
-                    throw new UnauthorizedAccessException("API Key Required");
-                if (!isValidKey.Value)
+                ))
                     throw new UnauthorizedAccessException("API Key Incorrect");
             }
 

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Extensions;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.SabControllers.GetHistory;
@@ -21,12 +22,18 @@ public class GetHistoryController(
         IQueryable<HistoryItem> query = dbClient.Ctx.HistoryItems;
         if (request.NzoIds.Count > 0)
             query = query.Where(q => request.NzoIds.Contains(q.Id));
-        if (request.Category != null)
-            query = query.Where(q => q.Category == request.Category);
+        var isStreamingClient = SabRequestSource.IsStreamingApiKey(
+            httpContext.GetRequestApiKey(), configManager.GetApiKey());
+        query = HistoryCategoryClassifier.ApplyFilter(
+            query, request.Category, usePhysicalCategories: isStreamingClient);
 
         // get total count
         var totalCountPromise = query
             .CountAsync(request.CancellationToken);
+        var categoriesQuery = dbClient.Ctx.HistoryItems
+            .Select(q => new { q.Category, q.SubmissionSource })
+            .Distinct()
+            .OrderBy(item => item.Category);
 
         // get history items
         var historyItemsPromise = query
@@ -38,6 +45,14 @@ public class GetHistoryController(
         // await results
         var totalCount = await totalCountPromise.ConfigureAwait(false);
         var historyItems = await historyItemsPromise.ConfigureAwait(false);
+        var categoryPairs = await categoriesQuery
+            .ToArrayAsync(request.CancellationToken).ConfigureAwait(false);
+        var categories = categoryPairs
+            .Select(item => HistoryCategoryClassifier.GetDisplayCategory(
+                item.Category, item.SubmissionSource))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(category => category, StringComparer.Ordinal)
+            .ToList();
 
         // get download folders
         var downloadFolderIds = historyItems.Select(x => x.DownloadDirId).ToHashSet();
@@ -80,6 +95,7 @@ public class GetHistoryController(
             {
                 Slots = slots,
                 TotalCount = totalCount,
+                Categories = categories,
             }
         };
     }

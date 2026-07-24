@@ -1,5 +1,6 @@
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Services;
 using Serilog;
 using UsenetSharp.Streams;
 
@@ -10,6 +11,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
     private readonly Memory<string> _segmentIds;
     private readonly INntpClient _usenetClient;
     private readonly long _expectedSegmentSize;
+    private readonly PlaybackRequestDiagnostics? _playbackDiagnostics;
     private Stream? _stream;
     private int _currentIndex;
     private bool _disposed;
@@ -20,6 +22,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         _segmentIds = segmentIds;
         _usenetClient = usenetClient;
         _expectedSegmentSize = expectedSegmentSize;
+        _playbackDiagnostics = PlaybackDiagnosticContext.Current;
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -33,6 +36,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             {
                 if (_currentIndex >= _segmentIds.Length) return 0;
                 var segmentId = _segmentIds.Span[_currentIndex++];
+                _playbackDiagnostics?.UpstreamOperationStarted();
                 try
                 {
                     var body = await _usenetClient.DecodedBodyAsync(segmentId, cancellationToken);
@@ -45,6 +49,12 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                         "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
                         e.SegmentId, fill);
                     _stream = new MemoryStream(new byte[fill], writable: false);
+                    _playbackDiagnostics?.UpstreamOperationCompleted();
+                }
+                catch
+                {
+                    _playbackDiagnostics?.UpstreamOperationCompleted();
+                    throw;
                 }
             }
 
@@ -55,6 +65,7 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
             // if the stream ended, continue to the next stream.
             await _stream.DisposeAsync();
             _stream = null;
+            _playbackDiagnostics?.UpstreamOperationCompleted();
         }
 
         return 0;
@@ -70,6 +81,8 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
         if (_disposed) return;
         if (!disposing) return;
         _disposed = true;
+        if (_stream != null)
+            _playbackDiagnostics?.UpstreamOperationCompleted();
         _stream?.Dispose();
         base.Dispose();
     }

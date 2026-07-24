@@ -50,8 +50,6 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultProviderOperationTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan DefaultPipelinedStatResponseInactivityTimeout =
-        TimeSpan.FromMilliseconds(1500);
     private const int StatRecoveryConcurrencyLimit = 4;
     private const int HealthLaneGrowthHeadroom =
         UsenetStreamingClient.ConcurrentConnectionAttemptLimit;
@@ -109,8 +107,8 @@ public class MultiProviderNntpClient(
         ApplicationConnectionLimit);
     private TimeSpan ProviderAttemptTimeout => providerAttemptTimeout ?? DefaultProviderAttemptTimeout;
     private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
-    private TimeSpan PipelinedStatResponseInactivityTimeout =>
-        pipelinedStatResponseInactivityTimeout ?? DefaultPipelinedStatResponseInactivityTimeout;
+    private TimeSpan? PipelinedStatResponseInactivityTimeout =>
+        pipelinedStatResponseInactivityTimeout;
     private TimeSpan BulkProbeTimeout => bulkStatProbeTimeout ?? BulkStatProbeTimeout;
     private TimeSpan IndeterminateRecoveryBudget =>
         indeterminateRecoveryBudget ?? DefaultIndeterminateRecoveryBudget;
@@ -477,13 +475,16 @@ public class MultiProviderNntpClient(
         return RunFromPoolWithBackup(
             (x, attemptToken) => x.StatAsync(segmentId, attemptToken),
             cancellationToken,
-            statOperation: true);
+            statOperation: true,
+            playbackSegmentId: (string)segmentId);
     }
 
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         return RunFromPoolWithBackup(
-            (x, attemptToken) => x.HeadAsync(segmentId, attemptToken), cancellationToken);
+            (x, attemptToken) => x.HeadAsync(segmentId, attemptToken),
+            cancellationToken,
+            playbackSegmentId: (string)segmentId);
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync
@@ -493,7 +494,9 @@ public class MultiProviderNntpClient(
     )
     {
         return RunFromPoolWithBackup(
-            (x, attemptToken) => x.DecodedBodyAsync(segmentId, attemptToken), cancellationToken);
+            (x, attemptToken) => x.DecodedBodyAsync(segmentId, attemptToken),
+            cancellationToken,
+            playbackSegmentId: (string)segmentId);
     }
 
     public override Task<UsenetDecodedArticleResponse> DecodedArticleAsync
@@ -506,7 +509,8 @@ public class MultiProviderNntpClient(
             (x, attemptToken) => x.DecodedArticleAsync(segmentId, attemptToken),
             cancellationToken,
             prepFallbackProbe: (x, attemptToken) =>
-                VerifyArticleExistsAsync(x, segmentId, attemptToken));
+                VerifyArticleExistsAsync(x, segmentId, attemptToken),
+            playbackSegmentId: (string)segmentId);
     }
 
     public override Task<UsenetDateResponse> DateAsync(CancellationToken cancellationToken)
@@ -533,7 +537,8 @@ public class MultiProviderNntpClient(
         {
             result = await RunFromPoolWithBackup(
                 (x, attemptToken) => x.DecodedBodyAsync(segmentId, OnConnectionReadyAgain, attemptToken),
-                cancellationToken
+                cancellationToken,
+                playbackSegmentId: (string)segmentId
             ).ConfigureAwait(false);
         }
         catch
@@ -568,7 +573,8 @@ public class MultiProviderNntpClient(
                 (x, attemptToken) => x.DecodedArticleAsync(segmentId, OnConnectionReadyAgain, attemptToken),
                 cancellationToken,
                 prepFallbackProbe: (x, attemptToken) =>
-                    VerifyArticleExistsAsync(x, segmentId, attemptToken)
+                    VerifyArticleExistsAsync(x, segmentId, attemptToken),
+                playbackSegmentId: (string)segmentId
             ).ConfigureAwait(false);
         }
         catch
@@ -594,9 +600,11 @@ public class MultiProviderNntpClient(
         Func<INntpClient, CancellationToken, Task<T>> task,
         CancellationToken cancellationToken,
         bool statOperation = false,
-        Func<INntpClient, CancellationToken, Task>? prepFallbackProbe = null
+        Func<INntpClient, CancellationToken, Task>? prepFallbackProbe = null,
+        string? playbackSegmentId = null
     ) where T : UsenetResponse
     {
+        var playback = PlaybackDiagnosticContext.Current;
         var attribution = AttributionContext.Value;
         if (attribution != null) attribution.Host = null;
         ExceptionDispatchInfo? lastException = null;
@@ -615,6 +623,12 @@ public class MultiProviderNntpClient(
             var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
             if (prepFallback is null && remainingOperationTime <= TimeSpan.Zero)
             {
+                if (playbackSegmentId is not null)
+                    playback?.RecordFallbackBudgetExhausted(
+                        attemptedProviders,
+                        orderedProviders
+                            .Skip(i)
+                            .Count(candidate => candidate.ProviderType == ProviderType.BackupOnly));
                 providerCheckIncomplete = true;
                 break;
             }
@@ -700,6 +714,15 @@ public class MultiProviderNntpClient(
             }
             var checkingPrepAvailability =
                 phaseSplitFallback && prepFallbackProbe is not null;
+            var isPlaybackBackupAttempt =
+                playbackSegmentId is not null &&
+                provider.ProviderType == ProviderType.BackupOnly;
+            if (isPlaybackBackupAttempt)
+                playback?.RecordBackupAttempt(
+                    provider.Id,
+                    provider.Host,
+                    playbackSegmentId,
+                    DescribePriorFailures(priorMisses));
             try
             {
                 if (checkingPrepAvailability)
@@ -726,6 +749,10 @@ public class MultiProviderNntpClient(
                 // if no article with that message-id is found, try again with the next provider.
                 if (!isLastProvider && result.ResponseType == UsenetResponseType.NoArticleWithThatMessageId)
                 {
+                    if (isPlaybackBackupAttempt)
+                        playback?.RecordBackupOutcome(
+                            provider.Id, provider.Host, playbackSegmentId,
+                            "missing", providerStopwatch.ElapsedMilliseconds);
                     RecordFetch(provider.Id, SegmentFetch.FetchStatus.Missing,
                         providerStopwatch.ElapsedMilliseconds, i);
                     (priorMisses ??= new()).Add((provider.Id, SegmentFetch.FetchStatus.Missing));
@@ -736,6 +763,22 @@ public class MultiProviderNntpClient(
                 // from the last provider (in which case nobody actually answered).
                 if (attribution != null && result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId)
                     attribution.Host = provider.Host;
+
+                var returnedArticle =
+                    result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId;
+                if (isPlaybackBackupAttempt)
+                    playback?.RecordBackupOutcome(
+                        provider.Id,
+                        provider.Host,
+                        playbackSegmentId,
+                        returnedArticle ? "rescued" : "missing",
+                        providerStopwatch.ElapsedMilliseconds);
+                if (returnedArticle && i > 0 && playbackSegmentId is not null)
+                    playback?.RecordFallbackRescue(
+                        provider.Host,
+                        playbackSegmentId,
+                        DescribePriorFailures(priorMisses),
+                        providerStopwatch.ElapsedMilliseconds);
 
                 // record per-queue-item attribution only for bytes-bearing responses (BODY/ARTICLE).
                 if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse
@@ -777,6 +820,10 @@ public class MultiProviderNntpClient(
                     $"{attemptTimeout.TotalSeconds:0.#} seconds.", e);
                 RecordFetch(provider.Id, SegmentFetch.FetchStatus.Timeout,
                     providerStopwatch.ElapsedMilliseconds, i);
+                if (isPlaybackBackupAttempt)
+                    playback?.RecordBackupOutcome(
+                        provider.Id, provider.Host, playbackSegmentId,
+                        "timeout", providerStopwatch.ElapsedMilliseconds);
                 (priorMisses ??= new()).Add((provider.Id, SegmentFetch.FetchStatus.Timeout));
                 lastException = ExceptionDispatchInfo.Capture(providerTimeout);
                 Log.Debug(providerTimeout,
@@ -804,6 +851,15 @@ public class MultiProviderNntpClient(
                     }
                 }
                 RecordFetch(provider.Id, reason, providerStopwatch.ElapsedMilliseconds, i);
+                if (isPlaybackBackupAttempt)
+                    playback?.RecordBackupOutcome(
+                        provider.Id, provider.Host, playbackSegmentId,
+                        reason == SegmentFetch.FetchStatus.Missing
+                            ? "missing"
+                            : reason == SegmentFetch.FetchStatus.Timeout
+                                ? "timeout"
+                                : "error",
+                        providerStopwatch.ElapsedMilliseconds);
                 (priorMisses ??= new()).Add((provider.Id, reason));
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
@@ -850,7 +906,7 @@ public class MultiProviderNntpClient(
         {
             At = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Provider = host,
-            ReadSessionId = ReadSessionScope.Value,
+            ReadSessionId = ReadSessionScope.Value ?? PlaybackDiagnosticContext.Current?.SessionId,
             Bytes = 0, // bytes flow lazily through CountingYencStream → ProviderBytesTracker
             DurationMs = (int)Math.Min(int.MaxValue, durationMs),
             Status = status,
@@ -874,6 +930,20 @@ public class MultiProviderNntpClient(
                 Reason = reason,
             });
         }
+    }
+
+    private string DescribePriorFailures(
+        IReadOnlyList<(string Host, SegmentFetch.FetchStatus Reason)>? priorMisses)
+    {
+        if (priorMisses is null || priorMisses.Count == 0) return "none";
+        return string.Join(
+            ',',
+            priorMisses.Select(prior =>
+            {
+                var provider = providers.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, prior.Host, StringComparison.OrdinalIgnoreCase));
+                return $"{provider?.Host ?? prior.Host}:{prior.Reason}";
+            }));
     }
 
     private T WrapStreamForByteCounting<T>(T result, string host) where T : UsenetResponse
@@ -2350,6 +2420,18 @@ public class MultiProviderNntpClient(
             var nextIndex = 0;
             var rescueFrom = chunk.Count;
             var rotatePrimary = false;
+            var rotationReason = "none";
+            var chunkTimer = Stopwatch.StartNew();
+            var playback = PlaybackDiagnosticContext.Current;
+            var primaryIsPlaybackBackup =
+                primary.ProviderType == ProviderType.BackupOnly && playback is not null;
+            if (primaryIsPlaybackBackup)
+                playback!.RecordBackupAttempt(
+                    primary.Id,
+                    primary.Host,
+                    chunk[0],
+                    $"pipeline-chunk:{chunk.Count}",
+                    pipelined: true);
 
             await using (var enumerator = primary
                              .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -2363,6 +2445,7 @@ public class MultiProviderNntpClient(
                         if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
                         {
                             rotatePrimary = true;
+                            rotationReason = "ended-early";
                             rescueFrom = nextIndex;
                             break;
                         }
@@ -2373,6 +2456,11 @@ public class MultiProviderNntpClient(
                         Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
                         rotatePrimary = true;
+                        rotationReason = e.GetType().Name;
+                        if (primaryIsPlaybackBackup)
+                            playback!.RecordBackupOutcome(
+                                primary.Id, primary.Host, chunk[nextIndex],
+                                "error", chunkTimer.ElapsedMilliseconds);
                         rescueFrom = nextIndex;
                         break;
                     }
@@ -2381,10 +2469,18 @@ public class MultiProviderNntpClient(
                     {
                         nextIndex++;
                         usageTracker.RecordSuccess(primary.Id);
+                        if (primaryIsPlaybackBackup)
+                            playback!.RecordBackupOutcome(
+                                primary.Id, primary.Host, result.SegmentId,
+                                "rescued", chunkTimer.ElapsedMilliseconds);
                         yield return WrapPipelinedBody(result, primary.Id);
                         continue;
                     }
 
+                    if (primaryIsPlaybackBackup)
+                        playback!.RecordBackupOutcome(
+                            primary.Id, primary.Host, result.SegmentId,
+                            "missing", chunkTimer.ElapsedMilliseconds);
                     rescueFrom = nextIndex;
                     break;
                 }
@@ -2401,6 +2497,7 @@ public class MultiProviderNntpClient(
                         Log.Debug(e, "Pipelined BODY chunk failed on primary provider {Provider} after its final response.",
                             primary.Host);
                         rotatePrimary = true;
+                        rotationReason = e.GetType().Name;
                     }
                 }
 
@@ -2409,8 +2506,18 @@ public class MultiProviderNntpClient(
             }
 
             if (rotatePrimary)
-                primary = SelectReplacementPipelinedProvider(
-                    primary, failedProviders, cancellationToken, ref reserved);
+            {
+                var failedProvider = primary;
+                var replacement = SelectReplacementPipelinedProvider(
+                    failedProvider, failedProviders, cancellationToken, ref reserved);
+                playback?.RecordProviderRotation(
+                    failedProvider.Host,
+                    replacement.Host,
+                    replacement.ProviderType == ProviderType.BackupOnly,
+                    chunk.Count - rescueFrom,
+                    rotationReason);
+                primary = replacement;
+            }
 
             for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {
@@ -2445,6 +2552,18 @@ public class MultiProviderNntpClient(
             var nextIndex = 0;
             var rescueFrom = chunk.Count;
             var rotatePrimary = false;
+            var rotationReason = "none";
+            var chunkTimer = Stopwatch.StartNew();
+            var playback = PlaybackDiagnosticContext.Current;
+            var primaryIsPlaybackBackup =
+                primary.ProviderType == ProviderType.BackupOnly && playback is not null;
+            if (primaryIsPlaybackBackup)
+                playback!.RecordBackupAttempt(
+                    primary.Id,
+                    primary.Host,
+                    chunk[0],
+                    $"pipeline-chunk:{chunk.Count}",
+                    pipelined: true);
 
             await using (var enumerator = primary
                              .DecodedArticlesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
@@ -2458,6 +2577,7 @@ public class MultiProviderNntpClient(
                         if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
                         {
                             rotatePrimary = true;
+                            rotationReason = "ended-early";
                             rescueFrom = nextIndex;
                             break;
                         }
@@ -2468,6 +2588,11 @@ public class MultiProviderNntpClient(
                         Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider}; rescuing remaining segments.",
                             primary.Host);
                         rotatePrimary = true;
+                        rotationReason = e.GetType().Name;
+                        if (primaryIsPlaybackBackup)
+                            playback!.RecordBackupOutcome(
+                                primary.Id, primary.Host, chunk[nextIndex],
+                                "error", chunkTimer.ElapsedMilliseconds);
                         rescueFrom = nextIndex;
                         break;
                     }
@@ -2476,10 +2601,18 @@ public class MultiProviderNntpClient(
                     {
                         nextIndex++;
                         usageTracker.RecordSuccess(primary.Id);
+                        if (primaryIsPlaybackBackup)
+                            playback!.RecordBackupOutcome(
+                                primary.Id, primary.Host, result.SegmentId,
+                                "rescued", chunkTimer.ElapsedMilliseconds);
                         yield return WrapPipelinedArticle(result, primary.Id);
                         continue;
                     }
 
+                    if (primaryIsPlaybackBackup)
+                        playback!.RecordBackupOutcome(
+                            primary.Id, primary.Host, result.SegmentId,
+                            "missing", chunkTimer.ElapsedMilliseconds);
                     rescueFrom = nextIndex;
                     break;
                 }
@@ -2496,6 +2629,7 @@ public class MultiProviderNntpClient(
                         Log.Debug(e, "Pipelined ARTICLE chunk failed on primary provider {Provider} after its final response.",
                             primary.Host);
                         rotatePrimary = true;
+                        rotationReason = e.GetType().Name;
                     }
                 }
 
@@ -2504,8 +2638,18 @@ public class MultiProviderNntpClient(
             }
 
             if (rotatePrimary)
-                primary = SelectReplacementPipelinedProvider(
-                    primary, failedProviders, cancellationToken, ref reserved);
+            {
+                var failedProvider = primary;
+                var replacement = SelectReplacementPipelinedProvider(
+                    failedProvider, failedProviders, cancellationToken, ref reserved);
+                playback?.RecordProviderRotation(
+                    failedProvider.Host,
+                    replacement.Host,
+                    replacement.ProviderType == ProviderType.BackupOnly,
+                    chunk.Count - rescueFrom,
+                    rotationReason);
+                primary = replacement;
+            }
 
             for (var rescueIndex = rescueFrom; rescueIndex < chunk.Count; rescueIndex++)
             {

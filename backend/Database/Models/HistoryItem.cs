@@ -18,6 +18,7 @@ public class HistoryItem
     public Guid? NzbBlobId { get; set; }
     public string? IndexerName { get; set; }
     public string? ContentGroupKey { get; set; }
+    public string? SubmissionSource { get; set; }
     public DateTimeOffset? LastPlayedAt { get; set; }
 
     public enum DownloadStatusOption

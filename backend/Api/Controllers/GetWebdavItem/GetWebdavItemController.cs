@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NWebDav.Server.Stores;
+using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
+using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Par2Recovery;
 using NzbWebDAV.Services;
@@ -47,9 +49,10 @@ public class GetWebdavItemController(
 
         // Now that the real filename + size are known, update the active-read
         // entry so the UI shows the human-readable name instead of the .ids GUID.
+        var displayName = idFile?.FriendlyName ?? item.Name;
+        HttpContext.Items["playbackFileName"] = displayName;
         if (HttpContext.Items["readSessionId"] is Guid sid)
         {
-            var displayName = idFile?.FriendlyName ?? item.Name;
             activeReadRegistry.UpdateInfo(sid, displayName, fileSize);
         }
 
@@ -108,10 +111,7 @@ public class GetWebdavItemController(
             var request = new GetWebdavItemRequest(HttpContext);
             var sessionId = TrackReadSession(request.Item);
             HttpContext.Items["readSessionId"] = sessionId;
-            using var scope = providerUsageTracker.BeginScope(sessionId);
-            await using var response = await GetWebdavItem(request);
-            var effectiveStart = (long)(HttpContext.Items["effectiveRangeStart"] ?? 0L);
-            await CopyAndReportAsync(response, Response.Body, sessionId, effectiveStart, HttpContext.RequestAborted);
+            await HandlePlaybackRequestAsync(request, sessionId).ConfigureAwait(false);
         }
         catch (UnauthorizedAccessException)
         {
@@ -119,40 +119,134 @@ public class GetWebdavItemController(
         }
     }
 
-    private async Task CopyAndReportAsync(Stream src, Stream dest, Guid sessionId, long startOffset, CancellationToken ct)
+    private async Task HandlePlaybackRequestAsync(
+        GetWebdavItemRequest request,
+        Guid sessionId)
     {
-        // 64 KB chunks; after each write report (bytesRead, absolutePosition)
-        // so the Right-Now panel can show real playback location and the
-        // throughput rate populates correctly.
-        var buffer = new byte[64 * 1024];
-        var position = startOffset;
-        while (true)
+        var requestedRange = Request.Headers.Range.FirstOrDefault();
+        var diagnostics = new PlaybackRequestDiagnostics(
+            sessionId,
+            request.Item,
+            Path.GetFileName(request.Item),
+            requestedRange);
+        activeReadRegistry.MarkRequestStarted(
+            sessionId,
+            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            Request.Headers.UserAgent.ToString());
+
+        using var usageScope = providerUsageTracker.BeginScope(sessionId);
+        using var byteCapture = providerUsageTracker.BeginByteCapture();
+        using var readSessionScope = MultiProviderNntpClient.BeginReadSessionScope(sessionId);
+        using var diagnosticScope = PlaybackDiagnosticContext.Begin(diagnostics);
+
+        var reason = "completed";
+        var endReason = ReadSession.EndReasonCode.Completed;
+        Exception? terminalException = null;
+        try
         {
-            int read;
-            try
+            await using var response = await GetWebdavItem(request).ConfigureAwait(false);
+            var effectiveStart = (long)(HttpContext.Items["effectiveRangeStart"] ?? 0L);
+            diagnostics.MarkStreamOpened(
+                (string?)HttpContext.Items["playbackFileName"] ?? Path.GetFileName(request.Item),
+                TryGetLength(response),
+                effectiveStart);
+            await PlaybackTransferPump.CopyAsync(
+                    response,
+                    Response.Body,
+                    diagnostics,
+                    effectiveStart,
+                    endOffset: null,
+                    seekSource: false,
+                    onBytesServed: (bytes, position) =>
+                        activeReadRegistry.Touch(sessionId, bytes, position),
+                    onSourceError: OnSourceError,
+                    cancellationToken: HttpContext.RequestAborted)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            reason = "client-abort";
+            endReason = ReadSession.EndReasonCode.Aborted;
+            throw;
+        }
+        catch (Exception exception)
+        {
+            terminalException = exception;
+            if (ContainsTimeout(exception))
             {
-                read = await src.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                reason = "timeout";
+                endReason = ReadSession.EndReasonCode.Timeout;
             }
-            catch (OperationCanceledException)
+            else
             {
-                throw;
+                reason = "error";
+                endReason = ReadSession.EndReasonCode.Error;
             }
-            catch (Exception e)
-            {
-                if (HttpContext.Items["historyItemId"] is Guid hid)
-                {
-                    negativeCache.MarkHistoryItemBroken(hid);
-                    Serilog.Log.Warning(
-                        "Mid-read failed at offset {Offset} for HistoryItem {HistoryItemId}: {Message}",
-                        position, hid, e.Message);
-                    PoisonFileNameAsync(hid);
-                }
-                throw;
-            }
-            if (read <= 0) break;
-            await dest.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
-            position += read;
-            activeReadRegistry.Touch(sessionId, read, position);
+            throw;
+        }
+        finally
+        {
+            activeReadRegistry.MarkRequestEnded(sessionId, endReason);
+            CompletePlaybackDiagnostics(diagnostics, reason, terminalException);
+        }
+
+        return;
+
+        void OnSourceError(Exception exception, long position)
+        {
+            if (HttpContext.Items["historyItemId"] is not Guid historyItemId) return;
+            negativeCache.MarkHistoryItemBroken(historyItemId);
+            Serilog.Log.Warning(
+                "Mid-read failed at offset {Offset} for HistoryItem {HistoryItemId}: {Message}",
+                position, historyItemId, exception.Message);
+            PoisonFileNameAsync(historyItemId);
+        }
+    }
+
+    private void CompletePlaybackDiagnostics(
+        PlaybackRequestDiagnostics diagnostics,
+        string reason,
+        Exception? terminalException)
+    {
+        var usage = ProviderUsageTracker.ToDisplayHosts(
+            providerUsageTracker.Snapshot(diagnostics.SessionId),
+            configManager.GetUsenetProviderConfig().Providers);
+        var providerSummary = usage.Count == 0
+            ? "none"
+            : string.Join(
+                ',',
+                usage.OrderByDescending(x => x.Value)
+                    .Select(x => $"{x.Key}:{x.Value}"));
+        var bytesFetched = providerUsageTracker
+            .SnapshotBytes(diagnostics.SessionId)
+            .Values
+            .Sum();
+        diagnostics.Complete(
+            reason,
+            providerSummary,
+            bytesFetched,
+            providerUsageTracker.GetFailoverSaves(diagnostics.SessionId),
+            terminalException);
+    }
+
+    private static bool ContainsTimeout(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+            if (current is TimeoutException)
+                return true;
+        return false;
+    }
+
+    private static long? TryGetLength(Stream stream)
+    {
+        if (!stream.CanSeek) return null;
+        try
+        {
+            return stream.Length;
+        }
+        catch (NotSupportedException)
+        {
+            return null;
         }
     }
 

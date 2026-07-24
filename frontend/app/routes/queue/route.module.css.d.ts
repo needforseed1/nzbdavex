@@ -3,10 +3,11 @@ declare const styles: {
   readonly "queueContainer": string;
   readonly "section": string;
   readonly "sectionTitle": string;
+  readonly "historyCategoryControl": string;
+  readonly "historyCategoryFilter": string;
   readonly "tableFooter": string;
   readonly "pausedNote": string;
   readonly "dropzone": string;
   readonly "activeDropzone": string;
 };
 export = styles;
-

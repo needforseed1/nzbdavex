@@ -898,8 +898,9 @@ public class ProfilePlayController(
         var fileName = $"{safeTitle}.nzb";
 
         var cacheEntry = cache.Get(nzbToken);
-        var category = StringUtil.EmptyToNull(cacheEntry?.Type)
-                       ?? configManager.GetManualUploadCategory();
+        var category = GetPlaybackCategory(
+            cacheEntry?.Type,
+            configManager.GetManualUploadCategory());
         var contentGroupKey = cacheEntry is null ? null : VariantResolver.BuildContentGroupKey(cacheEntry);
 
         Guid nzoId;
@@ -1071,6 +1072,16 @@ public class ProfilePlayController(
         // Budget exhausted — caller is expected to schedule orphan cleanup so the
         // queue item doesn't keep downloading a release the player gave up on.
         return (null, CommitReason.BudgetTimeout, newlyEnqueuedNzoId, null, null, null, null, null, null);
+    }
+
+    internal static string GetPlaybackCategory(string? contentType, string fallbackCategory)
+    {
+        return contentType?.Trim().ToLowerInvariant() switch
+        {
+            "movie" => "streaming-movie",
+            "series" => "streaming-series",
+            _ => fallbackCategory,
+        };
     }
 
     private async Task<Guid?> FindCompletedReleaseAsync(string fileName, string category, CancellationToken ct)

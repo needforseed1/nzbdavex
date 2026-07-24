@@ -82,8 +82,14 @@ class BackendClient {
         return data.queue;
     }
 
-    public async getHistory(limit: number, start: number = 0): Promise<HistoryResponse> {
-        const url = BACKEND_URL + `/api?mode=history&start=${start}&pageSize=${limit}`;
+    public async getHistory(limit: number, start: number = 0, category: string | null = null): Promise<HistoryResponse> {
+        const params = new URLSearchParams({
+            mode: "history",
+            start: String(start),
+            pageSize: String(limit),
+        });
+        if (category) params.set("category", category);
+        const url = BACKEND_URL + `/api?${params}`;
 
         const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { headers: { "x-api-key": apiKey } });
@@ -426,6 +432,7 @@ export type ProviderUsage = {
 export type HistoryResponse = {
     slots: HistorySlot[],
     noofslots: number,
+    categories: string[],
 }
 
 export type HistorySlot = {
@@ -433,6 +440,7 @@ export type HistorySlot = {
     nzb_name: string,
     name: string,
     category: string,
+    display_category?: string,
     status: string,
     bytes: number,
     storage: string,

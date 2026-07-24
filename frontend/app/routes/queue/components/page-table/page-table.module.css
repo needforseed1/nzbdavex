@@ -153,7 +153,8 @@
     vertical-align: baseline;
     background-color: var(--bg-surface);
     border: 1px solid var(--border-subtle);
-    width: 88px;
+    min-width: 88px;
+    white-space: nowrap;
     letter-spacing: 0.02em;
     text-transform: lowercase;
     box-sizing: border-box;

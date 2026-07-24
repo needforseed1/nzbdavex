@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using NzbWebDAV.Database.Models.Metrics;
 
 namespace NzbWebDAV.Services;
 
@@ -91,6 +92,24 @@ public class ActiveReadRegistry
         if (fileSize is { } size) entry.FileSize = size;
     }
 
+    public void MarkRequestStarted(Guid id, string? clientIp, string? clientUserAgent)
+    {
+        if (!_entries.TryGetValue(id, out var entry)) return;
+        entry.LastActivityAt = DateTimeOffset.UtcNow;
+        entry.ClientIp = clientIp;
+        entry.ClientUserAgent = clientUserAgent;
+        // A seek commonly cancels one range and immediately starts another.
+        // The newest request therefore owns the eventual terminal reason.
+        entry.EndReason = ReadSession.EndReasonCode.Completed;
+    }
+
+    public void MarkRequestEnded(Guid id, ReadSession.EndReasonCode endReason)
+    {
+        if (!_entries.TryGetValue(id, out var entry)) return;
+        entry.LastActivityAt = DateTimeOffset.UtcNow;
+        entry.EndReason = endReason;
+    }
+
     public IReadOnlyList<Entry> Snapshot()
     {
         var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
@@ -137,6 +156,10 @@ public class ActiveReadRegistry
         public string FileName { get; set; } = "";
         public long? FileSize { get; set; }
         public string ClientKey { get; init; } = "";
+        public string? ClientUserAgent { get; set; }
+        public string? ClientIp { get; set; }
+        public ReadSession.EndReasonCode EndReason { get; set; } =
+            ReadSession.EndReasonCode.Completed;
         public DateTimeOffset StartedAt { get; init; }
         public DateTimeOffset LastActivityAt { get; set; }
         public long BytesRead;

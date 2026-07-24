@@ -19,12 +19,28 @@ export type HistoryTableProps = {
     totalPages: number,
     isLive: boolean,
     onPageSelected: (page: number) => void,
+    filterCategories: string[],
+    selectedCategory: string | null,
+    onCategoryChanged: (category: string) => void,
     onIsSelectedChanged: (nzo_ids: Set<string>, isSelected: boolean) => void,
     onIsRemovingChanged: (nzo_ids: Set<string>, isRemoving: boolean) => void,
     onRemoved: (nzo_ids: Set<string>) => void,
 }
 
-export function HistoryTable({ historySlots, totalHistoryCount, pageNumber, totalPages, isLive, onPageSelected, onIsSelectedChanged, onIsRemovingChanged, onRemoved }: HistoryTableProps) {
+export function HistoryTable({
+    historySlots,
+    totalHistoryCount,
+    pageNumber,
+    totalPages,
+    isLive,
+    onPageSelected,
+    filterCategories,
+    selectedCategory,
+    onCategoryChanged,
+    onIsSelectedChanged,
+    onIsRemovingChanged,
+    onRemoved,
+}: HistoryTableProps) {
     const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
     var selectedCount = historySlots.filter(x => !!x.isSelected).length;
     var headerCheckboxState: TriCheckboxState = selectedCount === 0 ? 'none' : selectedCount === historySlots.length ? 'all' : 'some';
@@ -65,12 +81,30 @@ export function HistoryTable({ historySlots, totalHistoryCount, pageNumber, tota
         onIsRemovingChanged(nzo_ids, false);
     }, [historySlots, setIsConfirmingRemoval, onIsRemovingChanged, onRemoved]);
 
+    const categoryFilter = (
+        <label className={styles.historyCategoryControl}>
+            <span>Filter</span>
+            <select
+                className={styles.historyCategoryFilter}
+                aria-label="Filter history by category"
+                value={selectedCategory ?? ""}
+                onChange={event => onCategoryChanged(event.target.value)}
+            >
+                <option value="">All categories</option>
+                {filterCategories.map(category => (
+                    <option key={category} value={category}>{category}</option>
+                ))}
+            </select>
+        </label>
+    );
+
     var sectionTitle = (
         <div className={styles.sectionTitle}>
             <h3>History</h3>
             {headerCheckboxState !== 'none' &&
                 <ActionButton type="delete" onClick={onRemove} />
             }
+            {categoryFilter}
         </div>
     );
 
@@ -98,7 +132,7 @@ export function HistoryTable({ historySlots, totalHistoryCount, pageNumber, tota
             <ConfirmModal
                 show={isConfirmingRemoval}
                 title="Remove From History?"
-                message={`${selectedCount} item(s) will be removed`}
+                message={`${selectedCount} selected item(s)${selectedCategory ? ` in ${selectedCategory}` : ""} will be removed`}
                 checkboxMessage="Delete mounted files"
                 onConfirm={onConfirmRemoval}
                 onCancel={onCancelRemoval} />
@@ -153,7 +187,7 @@ export function HistoryRow({ slot, onIsSelectedChanged, onIsRemovingChanged, onR
                 isSelected={!!slot.isSelected}
                 isRemoving={!!slot.isRemoving}
                 name={slot.name}
-                category={slot.category}
+                category={slot.display_category ?? slot.category}
                 status={slot.status}
                 error={slot.fail_message}
                 fileSizeBytes={slot.bytes}

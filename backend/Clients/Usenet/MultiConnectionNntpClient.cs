@@ -1,4 +1,5 @@
-﻿using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
@@ -7,6 +8,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services;
 using Serilog;
 using UsenetSharp.Models;
 
@@ -488,6 +490,9 @@ public class MultiConnectionNntpClient(
                 priority, attempt, cancellationToken).ConfigureAwait(false);
             var completed = false;
             var received = 0;
+            var firstResponseMs = -1L;
+            var connectionId = RuntimeHelpers.GetHashCode(connectionLock.Connection);
+            var commandStopwatch = Stopwatch.StartNew();
             // The command timer starts only after a usable connection has been
             // acquired, so a socket that finished its handshake late still gets a
             // full command window instead of the tail of an exhausted deadline.
@@ -522,6 +527,8 @@ public class MultiConnectionNntpClient(
                         }
 
                         current = enumerator.Current;
+                        if (firstResponseMs < 0)
+                            firstResponseMs = commandStopwatch.ElapsedMilliseconds;
                         inactivityCts?.CancelAfter(attempt!.ResponseInactivityTimeout!.Value);
                         received++;
                         if (received > expectedCount)
@@ -540,7 +547,8 @@ public class MultiConnectionNntpClient(
                         connectionLock.Replace();
                         throw new TimeoutException(
                             $"Provider {Host} did not return the next pipelined response within " +
-                            $"{attempt!.ResponseInactivityTimeout!.Value.TotalSeconds:0.###} seconds.",
+                            $"{attempt!.ResponseInactivityTimeout!.Value.TotalSeconds:0.###} seconds; " +
+                            $"{DescribePipelinedAttempt()}.",
                             e);
                     }
                     catch (OperationCanceledException e) when (
@@ -554,7 +562,8 @@ public class MultiConnectionNntpClient(
                         connectionLock.Replace();
                         throw new TimeoutException(
                             $"Provider {Host} did not complete the pipelined batch within " +
-                            $"{attempt!.CommandTimeout.TotalSeconds:0.#} seconds after acquiring a connection.",
+                            $"{attempt!.CommandTimeout.TotalSeconds:0.#} seconds after acquiring a connection; " +
+                            $"{DescribePipelinedAttempt()}.",
                             e);
                     }
                     catch (Exception e) when (!e.IsCancellationException())
@@ -572,6 +581,16 @@ public class MultiConnectionNntpClient(
                 if (!completed) connectionLock.Replace();
                 connectionLock.Dispose();
             }
+
+            string DescribePipelinedAttempt() =>
+                $"responses={received}/{expectedCount}, " +
+                $"firstResponseMs={(firstResponseMs < 0 ? "none" : firstResponseMs)}, " +
+                $"elapsedMs={commandStopwatch.ElapsedMilliseconds}, " +
+                $"connection={connectionId:x8}, " +
+                $"poolLive={connectionPool.LiveConnections}, " +
+                $"poolActive={connectionPool.ActiveConnections}, " +
+                $"poolIdle={connectionPool.IdleConnections}, " +
+                $"poolPending={connectionPool.PendingAcquisitions}";
         }
         finally
         {
@@ -584,24 +603,54 @@ public class MultiConnectionNntpClient(
         ProviderAttemptContext? attempt,
         CancellationToken cancellationToken)
     {
-        if (attempt is null)
-            return await connectionPool.GetConnectionLockAsync(priority, cancellationToken)
-                .ConfigureAwait(false);
-
-        using var acquisitionCts =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        acquisitionCts.CancelAfter(attempt.AcquisitionTimeout);
+        var timer = Stopwatch.StartNew();
+        var outcome = "interrupted";
         try
         {
-            return await connectionPool.GetConnectionLockAsync(priority, acquisitionCts.Token)
-                .ConfigureAwait(false);
+            if (attempt is null)
+            {
+                var connection = await connectionPool
+                    .GetConnectionLockAsync(priority, cancellationToken)
+                    .ConfigureAwait(false);
+                outcome = "acquired";
+                return connection;
+            }
+
+            using var acquisitionCts =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            acquisitionCts.CancelAfter(attempt.AcquisitionTimeout);
+            try
+            {
+                var connection = await connectionPool
+                    .GetConnectionLockAsync(priority, acquisitionCts.Token)
+                    .ConfigureAwait(false);
+                outcome = "acquired";
+                return connection;
+            }
+            catch (OperationCanceledException e) when (
+                acquisitionCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                outcome = "timeout";
+                throw new ConnectionAcquisitionTimeoutException(
+                    $"Provider {Host} had no usable connection within " +
+                    $"{attempt.AcquisitionTimeout.TotalSeconds:0.#} seconds; " +
+                    $"poolLive={connectionPool.LiveConnections}, " +
+                    $"poolActive={connectionPool.ActiveConnections}, " +
+                    $"poolIdle={connectionPool.IdleConnections}, " +
+                    $"poolPending={connectionPool.PendingAcquisitions}.", e);
+            }
         }
-        catch (OperationCanceledException e) when (
-            acquisitionCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        finally
         {
-            throw new ConnectionAcquisitionTimeoutException(
-                $"Provider {Host} had no usable connection within " +
-                $"{attempt.AcquisitionTimeout.TotalSeconds:0.#} seconds.", e);
+            timer.Stop();
+            PlaybackDiagnosticContext.Current?.RecordProviderPoolWait(
+                Host,
+                timer.ElapsedMilliseconds,
+                outcome,
+                connectionPool.LiveConnections,
+                connectionPool.ActiveConnections,
+                connectionPool.IdleConnections,
+                connectionPool.PendingAcquisitions);
         }
     }
 

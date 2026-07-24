@@ -273,6 +273,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.ContentGroupKey)
                 .IsRequired(false);
 
+            e.Property(i => i.SubmissionSource)
+                .IsRequired(false);
+
             e.HasIndex(i => new { i.Category, i.FileName })
                 .IsUnique();
 
@@ -351,6 +354,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.ContentGroupKey)
                 .IsRequired(false);
 
+            e.Property(i => i.SubmissionSource)
+                .IsRequired(false);
+
             e.Property(i => i.LastPlayedAt)
                 .ValueGeneratedNever()
                 .HasConversion(
@@ -374,6 +380,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
                 .IsUnique(false);
 
             e.HasIndex(i => new { i.ContentGroupKey, i.DownloadStatus })
+                .IsUnique(false);
+
+            e.HasIndex(i => new { i.SubmissionSource, i.Category, i.CreatedAt })
                 .IsUnique(false);
         });
 

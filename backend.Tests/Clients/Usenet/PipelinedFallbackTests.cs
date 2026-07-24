@@ -89,6 +89,30 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task DefaultHealthStatAllowsBriefResponseGapWithinBatchDeadline()
+    {
+        var brieflyPausedClient = new CoveragePipelineClient(
+            _ => true,
+            (_, cancellationToken) => Task.Delay(
+                TimeSpan.FromMilliseconds(1650), cancellationToken));
+        var backupClient = new RecordingPipelineClient([true, true]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(brieflyPausedClient, ProviderType.Pooled, "briefly-paused", 0),
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromSeconds(3),
+            providerOperationTimeout: TimeSpan.FromSeconds(4));
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b"], 2, CancellationToken.None));
+
+        Assert.All(results, result => Assert.True(result.Exists));
+        Assert.Single(brieflyPausedClient.Batches);
+        Assert.Empty(backupClient.Batches);
+    }
+
+    [Fact]
     public async Task ResponseInactivityRetriesSilentBatchBeforeAbsoluteDeadline()
     {
         var stalledClient = new CoveragePipelineClient(
@@ -214,6 +238,27 @@ public class PipelinedFallbackTests
 
         Assert.Equal(["a", "b"], primaryClient.BodyBatches.Single());
         Assert.Equal(["c", "d"], backupClient.BodyBatches.Single());
+    }
+
+    [Fact]
+    public async Task PlaybackDiagnosticsRecordWhenBackupOnlyProviderTakesOverPipeline()
+    {
+        var primaryClient = new RecordingPipelineClient([], failBodyAfterResults: 1);
+        var backupClient = new RecordingPipelineClient([]);
+        using var client = new MultiProviderNntpClient([
+            CreateProvider(primaryClient, ProviderType.Pooled, "primary", 0),
+            CreateProvider(backupClient, ProviderType.BackupOnly, "backup", 1),
+        ], new ProviderUsageTracker());
+        var diagnostics = new PlaybackRequestDiagnostics(
+            Guid.NewGuid(), "/media/test.mkv", "test.mkv", requestedRange: null);
+
+        using (PlaybackDiagnosticContext.Begin(diagnostics))
+            await DisposeBodiesAsync(client.DecodedBodiesPipelinedAsync(
+                ["a", "b", "c", "d"], 2, CancellationToken.None));
+
+        var snapshot = diagnostics.Snapshot();
+        Assert.Equal(1, snapshot.ProviderRotations);
+        Assert.Contains("backup:attempts=1,rescued=2", snapshot.BackupSummary);
     }
 
     [Fact]

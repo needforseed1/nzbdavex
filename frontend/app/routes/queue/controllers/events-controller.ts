@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import type { HistorySlot, QueueSlot } from "~/clients/backend-client.server";
 import type { PresentationHistorySlot, PresentationQueueSlot, UploadingFile } from "../route";
+import { matchesHistoryCategory } from "../history-category-filter";
 
 export type QueueEvents = {
     onAddQueueSlot: (queueSlot: QueueSlot) => void,
@@ -114,11 +115,16 @@ export function useQueueEvents(
 
 export function useHistoryEvents(
     setHistorySlots: (value: React.SetStateAction<PresentationHistorySlot[]>) => void,
-    pageSize: number
+    pageSize: number,
+    selectedCategory: string | null,
 ) {
     const onAddHistorySlot = useCallback((historySlot: HistorySlot) => {
+        if (!matchesHistoryCategory(
+            historySlot.display_category ?? historySlot.category,
+            selectedCategory,
+        )) return;
         setHistorySlots(slots => [historySlot, ...slots].slice(0, pageSize));
-    }, [setHistorySlots, pageSize]);
+    }, [setHistorySlots, pageSize, selectedCategory]);
 
     const onSelectHistorySlots = useCallback((ids: Set<string>, isSelected: boolean) => {
         setHistorySlots(slots => slots.map(x => ids.has(x.nzo_id) ? { ...x, isSelected } : x));

@@ -14,6 +14,7 @@ public class QueueItem
     public DateTime? PauseUntil { get; set; }
     public string? IndexerName { get; set; }
     public string? ContentGroupKey { get; set; }
+    public string? SubmissionSource { get; set; }
 
     public enum PriorityOption
     {

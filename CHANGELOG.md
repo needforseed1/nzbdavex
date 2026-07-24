@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.18](https://github.com/needforseed1/nzbdavex/compare/v1.3.17...v1.3.18) (2026-07-24)
+
+### Fixes
+
+* Health checks now preserve pipelined article-status replies as they arrive and retire a connection if a partial batch is abandoned. Slow or interrupted batches can retain their successful work without leaving unread replies to interfere with later checks.
+
+### Improvements
+
+* Playback logs now correlate startup, seeks, first-byte timing, upstream and downstream stalls, connection waits, provider rotations, and backup-provider recovery in one request summary. This makes it possible to distinguish Usenet trouble from a slow player, proxy, or mobile connection.
+* History can now be filtered by category. On-demand movie and series playback is shown separately from normal automation imports while retaining the physical categories expected by streaming integrations.
+
+### Required AIOStreams setup
+
+* In the AIOStreams NzbDav service settings, enter the NzbDavEx API key as `streaming:<NZBDAV API key>`. Keep the API key stored in NzbDavEx unchanged; the prefix is added only in AIOStreams so NzbDavEx can identify and categorize its streaming submissions.
+
 ## [1.3.17](https://github.com/needforseed1/nzbdavex/compare/v1.3.16...v1.3.17) (2026-07-23)
 
 ### Fixes

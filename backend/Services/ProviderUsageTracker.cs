@@ -18,7 +18,7 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _usage = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, long>> _bytes = new();
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<string, PrepProviderAttemptStat>> _prepAttempts = new();
-    private readonly ConcurrentDictionary<Guid, byte> _byteCaptureScopes = new();
+    private readonly ConcurrentDictionary<Guid, int> _byteCaptureScopes = new();
     private readonly ConcurrentDictionary<Guid, long> _failoverSaves = new();
     private readonly ConcurrentDictionary<Guid, PrepUsageSnapshot> _prepStats = new();
     private readonly ConcurrentDictionary<Guid, int> _healthCheckTotals = new();
@@ -92,8 +92,8 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     {
         var id = CurrentScope.Value;
         if (id is null) return new Releaser(static () => { });
-        _byteCaptureScopes[id.Value] = 0;
-        return new Releaser(() => _byteCaptureScopes.TryRemove(id.Value, out _));
+        _byteCaptureScopes.AddOrUpdate(id.Value, 1, static (_, count) => count + 1);
+        return new Releaser(() => ReleaseByteCapture(id.Value));
     }
 
     public IDisposable BeginPrepAttemptCapture()
@@ -245,6 +245,23 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
         _healthCheckOutcomes.TryRemove(queueItemId, out _);
         _healthStats.TryRemove(queueItemId, out _);
         _recoveryNotices.TryRemove(queueItemId, out _);
+    }
+
+    private void ReleaseByteCapture(Guid scopeId)
+    {
+        while (_byteCaptureScopes.TryGetValue(scopeId, out var count))
+        {
+            if (count <= 1)
+            {
+                if (((ICollection<KeyValuePair<Guid, int>>)_byteCaptureScopes)
+                    .Remove(new KeyValuePair<Guid, int>(scopeId, count)))
+                    return;
+                continue;
+            }
+
+            if (_byteCaptureScopes.TryUpdate(scopeId, count - 1, count))
+                return;
+        }
     }
 
     private sealed class Releaser(Action onDispose) : IDisposable

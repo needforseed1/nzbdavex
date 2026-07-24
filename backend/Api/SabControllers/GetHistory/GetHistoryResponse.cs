@@ -16,6 +16,9 @@ public class GetHistoryResponse : SabBaseResponse
 
         [JsonPropertyName("noofslots")]
         public int TotalCount { get; set; }
+
+        [JsonPropertyName("categories")]
+        public List<string> Categories { get; set; } = [];
     }
 
     public class HistorySlot
@@ -31,6 +34,9 @@ public class GetHistoryResponse : SabBaseResponse
 
         [JsonPropertyName("category")]
         public string Category { get; set; }
+
+        [JsonPropertyName("display_category")]
+        public string DisplayCategory { get; set; }
 
         [JsonPropertyName("status")]
         [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -72,6 +78,8 @@ public class GetHistoryResponse : SabBaseResponse
                 NzbName = historyItem.FileName,
                 JobName = historyItem.JobName,
                 Category = historyItem.Category,
+                DisplayCategory = HistoryCategoryClassifier.GetDisplayCategory(
+                    historyItem.Category, historyItem.SubmissionSource),
                 Status = historyItem.DownloadStatus,
                 SizeInBytes = historyItem.TotalSegmentBytes,
                 DownloadPath = GetDownloadPath(historyItem, downloadFolder, configManager),

@@ -308,6 +308,9 @@ namespace NzbWebDAV.Database.Migrations
                     b.Property<Guid?>("NzbBlobId")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("SubmissionSource")
+                        .HasColumnType("TEXT");
+
                     b.Property<long>("TotalSegmentBytes")
                         .HasColumnType("INTEGER");
 
@@ -324,6 +327,8 @@ namespace NzbWebDAV.Database.Migrations
                     b.HasIndex("Category", "DownloadDirId");
 
                     b.HasIndex("ContentGroupKey", "DownloadStatus");
+
+                    b.HasIndex("SubmissionSource", "Category", "CreatedAt");
 
                     b.ToTable("HistoryItems", (string)null);
                 });
@@ -610,6 +615,9 @@ namespace NzbWebDAV.Database.Migrations
 
                     b.Property<int>("Priority")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("SubmissionSource")
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("TotalSegmentBytes")
                         .HasColumnType("INTEGER");

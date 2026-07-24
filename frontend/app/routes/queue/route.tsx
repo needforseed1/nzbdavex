@@ -9,6 +9,13 @@ import { useHistoryEvents, useQueueEvents } from "./controllers/events-controlle
 import { initializeQueueHistoryWebsocket } from "./controllers/websocket-controller";
 import { initializeUploadController } from "./controllers/nzb-upload-controller";
 import { useQueueDropzone } from "./controllers/dropzone-controller";
+import {
+    HISTORY_CATEGORY_PARAM,
+    historyCategoryOptions,
+    historyCategorySearchParams,
+    normalizeHistoryCategory,
+    STREAMING_HISTORY_CATEGORIES,
+} from "./history-category-filter";
 
 const pageSize = 100;
 
@@ -21,8 +28,13 @@ export async function loader({ request }: Route.LoaderArgs) {
     const url = new URL(request.url);
     const queuePage = parsePage(url.searchParams.get("qp"));
     const historyPage = parsePage(url.searchParams.get("hp"));
+    const historyCategory = normalizeHistoryCategory(url.searchParams.get(HISTORY_CATEGORY_PARAM));
     const queuePromise = backendClient.getQueue(pageSize, (queuePage - 1) * pageSize);
-    const historyPromise = backendClient.getHistory(pageSize, (historyPage - 1) * pageSize);
+    const historyPromise = backendClient.getHistory(
+        pageSize,
+        (historyPage - 1) * pageSize,
+        historyCategory,
+    );
     const configPromise = backendClient.getConfig(["api.categories", "api.manual-category"])
     const queue = await queuePromise;
     const history = await historyPromise;
@@ -37,6 +49,17 @@ export async function loader({ request }: Route.LoaderArgs) {
     if (!categories.includes(manualCategory)) {
         categories = [manualCategory, ...categories];
     }
+    const historyFilterCategories = historyCategoryOptions(
+        [
+            ...categories,
+            ...STREAMING_HISTORY_CATEGORIES,
+            ...(history?.categories ?? []),
+        ],
+        historyCategory,
+    );
+    const hasHistory = (history?.categories?.length ?? 0) > 0
+        || (history?.noofslots ?? 0) > 0
+        || historyCategory !== null;
 
     return {
         queueSlots: queue?.slots || [],
@@ -44,7 +67,10 @@ export async function loader({ request }: Route.LoaderArgs) {
         totalQueueCount: queue?.noofslots || 0,
         totalHistoryCount: history?.noofslots || 0,
         categories: categories,
+        historyFilterCategories: historyFilterCategories,
+        hasHistory: hasHistory,
         manualCategory: manualCategory,
+        historyCategory: historyCategory,
         queuePage: queuePage,
         historyPage: historyPage,
         pageSize: pageSize,
@@ -52,7 +78,14 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export default function Queue(props: Route.ComponentProps) {
-    const { pageSize, queuePage, historyPage, totalQueueCount, totalHistoryCount } = props.loaderData;
+    const {
+        pageSize,
+        queuePage,
+        historyPage,
+        totalQueueCount,
+        totalHistoryCount,
+        historyCategory,
+    } = props.loaderData;
     const [queueSlots, setQueueSlots] = useState<PresentationQueueSlot[]>(props.loaderData.queueSlots);
     const [historySlots, setHistorySlots] = useState<PresentationHistorySlot[]>(props.loaderData.historySlots);
     const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
@@ -78,6 +111,12 @@ export default function Queue(props: Route.ComponentProps) {
     }, [setSearchParams]);
     const onQueuePageSelected = useCallback((page: number) => setPageParam("qp", page), [setPageParam]);
     const onHistoryPageSelected = useCallback((page: number) => setPageParam("hp", page), [setPageParam]);
+    const onHistoryCategoryChanged = useCallback((category: string) => {
+        setSearchParams(
+            prev => historyCategorySearchParams(prev, normalizeHistoryCategory(category)),
+            { preventScrollReset: true },
+        );
+    }, [setSearchParams]);
 
     const combinedQueueSlots = isQueueLive
         ? [...uploadingFiles.map(file => file.queueSlot), ...queueSlots]
@@ -85,7 +124,7 @@ export default function Queue(props: Route.ComponentProps) {
 
     // queue/history events
     const queueEvents = useQueueEvents(setUploadingFiles, setQueueSlots, uploadQueueRef, pageSize);
-    const historyEvents = useHistoryEvents(setHistorySlots, pageSize);
+    const historyEvents = useHistoryEvents(setHistorySlots, pageSize, historyCategory);
 
     // websocket
     initializeQueueHistoryWebsocket(queueEvents, historyEvents, isQueueLive, isHistoryLive);
@@ -121,7 +160,7 @@ export default function Queue(props: Route.ComponentProps) {
             </div>
 
             {/* history */}
-            {totalHistoryCount > 0 &&
+            {props.loaderData.hasHistory &&
                 <HistoryTable
                     historySlots={historySlots}
                     totalHistoryCount={props.loaderData.totalHistoryCount}
@@ -129,6 +168,9 @@ export default function Queue(props: Route.ComponentProps) {
                     totalPages={historyTotalPages}
                     isLive={isHistoryLive}
                     onPageSelected={onHistoryPageSelected}
+                    filterCategories={props.loaderData.historyFilterCategories}
+                    selectedCategory={historyCategory}
+                    onCategoryChanged={onHistoryCategoryChanged}
                     onIsSelectedChanged={historyEvents.onSelectHistorySlots}
                     onIsRemovingChanged={historyEvents.onRemovingHistorySlots}
                     onRemoved={historyEvents.onRemoveHistorySlots}

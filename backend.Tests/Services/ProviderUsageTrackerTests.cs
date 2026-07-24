@@ -214,6 +214,23 @@ public class ProviderUsageTrackerTests
         Assert.Empty(tracker.SnapshotBytes(queueId));
     }
 
+    [Fact]
+    public void ByteSnapshot_RemainsEnabledUntilNestedCaptureScopesAreDisposed()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using (tracker.BeginScope(queueId))
+        {
+            using var outerCapture = tracker.BeginByteCapture();
+            tracker.RecordBytes("eweka-id", 1_024);
+            using (tracker.BeginByteCapture())
+                tracker.RecordBytes("eweka-id", 2_048);
+            tracker.RecordBytes("eweka-id", 4_096);
+        }
+
+        Assert.Equal(7_168, tracker.SnapshotBytes(queueId)["eweka-id"]);
+    }
+
     private static HealthProviderStat HealthStat(string id, long found) => new(
         id, "news.usenet.farm", true, 32, 32, 1, found, found, found, 0, 0, 100, 400);
 
