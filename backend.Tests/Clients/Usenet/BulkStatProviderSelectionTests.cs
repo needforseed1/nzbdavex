@@ -21,7 +21,10 @@ public class BulkStatProviderSelectionTests
 
     [Theory]
     [InlineData(31, 32, true)]
-    [InlineData(23, 32, true)]
+    [InlineData(24, 32, true)]
+    // A 32-article probe measures a genuinely 75%-covered provider anywhere
+    // near 69%, so the admission bar stays well below the coverage it targets.
+    [InlineData(22, 32, true)]
     [InlineData(16, 32, true)]
     [InlineData(15, 32, false)]
     [InlineData(2, 32, false)]
@@ -33,5 +36,33 @@ public class BulkStatProviderSelectionTests
         bool expected)
     {
         Assert.Equal(expected, MultiProviderNntpClient.IsPartialStatProviderEligible(found, received));
+    }
+
+    [Fact]
+    public void RecoveryBudgetGrowsWithTheIndeterminateWorkload()
+    {
+        var small = MultiProviderNntpClient.ResolveIndeterminateRecoveryBudget(4);
+        var medium = MultiProviderNntpClient.ResolveIndeterminateRecoveryBudget(5_000);
+        var huge = MultiProviderNntpClient.ResolveIndeterminateRecoveryBudget(1_000_000);
+
+        Assert.Equal(TimeSpan.FromSeconds(25), small);
+        Assert.Equal(TimeSpan.FromSeconds(65), medium);
+        // Capped: one slow provider must not hold a health check open forever.
+        Assert.Equal(TimeSpan.FromSeconds(120), huge);
+        Assert.True(medium > small);
+    }
+
+    [Fact]
+    public void StalledSocketsAreReportedButExcludedFromProviderFaults()
+    {
+        var stats = new MultiProviderNntpClient.BulkStatAttemptStats();
+        stats.Record(64, 5, 5, 0, 2000, failed: true, providerFaulted: false);
+        stats.Record(64, 0, 0, 0, 5000, failed: true, providerFaulted: true);
+
+        var snapshot = stats.Snapshot();
+
+        Assert.Equal(2, snapshot.Failures);
+        Assert.Equal(1, snapshot.ProviderFaults);
+        Assert.Equal(1, stats.ProviderFaultCount);
     }
 }

@@ -545,10 +545,11 @@ public class MultiConnectionNntpClient(
                         // absolute command deadline so only its unresolved
                         // articles wait for fallback.
                         connectionLock.Replace();
-                        throw new TimeoutException(
+                        throw new PipelinedResponseStalledException(
                             $"Provider {Host} did not return the next pipelined response within " +
                             $"{attempt!.ResponseInactivityTimeout!.Value.TotalSeconds:0.###} seconds; " +
                             $"{DescribePipelinedAttempt()}.",
+                            received,
                             e);
                     }
                     catch (OperationCanceledException e) when (

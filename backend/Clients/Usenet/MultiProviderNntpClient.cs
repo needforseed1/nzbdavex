@@ -44,6 +44,12 @@ public class MultiProviderNntpClient(
     private const int HealthRecoveryConnectionReserve = 4;
     private const int HealthRecoveryMaxConnectionsPerProvider = 8;
     private const int HealthRecoverySegmentsPerConnection = 512;
+    // Deliberately loose. The qualification probe samples only 32 articles, so
+    // its coverage estimate carries several percentage points of error: a
+    // provider holding 75% of a release commonly samples near 69%. A tighter
+    // bar here would reject useful partial accounts on sampling noise alone.
+    // Live coverage measured over the real batches is the sound signal for
+    // demoting a provider mid-run; see BulkStatPlan.RecordAttempt.
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
@@ -55,7 +61,12 @@ public class MultiProviderNntpClient(
         UsenetStreamingClient.ConcurrentConnectionAttemptLimit;
     private static readonly TimeSpan StatRecoveryAdmissionTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultIndeterminateRecoveryBudget = TimeSpan.FromSeconds(15);
-    private const int QuarantineConsecutiveFailureThreshold = 2;
+    private static readonly TimeSpan IndeterminateRecoveryBudgetPerThousandSegments =
+        TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MaxIndeterminateRecoveryBudget = TimeSpan.FromSeconds(120);
+    // Cumulative, not consecutive: concurrent lanes complete out of order, so a
+    // stale success must not erase a burst of failures. See RecordAttempt.
+    private const int QuarantineFailureThreshold = 2;
     private readonly SemaphoreSlim _statRecoveryGate = new(
         StatRecoveryConcurrencyLimit, StatRecoveryConcurrencyLimit);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -110,8 +121,24 @@ public class MultiProviderNntpClient(
     private TimeSpan? PipelinedStatResponseInactivityTimeout =>
         pipelinedStatResponseInactivityTimeout;
     private TimeSpan BulkProbeTimeout => bulkStatProbeTimeout ?? BulkStatProbeTimeout;
-    private TimeSpan IndeterminateRecoveryBudget =>
-        indeterminateRecoveryBudget ?? DefaultIndeterminateRecoveryBudget;
+    private TimeSpan GetIndeterminateRecoveryBudget(int segmentCount) =>
+        indeterminateRecoveryBudget ?? ResolveIndeterminateRecoveryBudget(segmentCount);
+
+    /// <summary>
+    /// A fixed budget cannot cover an arbitrary number of indeterminate
+    /// segments: once the workload no longer fits, recovery expires every time
+    /// and the item is reported unverifiable on every retry, forever. Grow the
+    /// budget with the workload, with a ceiling so one slow provider still
+    /// cannot hold a health check open indefinitely.
+    /// </summary>
+    internal static TimeSpan ResolveIndeterminateRecoveryBudget(int segmentCount)
+    {
+        if (segmentCount <= 0) return DefaultIndeterminateRecoveryBudget;
+        var thousands = (segmentCount + 999) / 1000;
+        var scaled = DefaultIndeterminateRecoveryBudget +
+                     thousands * IndeterminateRecoveryBudgetPerThousandSegments;
+        return scaled < MaxIndeterminateRecoveryBudget ? scaled : MaxIndeterminateRecoveryBudget;
+    }
 
     internal void ActivateIdlePrewarming()
     {
@@ -1955,10 +1982,12 @@ public class MultiProviderNntpClient(
             .Where(candidate => candidate.Targets.Length > 0)
             .ToList();
 
+        var recoveryBudget = GetIndeterminateRecoveryBudget(segmentIds.Count);
         var timer = Stopwatch.StartNew();
         Log.Information(
-            "health-stat recovery start segments={Segments} providers={Providers}",
+            "health-stat recovery start segments={Segments} budgetMs={BudgetMs} providers={Providers}",
             segmentIds.Count,
+            (long)recoveryBudget.TotalMilliseconds,
             string.Join(',', candidates.Select(candidate => candidate.Provider.Host)));
         usageTracker.ReportRecoveryNotice(
             new QueueRecoveryNotice("health", segmentIds.Count));
@@ -1966,7 +1995,7 @@ public class MultiProviderNntpClient(
         var foundSegments = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var unavailableProviders = new ConcurrentDictionary<string, byte>();
         using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budgetCts.CancelAfter(IndeterminateRecoveryBudget);
+        budgetCts.CancelAfter(recoveryBudget);
 
         await Task.WhenAll(candidates.Select(async candidate =>
         {
@@ -2217,6 +2246,9 @@ public class MultiProviderNntpClient(
             var received = 0;
             var found = 0;
             var missing = 0;
+            // A stalled socket is not evidence against the provider, so it is
+            // reported as a failed batch but withheld from the quarantine count.
+            var providerFaulted = false;
             lastAttemptFailed = false;
             var stopwatch = Stopwatch.StartNew();
             IDisposable? recoveryLease = null;
@@ -2280,10 +2312,27 @@ public class MultiProviderNntpClient(
                         $"Provider {provider.Host} ended a pipelined STAT batch after {received} of {attempted.Count} responses.");
                 anyCompletedAttempt = true;
             }
+            catch (PipelinedResponseStalledException e)
+            {
+                lastAttemptFailed = true;
+                // Only a socket that never produced a response leaves the
+                // provider itself under suspicion. One that answered and then
+                // went silent gets its remaining segments re-issued elsewhere
+                // while the provider keeps serving its other lanes.
+                providerFaulted = e.ReceivedResponses == 0;
+                lastException = ExceptionDispatchInfo.Capture(e);
+                for (var i = received; i < attempted.Count; i++)
+                    stillPending.Add(attempted[i]);
+                Log.Debug(e,
+                    "Pipelined STAT responses stalled on provider {Provider} after " +
+                    "{Received} response(s); re-issuing {Count} unresolved segments.",
+                    provider.Host, e.ReceivedResponses, stillPending.Count);
+            }
             catch (OperationCanceledException e) when (
                 !cancellationToken.IsCancellationRequested && attemptCts.Token.IsCancellationRequested)
             {
                 lastAttemptFailed = true;
+                providerFaulted = true;
                 var providerTimeout = new TimeoutException(
                     $"Provider {provider.Host} did not complete the pipelined STAT batch in time.", e);
                 lastException = ExceptionDispatchInfo.Capture(providerTimeout);
@@ -2297,6 +2346,7 @@ public class MultiProviderNntpClient(
             catch (Exception e) when (!e.IsCancellationException())
             {
                 lastAttemptFailed = true;
+                providerFaulted = true;
                 lastException = ExceptionDispatchInfo.Capture(e);
                 for (var i = received; i < attempted.Count; i++)
                     stillPending.Add(attempted[i]);
@@ -2309,7 +2359,7 @@ public class MultiProviderNntpClient(
                 recoveryLease?.Dispose();
                 if (!gateSkipped)
                     plan?.RecordAttempt(provider, attempted.Count, received, found, missing,
-                        stopwatch.ElapsedMilliseconds, lastAttemptFailed);
+                        stopwatch.ElapsedMilliseconds, lastAttemptFailed, providerFaulted);
             }
 
             pending = stillPending;
@@ -2944,20 +2994,23 @@ public class MultiProviderNntpClient(
             int found,
             int missing,
             long elapsedMs,
-            bool failed)
+            bool failed,
+            bool providerFaulted = true)
         {
             var stats = _attempts.GetOrAdd(provider, static _ => new BulkStatAttemptStats());
-            stats.Record(attempted, received, found, missing, elapsedMs, failed);
+            stats.Record(attempted, received, found, missing, elapsedMs, failed, providerFaulted);
 
             // Concurrent lanes complete out of order, so "consecutive" failures
             // are not a stable signal: one older success can otherwise erase a
-            // timeout storm and immediately re-admit the provider. Two failed
+            // timeout storm and immediately re-admit the provider. Two faulted
             // attempts quarantine it for the rest of this bulk plan. A successful
             // late probe or coordinated recovery may still re-admit it explicitly,
-            // and the next health operation starts with a fresh plan.
-            if (failed)
+            // and the next health operation starts with a fresh plan. Batches
+            // that only lost a stalled socket are excluded: they say nothing
+            // about the provider's ability to serve its remaining lanes.
+            if (failed && providerFaulted)
             {
-                if (stats.FailureCount >= QuarantineConsecutiveFailureThreshold)
+                if (stats.ProviderFaultCount >= QuarantineFailureThreshold)
                     Quarantine(provider);
             }
         }
@@ -2997,11 +3050,12 @@ public class MultiProviderNntpClient(
                 Log.Information(
                     "health-stat provider-summary provider={Provider} preferred={Preferred} " +
                     "probeFound={ProbeFound}/{ProbeReceived} batches={Batches} attempted={Attempted} received={Received} " +
-                    "found={Found} missing={Missing} failures={Failures} laneMs={LaneMs} " +
+                    "found={Found} missing={Missing} failures={Failures} stalls={Stalls} laneMs={LaneMs} " +
                     "laneRate={StatRate}stat/s",
                     provider.Host, IsPreferred(provider), probe?.Found ?? 0, probe?.Received ?? 0,
                     snapshot.Batches, snapshot.Attempted, snapshot.Received, snapshot.Found, snapshot.Missing,
-                    snapshot.Failures, snapshot.ElapsedMs, rate);
+                    snapshot.Failures, snapshot.Failures - snapshot.ProviderFaults,
+                    snapshot.ElapsedMs, rate);
                 Owner.RecordHealthProviderStat(provider, probe, snapshot, rate, IsPreferred(provider));
             }
         }
@@ -3073,6 +3127,13 @@ public class MultiProviderNntpClient(
                         var reclaimable = Math.Max(
                             0, provider.IdleConnections - retainedFloor);
                         var requested = Math.Min(reclaimNeeded, reclaimable);
+                        // Suspending is not free: it blocks warm-floor refresh and
+                        // prewarm publishing on that pool for the whole operation.
+                        // When there is nothing to reclaim it buys no capacity for
+                        // the preferred providers, so leave the pool alone — it is
+                        // still serving prep and playback.
+                        if (requested == 0) continue;
+
                         var retained = provider.IdleConnections - requested;
                         var suspension = provider.SuspendPrewarming(retained, out var reclaimed);
                         _suspensions.Add(provider, suspension);
@@ -3248,11 +3309,18 @@ public class MultiProviderNntpClient(
         private long _batches;
         private long _elapsedMs;
         private long _failures;
+        private long _providerFaults;
         private long _found;
         private long _missing;
         private long _received;
 
         public long FailureCount => Interlocked.Read(ref _failures);
+
+        /// <summary>
+        /// Failed batches that reflect on the provider itself, excluding the
+        /// ones that only lost a stalled connection.
+        /// </summary>
+        public long ProviderFaultCount => Interlocked.Read(ref _providerFaults);
 
         public void Record(
             int attempted,
@@ -3260,7 +3328,8 @@ public class MultiProviderNntpClient(
             int found,
             int missing,
             long elapsedMs,
-            bool failed)
+            bool failed,
+            bool providerFaulted = true)
         {
             Interlocked.Increment(ref _batches);
             Interlocked.Add(ref _attempted, attempted);
@@ -3271,6 +3340,7 @@ public class MultiProviderNntpClient(
             if (failed)
             {
                 Interlocked.Increment(ref _failures);
+                if (providerFaulted) Interlocked.Increment(ref _providerFaults);
             }
         }
 
@@ -3281,7 +3351,8 @@ public class MultiProviderNntpClient(
             Interlocked.Read(ref _found),
             Interlocked.Read(ref _missing),
             Interlocked.Read(ref _failures),
-            Interlocked.Read(ref _elapsedMs));
+            Interlocked.Read(ref _elapsedMs),
+            Interlocked.Read(ref _providerFaults));
     }
 
     internal readonly record struct BulkStatAttemptSnapshot(
@@ -3291,7 +3362,8 @@ public class MultiProviderNntpClient(
         long Found,
         long Missing,
         long Failures,
-        long ElapsedMs);
+        long ElapsedMs,
+        long ProviderFaults = 0);
 
     private sealed class OffsetProgress(IProgress<int> target, int offset) : IProgress<int>
     {

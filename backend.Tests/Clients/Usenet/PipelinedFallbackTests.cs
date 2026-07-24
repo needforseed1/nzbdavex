@@ -178,7 +178,8 @@ public class PipelinedFallbackTests
         var exception = await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleUnverifiableException>(
             () => CollectAsync(client.StatsPipelinedAsync(["a"], 1, deadline.Token)));
 
-        var timeout = Assert.IsType<TimeoutException>(exception.InnerException);
+        var timeout = Assert.IsType<NzbWebDAV.Exceptions.PipelinedResponseStalledException>(
+            exception.InnerException);
         Assert.Contains("next pipelined response", timeout.Message);
     }
 
