@@ -1,6 +1,17 @@
 # Changelog
 
-## [1.3.18](https://github.com/needforseed1/nzbdavex/compare/v1.3.17...v1.3.18) (2026-07-24)
+## [1.3.19](https://github.com/needforseed1/nzbdavex/compare/v1.3.18...v1.3.19) (2026-07-24)
+
+### Fixes
+
+* Background health checks can no longer be held up by a single file. A file that could not be scheduled, whose first article was already gone, or whose check ended without a verdict is now given a verdict or a retry time instead of being retried continuously ahead of everything else.
+* File checks no longer pause near completion when a provider stops responding part-way through a batch. The stalled connection is dropped after two seconds and only its unanswered articles move to another provider, instead of waiting for that provider to close the connection.
+* A provider that loses a single connection is no longer set aside for the rest of a check. Only a provider that never answers is, so its remaining connections keep doing useful work.
+* Large releases now get verification time proportional to their size. Previously a fixed budget could expire on every attempt, leaving those files reported as unverified after every retry.
+
+### Improvements
+
+* Health checks no longer pause connection upkeep on providers they are not using, so playback and preparation keep their ready connections while a check runs.
 
 ### Fixes
 
