@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.20](https://github.com/needforseed1/nzbdavex/compare/v1.3.19...v1.3.20) (2026-07-25)
+
+### Improvements
+
+* The Watchdog page now shows each playback attempt in far less space. The counters above the filters are gone, since the filter buttons already carry the same totals, and a run that only had one attempt no longer draws a table that repeats what the card header already says.
+* Resolved and failed runs are marked with a check or a cross instead of a word, and the release size moved up beside the category so the summary line carries only timings.
+* Release names that no longer fit are wrapped onto further lines instead of being cut off, on both narrow screens and full-width layouts.
+* The button that opens run statistics is now a distinct control at the end of the summary line, and it stays on that line instead of dropping below the timings.
+* Repeated details were removed throughout: the indexer is only named when one is known, a candidate is only listed when it differs from the release named in the card header, and the indexer and reason columns appear only when a run actually recorded them.
+* On phones, run statistics are easier to read. Each figure is labelled above its value rather than beside it, and long summaries wrap by phrase instead of running together. Per-provider working time and per-provider rate are left out of the narrow layout, since both can be read from the values still shown.
+* Provider shares are no longer printed on every row of the main view. Provider names remain, with the shares available in the provider popover and in the routing tables under run statistics.
+
 ## [1.3.19](https://github.com/needforseed1/nzbdavex/compare/v1.3.18...v1.3.19) (2026-07-24)
 
 ### Fixes

@@ -13,13 +13,6 @@ declare const styles: {
   readonly "liveBtnOn": string;
   readonly "liveDot": string;
   readonly "liveDotOn": string;
-  readonly "statsBar": string;
-  readonly "stat": string;
-  readonly "statValue": string;
-  readonly "statLabel": string;
-  readonly "statValueOk": string;
-  readonly "statValueBad": string;
-  readonly "statValueWarn": string;
   readonly "filterBar": string;
   readonly "filterChip": string;
   readonly "filterChipActive": string;
@@ -33,6 +26,7 @@ declare const styles: {
   readonly "clickHeaderMeta": string;
   readonly "clickTitle": string;
   readonly "statusPill": string;
+  readonly "statusPillIcon": string;
   readonly "pillOk": string;
   readonly "pillBad": string;
   readonly "pillLive": string;
@@ -40,13 +34,15 @@ declare const styles: {
   readonly "timestamp": string;
   readonly "winnerLine": string;
   readonly "winnerLineOpen": string;
+  readonly "winnerVia": string;
   readonly "winnerIndexer": string;
   readonly "timingBoxes": string;
   readonly "timingBox": string;
   readonly "timingLabel": string;
   readonly "timingValue": string;
-  readonly "winnerDot": string;
   readonly "detailsHint": string;
+  readonly "detailsHintLabel": string;
+  readonly "detailsToggle": string;
   readonly "detailsChevron": string;
   readonly "detailsChevronOpen": string;
   readonly "winnerDetails": string;
@@ -58,6 +54,7 @@ declare const styles: {
   readonly "detailsSectionHeader": string;
   readonly "detailsSectionTitle": string;
   readonly "detailsSectionMeta": string;
+  readonly "detailsMetaItem": string;
   readonly "prepStageGrid": string;
   readonly "prepStage": string;
   readonly "prepStageLabel": string;
@@ -75,6 +72,7 @@ declare const styles: {
   readonly "healthProviderHost": string;
   readonly "healthProviderCell": string;
   readonly "healthProviderWarning": string;
+  readonly "singleAttemptReason": string;
   readonly "attemptTableWrap": string;
   readonly "attemptTable": string;
   readonly "winnerRow": string;
@@ -90,7 +88,6 @@ declare const styles: {
   readonly "outcomeOk": string;
   readonly "outcomeBad": string;
   readonly "outcomeWarn": string;
-  readonly "outcomeWin": string;
   readonly "attemptCards": string;
   readonly "attemptCard": string;
   readonly "attemptCardWinner": string;

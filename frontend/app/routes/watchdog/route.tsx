@@ -152,13 +152,6 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                     </div>
                 </div>
 
-                <div className={styles.statsBar}>
-                    <Stat label="Clicks" value={stats.total} />
-                    <Stat label="Resolved" value={stats.resolved} tone="ok" />
-                    <Stat label="Failed" value={stats.failed} tone="bad" />
-                    <Stat label="In flight" value={stats.inFlight} tone="warn" />
-                </div>
-
                 <div className={styles.filterBar}>
                     <FilterChip active={filter === "all"} onClick={() => setFilter("all")} count={groups.length}>All</FilterChip>
                     <FilterChip active={filter === "live"} onClick={() => setFilter("live")} count={stats.inFlight}>Live</FilterChip>
@@ -201,6 +194,15 @@ function ClickCard({ group }: { group: ClickGroup }) {
     const totalSummaryDurationMs = selectTotalSummaryTiming(
         detailsAttempt?.prepDurationMs,
         healthSummary);
+    // Direct queue adds carry no indexer (recorded as a literal em dash), so the
+    // "via <indexer>" clause and the Indexer column are pure noise for them.
+    const detailsIndexer = knownIndexer(detailsAttempt?.indexerName);
+    // A single-attempt group has nothing to compare, so the attempt table only
+    // repeats the header title plus facts the summary line already carries.
+    const collapsed = detailsAttempt != null && group.attempts.length === 1;
+    const showReasonColumn = group.attempts.some(a => a.failReason);
+    const showIndexerColumn = group.attempts.some(a => knownIndexer(a.indexerName));
+    const displaySize = detailsAttempt?.size || group.attempts.find(a => a.size > 0)?.size || 0;
 
     return (
         <div className={styles.clickCard}>
@@ -210,6 +212,9 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     <div className={styles.clickTitle} title={group.requestedTitle}>{group.requestedTitle}</div>
                 </div>
                 <div className={styles.clickHeaderMeta}>
+                    {/* Size describes the release, so it belongs with the other
+                        release facts rather than among the run timings. */}
+                    {displaySize > 0 && <span className={styles.metaBadge}>{formatBytes(displaySize)}</span>}
                     <span className={styles.metaBadge}>{group.contentType}</span>
                     <span className={styles.metaBadge}>{group.attempts.length} attempt{group.attempts.length === 1 ? "" : "s"}</span>
                     <span className={styles.timestamp} title={new Date(group.firstAt * 1000).toLocaleString()}>
@@ -226,8 +231,12 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     onClick={() => setDetailsOpen(open => !open)}
                     aria-expanded={detailsOpen}
                     aria-controls={`watchdog-stats-${group.clickId}`}
-                    title="Show run statistics">
-                    <span>{showingFailure ? "Failed via " : "Resolved via "}<span className={styles.winnerIndexer}>{detailsAttempt.indexerName}</span></span>
+                    aria-label={detailsOpen ? "Hide run statistics" : "Show run statistics"}
+                    title={detailsOpen ? "Hide run statistics" : "Show run statistics"}>
+                    {/* The header pill already states resolved/failed. */}
+                    {detailsIndexer &&
+                        <span className={styles.winnerVia}>via <span className={styles.winnerIndexer}>{detailsIndexer}</span></span>
+                    }
                     <span className={styles.timingBoxes}>
                         {detailsAttempt.prepDurationMs != null &&
                             <TimingBox label="Prep" value={formatDuration(detailsAttempt.prepDurationMs)} />
@@ -242,15 +251,13 @@ function ClickCard({ group }: { group: ClickGroup }) {
                             <TimingBox label="Total" value={formatDuration(totalSummaryDurationMs)} />
                         }
                     </span>
-                    {detailsAttempt.size > 0 && <>
-                        <span className={styles.winnerDot}>·</span>
-                        <span>{formatBytes(detailsAttempt.size)}</span>
-                    </>}
-                    <span className={styles.detailsHint}>
-                        Stats
-                        <svg className={`${styles.detailsChevron} ${detailsOpen ? styles.detailsChevronOpen : ""}`} viewBox="0 0 16 16" aria-hidden="true">
-                            <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
+                    <span className={styles.detailsHint} aria-hidden="true">
+                        <span className={styles.detailsHintLabel}>Stats</span>
+                        <span className={styles.detailsToggle}>
+                            <svg className={`${styles.detailsChevron} ${detailsOpen ? styles.detailsChevronOpen : ""}`} viewBox="0 0 16 16" aria-hidden="true">
+                                <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </span>
                     </span>
                 </button>
                 {detailsOpen && (
@@ -269,17 +276,24 @@ function ClickCard({ group }: { group: ClickGroup }) {
                 </>
             )}
 
+            {collapsed ? (
+                // Provider shares and end-to-end time live in the Stats panel;
+                // only the failure reason earns space on the main view.
+                detailsAttempt.failReason && !detailsOpen
+                    ? <div className={styles.singleAttemptReason}>{detailsAttempt.failReason}</div>
+                    : null
+            ) : (
             <div className={styles.attemptTableWrap}>
                 <table className={styles.attemptTable}>
                     <thead>
                         <tr>
                             <th className={styles.colRank}>#</th>
                             <th className={styles.colCandidate}>Candidate</th>
-                            <th className={styles.colIndexer}>Indexer</th>
+                            {showIndexerColumn && <th className={styles.colIndexer}>Indexer</th>}
                             <th className={styles.colProvider}>Provider</th>
                             <th className={styles.colSize}>Size</th>
                             <th className={styles.colOutcome}>Outcome</th>
-                            <th className={styles.colReason}>Reason</th>
+                            {showReasonColumn && <th className={styles.colReason}>Reason</th>}
                             <th className={styles.colDuration}>Took</th>
                         </tr>
                     </thead>
@@ -287,19 +301,26 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         {group.attempts.map((a, i) => (
                             <tr key={i} className={a.isWinner ? styles.winnerRow : undefined}>
                                 <td className={styles.colRank}>{a.rankIndex + 1}</td>
-                                <td className={styles.colCandidate} title={a.candidateTitle}>{a.candidateTitle || "—"}</td>
-                                <td className={styles.colIndexer}>{a.indexerName || "—"}</td>
+                                <td className={styles.colCandidate} title={a.candidateTitle}>
+                                    {candidateCellText(a.candidateTitle, group.requestedTitle)}
+                                </td>
+                                {showIndexerColumn &&
+                                    <td className={styles.colIndexer}>{knownIndexer(a.indexerName) ?? "—"}</td>
+                                }
                                 <td className={styles.colProvider}>
                                     <WatchdogProviderSummary
                                         providerHost={a.providerHost}
                                         providerNickname={a.providerNickname}
+                                        inlineShares={false}
                                     />
                                 </td>
                                 <td className={styles.colSize}>{formatBytes(a.size)}</td>
                                 <td className={styles.colOutcome}>
-                                    <OutcomeBadge outcome={a.outcome} winner={a.isWinner} />
+                                    <OutcomeBadge outcome={a.outcome} />
                                 </td>
-                                <td className={styles.colReason} title={a.failReason ?? undefined}>{a.failReason ?? "—"}</td>
+                                {showReasonColumn &&
+                                    <td className={styles.colReason} title={a.failReason ?? undefined}>{a.failReason ?? "—"}</td>
+                                }
                                 <td className={styles.colDuration}>{formatDuration(a.durationMs)}</td>
                             </tr>
                         ))}
@@ -311,15 +332,20 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         <div key={i} className={`${styles.attemptCard} ${a.isWinner ? styles.attemptCardWinner : ""}`}>
                             <div className={styles.attemptCardTop}>
                                 <span className={styles.attemptRank}>#{a.rankIndex + 1}</span>
-                                <span className={styles.attemptIndexer} title={a.indexerName}>{a.indexerName || "—"}</span>
-                                <OutcomeBadge outcome={a.outcome} winner={a.isWinner} />
+                                <span className={styles.attemptIndexer} title={a.indexerName}>
+                                    {knownIndexer(a.indexerName) ?? "—"}
+                                </span>
+                                <OutcomeBadge outcome={a.outcome} />
                             </div>
-                            <div className={styles.attemptCardTitle} title={a.candidateTitle}>{a.candidateTitle || "—"}</div>
+                            <div className={styles.attemptCardTitle} title={a.candidateTitle}>
+                                {candidateCellText(a.candidateTitle, group.requestedTitle)}
+                            </div>
                             <div className={styles.attemptCardMeta}>
                                 <span className={styles.attemptCardProvider}>
                                     <WatchdogProviderSummary
                                         providerHost={a.providerHost}
                                         providerNickname={a.providerNickname}
+                                        inlineShares={false}
                                     />
                                 </span>
                                 <span className={styles.attemptCardMetaDot}>·</span>
@@ -332,6 +358,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                     ))}
                 </div>
             </div>
+            )}
         </div>
     );
 }
@@ -399,12 +426,13 @@ function RunStats({
                 <section className={styles.detailsSection}>
                     <div className={styles.detailsSectionHeader}>
                         <span className={styles.detailsSectionTitle}>First-segment routing</span>
-                        <span className={styles.detailsSectionMeta}>
-                            {formatCount(prepStats.fileCount)} files · {formatCount(prepStats.connections)} connections
-                            {prepStats.firstSegmentFallbacks > 0
-                                ? ` · ${formatCount(prepStats.firstSegmentFallbacks)} fallbacks`
-                                : " · no fallbacks"}
-                        </span>
+                        <MetaList items={[
+                            `${formatCount(prepStats.fileCount)} files`,
+                            `${formatCount(prepStats.connections)} connections`,
+                            prepStats.firstSegmentFallbacks > 0
+                                ? `${formatCount(prepStats.firstSegmentFallbacks)} fallbacks`
+                                : "no fallbacks",
+                        ]} />
                     </div>
                     <div className={styles.prepProviderList}>
                         <div className={styles.prepProviderHeader}>
@@ -454,21 +482,24 @@ function RunStats({
                 <div className={styles.detailsSectionHeader}>
                     <span className={styles.detailsSectionTitle}>Health routing</span>
                     {healthStats && (
-                        <span className={styles.detailsSectionMeta}>
-                            {outcomeKnown
+                        <MetaList items={[
+                            outcomeKnown
                                 ? `${formatCount(foundArticles)} / ${formatCount(healthStats.totalArticles)} available`
                                 : missingArticles != null && missingArticles > 0
-                                    ? `At least ${formatCount(missingArticles)} unavailable · stopped early`
-                                    : `${formatCount(healthStats.totalArticles)} articles targeted`}
-                            {outcomeKnown && (missingArticles === 0
-                                ? " · complete"
-                                : ` · ${formatCount(missingArticles)} unavailable`)}
-                            {healthDurationMs != null ? ` · ${formatDuration(healthDurationMs)} total` : ""}
-                            {healthWaitDurationMs != null
-                                ? ` · ${formatDuration(healthWaitDurationMs)} after prep`
-                                : ""}
-                            {healthRate != null ? ` · ${formatCount(healthRate)}/s` : ""}
-                        </span>
+                                    ? `At least ${formatCount(missingArticles)} unavailable`
+                                    : `${formatCount(healthStats.totalArticles)} articles targeted`,
+                            !outcomeKnown && missingArticles != null && missingArticles > 0
+                                ? "stopped early"
+                                : null,
+                            outcomeKnown
+                                ? (missingArticles === 0 ? "complete" : `${formatCount(missingArticles)} unavailable`)
+                                : null,
+                            healthDurationMs != null ? `${formatDuration(healthDurationMs)} total` : null,
+                            healthWaitDurationMs != null
+                                ? `${formatDuration(healthWaitDurationMs)} after prep`
+                                : null,
+                            healthRate != null ? `${formatCount(healthRate)}/s` : null,
+                        ]} />
                     )}
                 </div>
                 {!healthStats ? (
@@ -567,25 +598,26 @@ function formatProbeResult(status: string | null | undefined, found: number, rec
     return status === "ok" ? "0/0" : "Not recorded";
 }
 
+/**
+ * Section meta as discrete pieces rather than one dot-joined string, so narrow
+ * screens wrap it into readable chips instead of a run-on sentence.
+ */
+function MetaList({ items }: { items: (string | null)[] }) {
+    const present = items.filter((item): item is string => item != null);
+    if (present.length === 0) return null;
+    return (
+        <span className={styles.detailsSectionMeta}>
+            {present.map(item => <span key={item} className={styles.detailsMetaItem}>{item}</span>)}
+        </span>
+    );
+}
+
 function TimingBox({ label, value }: { label: string, value: string }) {
     return (
         <span className={styles.timingBox}>
             <span className={styles.timingLabel}>{label}</span>
             <span className={styles.timingValue}>{value}</span>
         </span>
-    );
-}
-
-function Stat({ label, value, tone }: { label: string, value: number, tone?: "ok" | "bad" | "warn" }) {
-    const toneClass = tone === "ok" ? styles.statValueOk
-        : tone === "bad" ? styles.statValueBad
-        : tone === "warn" ? styles.statValueWarn
-        : "";
-    return (
-        <div className={styles.stat}>
-            <div className={`${styles.statValue} ${toneClass}`}>{value}</div>
-            <div className={styles.statLabel}>{label}</div>
-        </div>
     );
 }
 
@@ -602,15 +634,29 @@ function FilterChip({ active, onClick, count, children }: { active: boolean, onC
 }
 
 function StatusPill({ status }: { status: "win" | "loss" | "inflight" }) {
-    const label = status === "win" ? "Resolved" : status === "loss" ? "Failed" : "Live";
-    const cls = status === "win" ? styles.pillOk
-        : status === "loss" ? styles.pillBad
-        : styles.pillLive;
-    return <span className={`${styles.statusPill} ${cls}`}>{label}</span>;
+    if (status === "inflight") {
+        // Still running, so there is no verdict glyph to show yet.
+        return <span className={`${styles.statusPill} ${styles.pillLive}`}>Live</span>;
+    }
+    const resolved = status === "win";
+    return (
+        <span
+            className={`${styles.statusPill} ${styles.statusPillIcon} ${resolved ? styles.pillOk : styles.pillBad}`}
+            role="img"
+            aria-label={resolved ? "Resolved" : "Failed"}
+            title={resolved ? "Resolved" : "Failed"}>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2"
+                strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {resolved
+                    ? <path d="m3 8.5 3.2 3.2L13 5" />
+                    : <path d="M4 4l8 8M12 4l-8 8" />
+                }
+            </svg>
+        </span>
+    );
 }
 
-function OutcomeBadge({ outcome, winner }: { outcome: WatchdogOutcome, winner: boolean }) {
-    if (winner) return <span className={`${styles.outcomeBadge} ${styles.outcomeWin}`}>winner</span>;
+function OutcomeBadge({ outcome }: { outcome: WatchdogOutcome }) {
     const tone = outcomeToTone(outcome);
     const cls = tone === "ok" ? styles.outcomeOk
         : tone === "warn" ? styles.outcomeWarn
@@ -677,6 +723,22 @@ function attemptsEqual(a: WatchdogEntry[], b: WatchdogEntry[]): boolean {
         if (x.failReason !== y.failReason) return false;
     }
     return true;
+}
+
+/** Queue-origin entries store the indexer as a literal em dash. */
+function knownIndexer(indexerName?: string | null): string | null {
+    const trimmed = indexerName?.trim();
+    if (!trimmed || trimmed === "—" || trimmed === "-") return null;
+    return trimmed;
+}
+
+/**
+ * The card header already prints the requested title, which for the primary
+ * candidate is character-for-character the same release name.
+ */
+function candidateCellText(candidateTitle: string, requestedTitle: string): string {
+    if (!candidateTitle) return "—";
+    return candidateTitle === requestedTitle ? "—" : candidateTitle;
 }
 
 function formatCount(value: number): string {
@@ -752,15 +814,17 @@ function computeStats(groups: ClickGroup[]) {
         else inFlight++;
         if (hasExclusion(g)) excluded++;
     }
-    return { total: groups.length, resolved, failed, inFlight, excluded };
+    return { resolved, failed, inFlight, excluded };
 }
 
 function WatchdogProviderSummary({
     providerHost,
     providerNickname,
+    inlineShares,
 }: {
     providerHost?: string | null,
     providerNickname?: string | null,
+    inlineShares?: boolean,
 }) {
     const items = parseWatchdogProviders(providerHost, providerNickname);
     if (items.length === 0) return <span className={styles.emptyProvider}>—</span>;
@@ -769,6 +833,7 @@ function WatchdogProviderSummary({
         <ProviderSummary
             items={items}
             meta={`${items.length} provider${items.length === 1 ? "" : "s"}`}
+            inlineShares={inlineShares}
         />
     );
 }

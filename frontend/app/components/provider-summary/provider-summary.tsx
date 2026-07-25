@@ -13,11 +13,18 @@ export type ProviderSummaryProps = {
     items: ProviderSummaryItem[],
     heading?: string,
     meta?: string,
+    /** Set false to keep shares in the popover only, off the inline chip. */
+    inlineShares?: boolean,
 }
 
 const MAX_INLINE_PROVIDERS = 2;
 
-export function ProviderSummary({ items, heading = "Provider usage", meta }: ProviderSummaryProps) {
+export function ProviderSummary({
+    items,
+    heading = "Provider usage",
+    meta,
+    inlineShares = true,
+}: ProviderSummaryProps) {
     if (items.length === 0) return null;
 
     const visible = items.slice(0, MAX_INLINE_PROVIDERS);
@@ -69,7 +76,7 @@ export function ProviderSummary({ items, heading = "Provider usage", meta }: Pro
                         <span key={item.key} className={styles.entry}>
                             {index > 0 && <span className={styles.separator}>·</span>}
                             <span className={styles.label}>{item.label}</span>
-                            {item.share && <span className={styles.share}>{item.share}</span>}
+                            {inlineShares && item.share && <span className={styles.share}>{item.share}</span>}
                         </span>
                     ))}
                 </span>
