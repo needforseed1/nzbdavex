@@ -1,0 +1,27 @@
+declare const styles: {
+  readonly "controls": string;
+  readonly "emptyState": string;
+  readonly "errorBox": string;
+  readonly "filterBar": string;
+  readonly "filterChip": string;
+  readonly "filterChipActive": string;
+  readonly "filterChipCount": string;
+  readonly "group": string;
+  readonly "groupHeader": string;
+  readonly "groupHeading": string;
+  readonly "liveBtn": string;
+  readonly "liveBtnOn": string;
+  readonly "liveDot": string;
+  readonly "liveDotOn": string;
+  readonly "liveTag": string;
+  readonly "page": string;
+  readonly "playList": string;
+  readonly "spin": string;
+  readonly "spinning": string;
+  readonly "subtitle": string;
+  readonly "title": string;
+  readonly "toolbarBtn": string;
+  readonly "toolbarBtnDanger": string;
+  readonly "toolbarIcon": string;
+};
+export = styles;

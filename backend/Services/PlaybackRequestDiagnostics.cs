@@ -1,32 +1,16 @@
-using System.Diagnostics;
-using Serilog;
-using Serilog.Events;
-
 namespace NzbWebDAV.Services;
 
 internal sealed class PlaybackRequestDiagnostics
 {
     private static readonly TimeSpan DefaultStallThreshold = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan StallLogInterval = TimeSpan.FromSeconds(10);
-    private readonly Stopwatch _lifetime = Stopwatch.StartNew();
     private readonly TimeSpan _stallThreshold;
-    private readonly object _stallLogLock = new();
     private readonly PlaybackMetricsAccumulator _metrics = new();
-    private string _fileName;
-    private long? _fileSize;
-    private long _streamOpenMs = -1;
-    private long _firstByteMs = -1;
+    private readonly PlaybackRequestLogger _logger;
     private long _bytesServed;
     private long _currentOffset;
     private long _maxOffset;
     private int _inFlightSegments;
     private int _bufferedSegments;
-    private long _lastUpstreamStallLogMs = long.MinValue;
-    private long _lastDownstreamStallLogMs = long.MinValue;
-    private int _connectionPermitWaitInfoLogged;
-    private int _connectionPermitWaitWarningLogged;
-    private int _providerPoolWaitInfoLogged;
-    private int _providerPoolWaitWarningLogged;
     private int _completed;
 
     private readonly PlaybackSessionStats? _sessionStats;
@@ -44,17 +28,17 @@ internal sealed class PlaybackRequestDiagnostics
         SessionId = sessionId;
         RequestId = Guid.NewGuid();
         Path = path;
-        _fileName = fileName;
         RequestedRange = string.IsNullOrWhiteSpace(requestedRange) ? "full" : requestedRange;
         _currentOffset = Math.Max(0, initialOffset);
         _maxOffset = _currentOffset;
         _stallThreshold = stallThreshold ?? DefaultStallThreshold;
         _sessionStats = sessionStats;
-
-        Log.Information(
-            "playback-session session={SessionId} request={RequestId} stage=request-start " +
-            "file={File} path={Path} range={Range}",
-            SessionId, RequestId, _fileName, Path, RequestedRange);
+        _logger = new PlaybackRequestLogger(
+            SessionId,
+            RequestId,
+            Path,
+            fileName,
+            RequestedRange);
     }
 
     public Guid SessionId { get; }
@@ -65,15 +49,9 @@ internal sealed class PlaybackRequestDiagnostics
 
     public void MarkStreamOpened(string fileName, long? fileSize, long effectiveStart)
     {
-        if (!string.IsNullOrWhiteSpace(fileName)) _fileName = fileName;
-        _fileSize = fileSize;
         Interlocked.Exchange(ref _currentOffset, Math.Max(0, effectiveStart));
         UpdateMaximum(ref _maxOffset, Math.Max(0, effectiveStart));
-        Interlocked.CompareExchange(ref _streamOpenMs, _lifetime.ElapsedMilliseconds, -1);
-        Log.Debug(
-            "playback-session session={SessionId} request={RequestId} stage=stream-open " +
-            "file={File} size={FileSize} offset={Offset} openMs={OpenMs}",
-            SessionId, RequestId, _fileName, _fileSize, effectiveStart, _streamOpenMs);
+        _logger.StreamOpened(fileName, fileSize, effectiveStart);
     }
 
     /// <summary>
@@ -99,19 +77,11 @@ internal sealed class PlaybackRequestDiagnostics
         Interlocked.Exchange(ref _currentOffset, position);
         UpdateMaximum(ref _maxOffset, position);
 
-        if (Interlocked.CompareExchange(
-                ref _firstByteMs, _lifetime.ElapsedMilliseconds, -1) == -1)
-        {
-            var buffer = BufferSnapshot();
-            Log.Information(
-                "playback-session session={SessionId} request={RequestId} stage=first-byte " +
-                "file={File} offset={Offset} firstByteMs={FirstByteMs} openMs={OpenMs} " +
-                "upstreamReadMs={UpstreamReadMs} downstreamWriteMs={DownstreamWriteMs} " +
-                "bufferedSegments={BufferedSegments} inFlightSegments={InFlightSegments}",
-                SessionId, RequestId, _fileName, position - bytes, _firstByteMs,
-                Interlocked.Read(ref _streamOpenMs), upstreamReadMs, downstreamWriteMs,
-                buffer.BufferedSegments, buffer.InFlightSegments);
-        }
+        _logger.FirstByte(
+            position - bytes,
+            upstreamReadMs,
+            downstreamWriteMs,
+            BufferSnapshot());
 
         if (upstreamReadMs >= _stallThreshold.TotalMilliseconds)
             RecordWait("upstream-read", upstreamReadMs, upstreamReportedMs, position - bytes, upstreamOnset);
@@ -177,20 +147,7 @@ internal sealed class PlaybackRequestDiagnostics
     {
         _metrics.RecordZeroFill(bytes);
         _sessionStats?.RecordZeroFill(SessionId, bytes);
-        const string message =
-            "playback-session session={SessionId} request={RequestId} stage=zero-fill " +
-            "file={File} segment={Segment} bytes={Bytes} offset={Offset} cause={Cause}";
-        if (exception is null)
-            Log.Warning(
-                message,
-                SessionId, RequestId, _fileName, ShortSegmentId(segmentId), bytes,
-                CurrentOffset, "missing");
-        else
-            Log.Warning(
-                exception,
-                message,
-                SessionId, RequestId, _fileName, ShortSegmentId(segmentId), bytes,
-                CurrentOffset, exception.GetType().Name);
+        _logger.ZeroFill(segmentId, bytes, CurrentOffset, exception);
     }
 
     /// <summary>
@@ -208,18 +165,15 @@ internal sealed class PlaybackRequestDiagnostics
     {
         var count = _metrics.RecordBodyStallRecovery();
         _sessionStats?.RecordBodyStallRecovery(SessionId);
-        var buffer = BufferSnapshot();
-        Log.Write(
-            count == 1 ? LogEventLevel.Warning : LogEventLevel.Debug,
-            "playback-session session={SessionId} request={RequestId} stage=body-stall-recovery " +
-            "file={File} providerId={ProviderId} provider={Provider} segment={Segment} " +
-            "transferredBytes={TransferredBytes} attempt={Attempt} pipelined={Pipelined} " +
-            "bufferedSegments={BufferedSegments} inFlightSegments={InFlightSegments}",
-            SessionId, RequestId, _fileName,
-            string.IsNullOrWhiteSpace(providerId) ? "unknown" : providerId,
-            string.IsNullOrWhiteSpace(providerHost) ? "unknown" : providerHost,
-            ShortSegmentId(segmentId), transferredBytes, attempt, pipelined,
-            buffer.BufferedSegments, buffer.InFlightSegments);
+        _logger.BodyStallRecovery(
+            count,
+            providerId,
+            providerHost,
+            segmentId,
+            transferredBytes,
+            attempt,
+            pipelined,
+            BufferSnapshot());
     }
 
     public void UpstreamOperationStarted() =>
@@ -242,19 +196,12 @@ internal sealed class PlaybackRequestDiagnostics
         bool pipelined = false)
     {
         var attempt = _metrics.RecordBackupAttempt(providerId, providerHost);
-        var stage = attempt == 1 ? "backup-needed" : "backup-attempt";
-        var segment = ShortSegmentId(segmentId);
-
-        if (attempt == 1)
-            Log.Information(
-                "playback-provider session={SessionId} request={RequestId} stage={Stage} " +
-                "provider={Provider} segment={Segment} prior={PriorFailures} pipelined={Pipelined}",
-                SessionId, RequestId, stage, providerHost, segment, priorFailures, pipelined);
-        else
-            Log.Debug(
-                "playback-provider session={SessionId} request={RequestId} stage={Stage} " +
-                "provider={Provider} segment={Segment} prior={PriorFailures} pipelined={Pipelined}",
-                SessionId, RequestId, stage, providerHost, segment, priorFailures, pipelined);
+        _logger.BackupAttempt(
+            attempt,
+            providerHost,
+            segmentId,
+            priorFailures,
+            pipelined);
     }
 
     public void RecordBackupOutcome(
@@ -268,17 +215,12 @@ internal sealed class PlaybackRequestDiagnostics
             providerId,
             providerHost,
             outcome);
-
-        if (firstRescue)
-            Log.Information(
-                "playback-provider session={SessionId} request={RequestId} stage=backup-rescued " +
-                "provider={Provider} segment={Segment} elapsedMs={ElapsedMs}",
-                SessionId, RequestId, providerHost, ShortSegmentId(segmentId), elapsedMs);
-        else
-            Log.Debug(
-                "playback-provider session={SessionId} request={RequestId} stage=backup-result " +
-                "provider={Provider} segment={Segment} outcome={Outcome} elapsedMs={ElapsedMs}",
-                SessionId, RequestId, providerHost, ShortSegmentId(segmentId), outcome, elapsedMs);
+        _logger.BackupOutcome(
+            firstRescue,
+            providerHost,
+            segmentId,
+            outcome,
+            elapsedMs);
     }
 
     public void RecordFallbackRescue(
@@ -288,18 +230,12 @@ internal sealed class PlaybackRequestDiagnostics
         long elapsedMs)
     {
         var rescue = _metrics.RecordFallbackRescue();
-        if (rescue == 1)
-            Log.Information(
-                "playback-provider session={SessionId} request={RequestId} stage=fallback-rescued " +
-                "provider={Provider} segment={Segment} prior={PriorFailures} elapsedMs={ElapsedMs}",
-                SessionId, RequestId, providerHost, ShortSegmentId(segmentId),
-                priorFailures, elapsedMs);
-        else
-            Log.Debug(
-                "playback-provider session={SessionId} request={RequestId} stage=fallback-rescued " +
-                "provider={Provider} segment={Segment} prior={PriorFailures} elapsedMs={ElapsedMs}",
-                SessionId, RequestId, providerHost, ShortSegmentId(segmentId),
-                priorFailures, elapsedMs);
+        _logger.FallbackRescue(
+            rescue,
+            providerHost,
+            segmentId,
+            priorFailures,
+            elapsedMs);
     }
 
     public void RecordProviderRotation(
@@ -310,12 +246,12 @@ internal sealed class PlaybackRequestDiagnostics
         string reason)
     {
         _metrics.RecordProviderRotation();
-        Log.Information(
-            "playback-provider session={SessionId} request={RequestId} stage=pipeline-rotation " +
-            "from={FailedProvider} to={ReplacementProvider} replacementIsBackup={ReplacementIsBackup} " +
-            "unresolved={Unresolved} reason={Reason}",
-            SessionId, RequestId, failedProvider, replacementProvider,
-            replacementIsBackup, unresolvedSegments, reason);
+        _logger.ProviderRotation(
+            failedProvider,
+            replacementProvider,
+            replacementIsBackup,
+            unresolvedSegments,
+            reason);
     }
 
     public void RecordPipelineReset(
@@ -323,19 +259,13 @@ internal sealed class PlaybackRequestDiagnostics
         int unresolvedSegments,
         string reason)
     {
-        Log.Information(
-            "playback-provider session={SessionId} request={RequestId} stage=pipeline-reset " +
-            "provider={Provider} unresolved={Unresolved} reason={Reason}",
-            SessionId, RequestId, provider, unresolvedSegments, reason);
+        _logger.PipelineReset(provider, unresolvedSegments, reason);
     }
 
     public void RecordFallbackBudgetExhausted(int attemptedProviders, int remainingBackups)
     {
         _metrics.RecordFallbackBudgetExhaustion();
-        Log.Warning(
-            "playback-provider session={SessionId} request={RequestId} stage=fallback-budget-exhausted " +
-            "attemptedProviders={AttemptedProviders} remainingBackups={RemainingBackups}",
-            SessionId, RequestId, attemptedProviders, remainingBackups);
+        _logger.FallbackBudgetExhausted(attemptedProviders, remainingBackups);
     }
 
     public void RecordCacheHit() => _metrics.RecordCacheHit();
@@ -346,19 +276,13 @@ internal sealed class PlaybackRequestDiagnostics
     {
         if (elapsedMs < _stallThreshold.TotalMilliseconds) return;
         var wait = _metrics.RecordConnectionPermitWait(elapsedMs);
-        var warning = PlaybackIssueThresholds.WaitsMatter(wait.Count, wait.MaxMs);
-        ref var logged = ref (warning
-            ? ref _connectionPermitWaitWarningLogged
-            : ref _connectionPermitWaitInfoLogged);
-        if (Interlocked.Exchange(ref logged, 1) != 0) return;
-        var buffer = BufferSnapshot();
-        Log.Write(
-            warning ? LogEventLevel.Warning : LogEventLevel.Information,
-            "playback-session session={SessionId} request={RequestId} " +
-            "stage=connection-permit-wait priority={Priority} outcome={Outcome} waitMs={WaitMs} waits={Waits} " +
-            "offset={Offset} bufferedSegments={BufferedSegments} inFlightSegments={InFlightSegments}",
-            SessionId, RequestId, priority, outcome, elapsedMs, wait.Count, CurrentOffset,
-            buffer.BufferedSegments, buffer.InFlightSegments);
+        _logger.ConnectionPermitWait(
+            wait,
+            elapsedMs,
+            priority,
+            outcome,
+            CurrentOffset,
+            BufferSnapshot());
     }
 
     public void RecordProviderPoolWait(
@@ -372,22 +296,17 @@ internal sealed class PlaybackRequestDiagnostics
     {
         if (elapsedMs < _stallThreshold.TotalMilliseconds) return;
         var wait = _metrics.RecordProviderPoolWait(elapsedMs);
-        var warning = PlaybackIssueThresholds.WaitsMatter(wait.Count, wait.MaxMs);
-        ref var logged = ref (warning
-            ? ref _providerPoolWaitWarningLogged
-            : ref _providerPoolWaitInfoLogged);
-        if (Interlocked.Exchange(ref logged, 1) != 0) return;
-        var buffer = BufferSnapshot();
-        Log.Write(
-            warning ? LogEventLevel.Warning : LogEventLevel.Information,
-            "playback-provider session={SessionId} request={RequestId} " +
-            "stage=provider-pool-wait provider={Provider} outcome={Outcome} waitMs={WaitMs} waits={Waits} " +
-            "poolLive={PoolLive} poolActive={PoolActive} poolIdle={PoolIdle} " +
-            "poolPending={PoolPending} offset={Offset} bufferedSegments={BufferedSegments} " +
-            "inFlightSegments={InFlightSegments}",
-            SessionId, RequestId, provider, outcome, elapsedMs, wait.Count,
-            liveConnections, activeConnections, idleConnections, pendingAcquisitions,
-            CurrentOffset, buffer.BufferedSegments, buffer.InFlightSegments);
+        _logger.ProviderPoolWait(
+            wait,
+            provider,
+            elapsedMs,
+            outcome,
+            liveConnections,
+            activeConnections,
+            idleConnections,
+            pendingAcquisitions,
+            CurrentOffset,
+            BufferSnapshot());
     }
 
     public PlaybackDiagnosticSnapshot Snapshot()
@@ -433,74 +352,13 @@ internal sealed class PlaybackRequestDiagnostics
         if (Interlocked.Exchange(ref _completed, 1) != 0) return;
         var snapshot = Snapshot();
         _sessionStats?.Fold(SessionId, BuildDelta(reason, exception));
-        const string message =
-            "playback-session session={SessionId} request={RequestId} stage=request-end " +
-            "reason={Reason} file={File} range={Range} durationMs={DurationMs} " +
-            "firstByteMs={FirstByteMs} bytesServed={BytesServed} bytesFetched={BytesFetched} " +
-            "offset={Offset} fileSize={FileSize} upstreamStalls={UpstreamStalls} " +
-            "maxUpstreamStallMs={MaxUpstreamStallMs} totalUpstreamStallMs={TotalUpstreamStallMs} " +
-            // Order must match the argument list below exactly: Serilog binds
-            // these positionally, so a placeholder inserted out of order prints
-            // one counter's value under another counter's name.
-            "downstreamStalls={DownstreamStalls} maxDownstreamStallMs={MaxDownstreamStallMs} " +
-            "totalDownstreamStallMs={TotalDownstreamStallMs} " +
-            "headOfLineStalls={HeadOfLineStalls} totalHeadOfLineStallMs={TotalHeadOfLineStallMs} " +
-            "bufferedSegments={BufferedSegments} " +
-            "inFlightSegments={InFlightSegments} failoverSaves={FailoverSaves} " +
-            "fallbackRescues={FallbackRescues} providerRotations={ProviderRotations} " +
-            "fallbackBudgetExhaustions={FallbackBudgetExhaustions} cacheHits={CacheHits} " +
-            "cacheMisses={CacheMisses} connectionPermitWaits={ConnectionPermitWaits} " +
-            "maxConnectionPermitWaitMs={MaxConnectionPermitWaitMs} " +
-            "providerPoolWaits={ProviderPoolWaits} maxProviderPoolWaitMs={MaxProviderPoolWaitMs} " +
-            "zeroFilledSegments={ZeroFilledSegments} zeroFilledBytes={ZeroFilledBytes} " +
-            "bodyStallRecoveries={BodyStallRecoveries} " +
-            "providers={Providers} " +
-            "backups={Backups}";
-        var firstByte = Interlocked.Read(ref _firstByteMs);
-        var level = PlaybackOutcomeClassifier.CompletionLogLevel(
+        _logger.Complete(
             snapshot,
             reason,
+            bytesFetched,
+            failoverSaves,
+            providerSummary,
             exception);
-
-        if (exception is null)
-            Log.Write(
-                level,
-                message,
-                SessionId, RequestId, reason, _fileName, RequestedRange,
-                _lifetime.ElapsedMilliseconds, firstByte < 0 ? "none" : firstByte,
-                snapshot.BytesServed, bytesFetched, snapshot.CurrentOffset, _fileSize,
-                snapshot.UpstreamStalls, snapshot.MaxUpstreamStallMs,
-                snapshot.TotalUpstreamStallMs, snapshot.DownstreamStalls,
-                snapshot.MaxDownstreamStallMs, snapshot.TotalDownstreamStallMs,
-                snapshot.HeadOfLineStalls, snapshot.TotalHeadOfLineStallMs,
-                snapshot.BufferedSegments, snapshot.InFlightSegments, failoverSaves,
-                snapshot.FallbackRescues, snapshot.ProviderRotations,
-                snapshot.FallbackBudgetExhaustions, snapshot.CacheHits, snapshot.CacheMisses,
-                snapshot.ConnectionPermitWaits, snapshot.MaxConnectionPermitWaitMs,
-                snapshot.ProviderPoolWaits, snapshot.MaxProviderPoolWaitMs,
-                snapshot.ZeroFilledSegments, snapshot.ZeroFilledBytes,
-                snapshot.BodyStallRecoveries,
-                providerSummary, snapshot.BackupSummary);
-        else
-            Log.Write(
-                level,
-                exception,
-                message,
-                SessionId, RequestId, reason, _fileName, RequestedRange,
-                _lifetime.ElapsedMilliseconds, firstByte < 0 ? "none" : firstByte,
-                snapshot.BytesServed, bytesFetched, snapshot.CurrentOffset, _fileSize,
-                snapshot.UpstreamStalls, snapshot.MaxUpstreamStallMs,
-                snapshot.TotalUpstreamStallMs, snapshot.DownstreamStalls,
-                snapshot.MaxDownstreamStallMs, snapshot.TotalDownstreamStallMs,
-                snapshot.HeadOfLineStalls, snapshot.TotalHeadOfLineStallMs,
-                snapshot.BufferedSegments, snapshot.InFlightSegments, failoverSaves,
-                snapshot.FallbackRescues, snapshot.ProviderRotations,
-                snapshot.FallbackBudgetExhaustions, snapshot.CacheHits, snapshot.CacheMisses,
-                snapshot.ConnectionPermitWaits, snapshot.MaxConnectionPermitWaitMs,
-                snapshot.ProviderPoolWaits, snapshot.MaxProviderPoolWaitMs,
-                snapshot.ZeroFilledSegments, snapshot.ZeroFilledBytes,
-                snapshot.BodyStallRecoveries,
-                providerSummary, snapshot.BackupSummary);
     }
 
     /// <summary>
@@ -510,11 +368,10 @@ internal sealed class PlaybackRequestDiagnostics
     /// </summary>
     private PlaybackRequestDelta BuildDelta(string reason, Exception? exception)
     {
-        var firstByte = Interlocked.Read(ref _firstByteMs);
         var metrics = _metrics.Snapshot();
         return new PlaybackRequestDelta(
             _startedAt,
-            firstByte < 0 ? null : firstByte,
+            _logger.FirstByteMs,
             Interlocked.Read(ref _maxOffset),
             metrics.FallbackRescues,
             metrics.ProviderRotations,
@@ -552,7 +409,6 @@ internal sealed class PlaybackRequestDiagnostics
         (int BufferedSegments, int InFlightSegments)? onset = null,
         string outcome = "served")
     {
-        bool shouldLog;
         var isUpstream = kind == "upstream-read";
         var isNewWait = reportedMs <= 0;
         var delta = Math.Max(0, elapsedMs - Math.Max(0, reportedMs));
@@ -569,61 +425,23 @@ internal sealed class PlaybackRequestDiagnostics
             elapsedMs,
             isNewWait,
             headOfLine);
-        lock (_stallLogLock)
-        {
-            var now = _lifetime.ElapsedMilliseconds;
-            if (isUpstream)
-            {
-                shouldLog = _lastUpstreamStallLogMs == long.MinValue ||
-                            now - _lastUpstreamStallLogMs >= StallLogInterval.TotalMilliseconds;
-                if (shouldLog) _lastUpstreamStallLogMs = now;
-            }
-            else
-            {
-                shouldLog = _lastDownstreamStallLogMs == long.MinValue ||
-                            now - _lastDownstreamStallLogMs >= StallLogInterval.TotalMilliseconds;
-                if (shouldLog) _lastDownstreamStallLogMs = now;
-            }
-        }
 
         // Reported immediately, not at request end: a sequential stream is one
         // long request, and a live view must not read zero while it is stuck.
         _sessionStats?.RecordWait(SessionId, isUpstream, delta, elapsedMs, isNewWait, headOfLine);
-
-        if (!shouldLog) return;
-        var buffer = onset ?? BufferSnapshot();
-        // A slow write is the client pacing itself, not a fault — a player that
-        // races ahead and then throttles produces these on flawless playback, so
-        // they must not warn. They still log at Information rather than Debug:
-        // this is the evidence that clears the server, and an operator reading
-        // default-level logs needs to see it next to the upstream stall instead
-        // of concluding the source was at fault.
-        //
-        // Upstream waits warn only once they are big enough for the page to call
-        // a source issue. A lone 1 s wait behind a full buffer reached nobody,
-        // and warning about it drowns the waits that did.
-        var level = isUpstream && PlaybackIssueThresholds.StallsMatter(wait.Count, wait.MaxMs)
-            ? LogEventLevel.Warning
-            : LogEventLevel.Information;
-        Log.Write(
-            level,
-            "playback-session session={SessionId} request={RequestId} stage=stall kind={Kind} " +
-            "file={File} offset={Offset} waitMs={WaitMs} outcome={Outcome} waits={Waits} " +
-            "blocked={Blocked} bufferedSegments={BufferedSegments} inFlightSegments={InFlightSegments}",
-            SessionId, RequestId, kind, _fileName, offset, elapsedMs, outcome, wait.Count,
-            isUpstream ? (headOfLine ? "head-of-line" : "source") : "client",
-            buffer.BufferedSegments, buffer.InFlightSegments);
+        _logger.Stall(
+            isUpstream,
+            headOfLine,
+            wait,
+            elapsedMs,
+            offset,
+            outcome,
+            onset ?? BufferSnapshot());
     }
 
     private (int BufferedSegments, int InFlightSegments) BufferSnapshot() => (
         Math.Max(0, Volatile.Read(ref _bufferedSegments)),
         Math.Max(0, Volatile.Read(ref _inFlightSegments)));
-
-    private static string ShortSegmentId(string? segmentId)
-    {
-        if (string.IsNullOrWhiteSpace(segmentId)) return "unknown";
-        return segmentId.Length <= 160 ? segmentId : segmentId[..157] + "...";
-    }
 
     private static void DecrementNonNegative(ref int value)
     {

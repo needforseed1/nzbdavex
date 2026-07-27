@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { receiveMessage } from "~/utils/websocket-util";
-import styles from "./route.module.css";
+import cardStyles from "./playback-card.module.css";
+import layoutStyles from "./playback-layout.module.css";
+import { PlaybackStat } from "./playback-stat";
 import { formatBytes, formatMs, formatPct, formatRate, formatWatchTime } from "./playback-view";
 
 const activeReadsTopic = { ar: "state" };
@@ -68,20 +70,20 @@ export function ActivePlays({ reads }: { reads: ActiveRead[] }) {
     if (reads.length === 0) return null;
 
     return (
-        <div className={styles.group}>
-            <div className={styles.groupHeader}>
-                <div className={styles.groupHeading}>
-                    <h2 className={styles.title}>Playing now</h2>
-                    <div className={styles.subtitle}>
+        <div className={layoutStyles.group}>
+            <div className={layoutStyles.groupHeader}>
+                <div className={layoutStyles.groupHeading}>
+                    <h2 className={layoutStyles.title}>Playing now</h2>
+                    <div className={layoutStyles.subtitle}>
                         Reads in flight. Each one joins the history below once it finishes.
                     </div>
                 </div>
-                <span className={styles.liveTag}>
-                    <span className={`${styles.liveDot} ${styles.liveDotOn}`} />
+                <span className={layoutStyles.liveTag}>
+                    <span className={`${layoutStyles.liveDot} ${layoutStyles.liveDotOn}`} />
                     {reads.length} active
                 </span>
             </div>
-            <div className={styles.playList}>
+            <div className={layoutStyles.playList}>
                 {reads.map(read => <ActiveReadCard key={read.id} read={read} />)}
             </div>
         </div>
@@ -104,31 +106,31 @@ function ActiveReadCard({ read }: { read: ActiveRead }) {
     const recovered = read.bodyStallRecoveries > 0;
 
     return (
-        <div className={styles.playCard}>
-            <div className={styles.playRow}>
-                <span className={`${styles.verdictPill} ${
-                    damaged ? styles["verdict-bad"]
-                        : waiting ? styles["verdict-warn"]
-                        : styles["verdict-info"]}`}>
+        <div className={cardStyles.playCard}>
+            <div className={cardStyles.playRow}>
+                <span className={`${cardStyles.verdictPill} ${
+                    damaged ? cardStyles["verdict-bad"]
+                        : waiting ? cardStyles["verdict-warn"]
+                        : cardStyles["verdict-info"]}`}>
                     {damaged ? "Damaged" : waiting ? "Waiting on source" : "Streaming"}
                 </span>
-                <div className={styles.playIdent}>
-                    <div className={styles.playTitle} title={read.path}>{read.fileName}</div>
-                    <div className={styles.playMeta}>
-                        {providers && <span className={styles.metaText}>{providers}</span>}
-                        {providers && <span className={styles.metaDot} aria-hidden="true">·</span>}
-                        <span className={styles.timestamp}>
+                <div className={cardStyles.playIdent}>
+                    <div className={cardStyles.playTitle} title={read.path}>{read.fileName}</div>
+                    <div className={cardStyles.playMeta}>
+                        {providers && <span className={cardStyles.metaText}>{providers}</span>}
+                        {providers && <span className={cardStyles.metaDot} aria-hidden="true">·</span>}
+                        <span className={cardStyles.timestamp}>
                             {formatWatchTime(Date.now() - read.startedAt)} in
                         </span>
                     </div>
                 </div>
                 {/* Same six-column track the history rows use, so a live play and
                     the finished play it becomes read as the same object. */}
-                <span className={styles.statGrid}>
-                    <StatBox label="Rate" value={formatRate(read.bytesPerSecond)} />
-                    <StatBox label="Position" value={formatPct(reachedPct)} />
-                    <StatBox label="Served" value={formatBytes(read.bytesRead)} />
-                    <StatBox
+                <span className={cardStyles.statGrid}>
+                    <PlaybackStat label="Rate" value={formatRate(read.bytesPerSecond)} />
+                    <PlaybackStat label="Position" value={formatPct(reachedPct)} />
+                    <PlaybackStat label="Served" value={formatBytes(read.bytesRead)} />
+                    <PlaybackStat
                         label="Waited"
                         value={waiting
                             ? `${read.upstreamWaitsInProgress} now`
@@ -141,13 +143,13 @@ function ActiveReadCard({ read }: { read: ActiveRead }) {
                             : "Cumulative time this read has spent waiting on usenet, "
                               + `across ${read.upstreamStalls} wait(s).`} />
                     {recovered && (
-                        <StatBox
+                        <PlaybackStat
                             label="Recovered"
                             value={`${read.bodyStallRecoveries}`}
                             title="Provider connections that stopped mid-article, were replaced, and continued." />
                     )}
                     {damaged && (
-                        <StatBox
+                        <PlaybackStat
                             label="Zero-filled"
                             value={`${read.zeroFilledSegments}`}
                             title="Articles that could not be fetched and were replaced with zeros." />
@@ -155,14 +157,5 @@ function ActiveReadCard({ read }: { read: ActiveRead }) {
                 </span>
             </div>
         </div>
-    );
-}
-
-function StatBox({ label, value, title }: { label: string, value: string, title?: string }) {
-    return (
-        <span className={styles.statBox} title={title}>
-            <span className={styles.statLabel}>{label}</span>
-            <span className={styles.statValue}>{value}</span>
-        </span>
     );
 }

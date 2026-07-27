@@ -143,6 +143,8 @@ public class PlaybackDiagnosticContextTests
         Assert.Equal("900", Value("ZeroFilledBytes"));
         Assert.Equal("60", Value("BytesServed"));
         Assert.Equal("4096", Value("BytesFetched"));
+        Assert.IsType<long>(
+            Assert.IsType<ScalarValue>(end.Properties["FirstByteMs"]).Value);
     }
 
     [Fact]
