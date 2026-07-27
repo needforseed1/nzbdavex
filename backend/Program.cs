@@ -123,6 +123,8 @@ class Program
             .AddSingleton<ProviderUsageTracker>()
             .AddSingleton<ActiveReadRegistry>()
             .AddSingleton<PlaybackSessionStats>()
+            .AddSingleton<ActiveReadsSnapshotBuilder>()
+            .AddSingleton<PlaybackSessionRecorder>()
             .AddSingleton<QueueItemSourceTracker>()
             .AddSingleton<UsenetStreamingClient>()
             .AddSingleton<NzbWebDAV.Services.LazyRarResolver>()

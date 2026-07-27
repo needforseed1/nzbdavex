@@ -288,7 +288,7 @@ public class PlaybackSessionStatsTests
             new PlaybackBackupProviderStat("backup-1", "backup.example", 4, 1, 2, 1, 0),
         ]));
 
-        var json = ActiveReadsBroadcaster.BuildProviderStatsJson(
+        var json = PlaybackSessionRecorder.BuildProviderStatsJson(
             segmentsByProvider: new Dictionary<string, long>
             {
                 ["primary-1"] = 120,
@@ -328,7 +328,7 @@ public class PlaybackSessionStatsTests
     [Fact]
     public void ProviderStatsJson_IsNullWhenNothingWasRecorded()
     {
-        var json = ActiveReadsBroadcaster.BuildProviderStatsJson(
+        var json = PlaybackSessionRecorder.BuildProviderStatsJson(
             new Dictionary<string, long>(),
             new Dictionary<string, long>(),
             totals: null);

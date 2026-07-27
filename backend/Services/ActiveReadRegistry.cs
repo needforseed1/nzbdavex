@@ -11,6 +11,7 @@ namespace NzbWebDAV.Services;
 public class ActiveReadRegistry
 {
     private static readonly TimeSpan ActivityWindow = TimeSpan.FromSeconds(15);
+    private readonly Func<DateTimeOffset> _utcNow;
 
     // Two indexes. _keyToId dedupes successive range requests from the same
     // (path, clientKey) onto a single session id while the session is active.
@@ -28,10 +29,19 @@ public class ActiveReadRegistry
     private long _totalBytesServed;
     public long TotalBytesServed => Interlocked.Read(ref _totalBytesServed);
 
+    public ActiveReadRegistry() : this(static () => DateTimeOffset.UtcNow)
+    {
+    }
+
+    internal ActiveReadRegistry(Func<DateTimeOffset> utcNow)
+    {
+        _utcNow = utcNow;
+    }
+
     public Guid GetOrCreate(string path, string clientKey, string fileName, long? fileSize)
     {
         var key = BuildKey(path, clientKey);
-        var now = DateTimeOffset.UtcNow;
+        var now = _utcNow();
 
         while (true)
         {
@@ -76,7 +86,7 @@ public class ActiveReadRegistry
             lock (entry.LifetimeLock)
             {
                 if (entry.Removed) return;
-                entry.LastActivityAt = DateTimeOffset.UtcNow;
+                entry.LastActivityAt = _utcNow();
                 if (bytesRead > 0)
                 {
                     Interlocked.Add(ref entry.BytesRead, bytesRead);
@@ -128,7 +138,7 @@ public class ActiveReadRegistry
         lock (entry.LifetimeLock)
         {
             if (entry.Removed) return;
-            entry.LastActivityAt = DateTimeOffset.UtcNow;
+            entry.LastActivityAt = _utcNow();
             entry.ClientIp = clientIp;
             entry.ClientUserAgent = clientUserAgent;
             Interlocked.Increment(ref entry.OpenRequests);
@@ -144,23 +154,23 @@ public class ActiveReadRegistry
         lock (entry.LifetimeLock)
         {
             if (entry.Removed) return;
-            entry.LastActivityAt = DateTimeOffset.UtcNow;
+            entry.LastActivityAt = _utcNow();
             entry.EndReason = endReason;
             DecrementNonNegative(ref entry.OpenRequests);
         }
     }
 
-    public IReadOnlyList<Entry> Snapshot()
+    public IReadOnlyList<ActiveReadSessionSnapshot> Snapshot()
     {
-        var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
-        var active = new List<Entry>();
+        var cutoff = _utcNow() - ActivityWindow;
+        var active = new List<ActiveReadSessionSnapshot>();
         foreach (var entry in _entries.Values)
         {
             lock (entry.LifetimeLock)
             {
                 if (!entry.Removed &&
                     (entry.LastActivityAt >= cutoff || entry.IsRequestOpen))
-                    active.Add(entry);
+                    active.Add(CreateSnapshot(entry));
             }
         }
         return active.OrderBy(e => e.StartedAt).ToList();
@@ -172,10 +182,10 @@ public class ActiveReadRegistry
     /// can clear external bookkeeping and persist a terminal record of the
     /// session.
     /// </summary>
-    public IReadOnlyList<Entry> PruneExpired()
+    public IReadOnlyList<ActiveReadSessionSnapshot> PruneExpired()
     {
-        var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
-        var expired = new List<Entry>();
+        var cutoff = _utcNow() - ActivityWindow;
+        var expired = new List<ActiveReadSessionSnapshot>();
         foreach (var entry in _entries.Values)
         {
             lock (entry.LifetimeLock)
@@ -190,7 +200,7 @@ public class ActiveReadRegistry
                 ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
                     .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
                 if (_entries.TryRemove(entry.Id, out _))
-                    expired.Add(entry);
+                    expired.Add(CreateSnapshot(entry));
             }
         }
         return expired;
@@ -202,10 +212,10 @@ public class ActiveReadRegistry
     /// pass keeps a session from being returned twice and colliding on its
     /// primary key.
     /// </summary>
-    public IReadOnlyList<Entry> DrainAll()
+    public IReadOnlyList<ActiveReadSessionSnapshot> DrainAll()
     {
         var all = _entries.Values.ToList();
-        var drained = new List<Entry>(all.Count);
+        var drained = new List<ActiveReadSessionSnapshot>(all.Count);
         foreach (var entry in all)
         {
             lock (entry.LifetimeLock)
@@ -216,7 +226,7 @@ public class ActiveReadRegistry
                 ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
                     .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
                 if (_entries.TryRemove(entry.Id, out _))
-                    drained.Add(entry);
+                    drained.Add(CreateSnapshot(entry));
             }
         }
         return drained;
@@ -225,6 +235,23 @@ public class ActiveReadRegistry
     public int Count => _entries.Count;
 
     private static string BuildKey(string path, string clientKey) => path + "\n" + clientKey;
+
+    private static ActiveReadSessionSnapshot CreateSnapshot(Entry entry) =>
+        new(
+            entry.Id,
+            entry.Path,
+            entry.FileName,
+            entry.FileSize,
+            entry.ClientUserAgent,
+            entry.ClientIp,
+            entry.DavItemId,
+            entry.HistoryItemId,
+            entry.EndReason,
+            entry.StartedAt,
+            entry.LastActivityAt,
+            Interlocked.Read(ref entry.BytesRead),
+            Interlocked.Read(ref entry.CurrentOffset),
+            Interlocked.Read(ref entry.MaxOffset));
 
     private static void UpdateMaximum(ref long target, long candidate)
     {
@@ -246,7 +273,7 @@ public class ActiveReadRegistry
         }
     }
 
-    public sealed class Entry
+    private sealed class Entry
     {
         public Guid Id { get; init; }
         public string Path { get; init; } = "";
