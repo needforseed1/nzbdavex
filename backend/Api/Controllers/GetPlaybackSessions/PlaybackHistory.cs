@@ -189,13 +189,18 @@ public static class PlaybackHistory
         IReadOnlyList<ProviderDto> providers)
     {
         var issues = new List<string>();
+        var pressure = PlaybackOutcomeClassifier.ClassifySourcePressure(
+            counters.UpstreamStalls,
+            counters.MaxUpstreamStallMs,
+            counters.ConnectionPermitWaits,
+            counters.MaxConnectionPermitWaitMs,
+            counters.ProviderPoolWaits,
+            counters.MaxProviderPoolWaitMs);
         // Substituted bytes first: everything else on this list is about the
         // stream being slow, this one is about it being wrong.
         if (counters.ZeroFilledSegments > 0) issues.Add(Issue.Corrupted);
         if (counters.BodyStallRecoveries > 0) issues.Add(Issue.BodyStalled);
-        if (PlaybackIssueThresholds.StallsMatter(
-                counters.UpstreamStalls, counters.MaxUpstreamStallMs))
-            issues.Add(Issue.Stalled);
+        if (pressure.Stalled) issues.Add(Issue.Stalled);
         if (counters.FallbackRescues > 0 || counters.FailoverSaves > 0 ||
             providers.Any(p => p.Rescued > 0))
             issues.Add(Issue.Rescued);
@@ -203,12 +208,8 @@ public static class PlaybackHistory
             issues.Add(Issue.BackupUsed);
         if (counters.ProviderRotations > 0) issues.Add(Issue.Rotated);
         if (counters.FallbackBudgetExhaustions > 0) issues.Add(Issue.BudgetExhausted);
-        if (PlaybackIssueThresholds.WaitsMatter(
-                counters.ProviderPoolWaits, counters.MaxProviderPoolWaitMs))
-            issues.Add(Issue.PoolStarved);
-        if (PlaybackIssueThresholds.WaitsMatter(
-                counters.ConnectionPermitWaits, counters.MaxConnectionPermitWaitMs))
-            issues.Add(Issue.PermitStarved);
+        if (pressure.ProviderPoolStarved) issues.Add(Issue.PoolStarved);
+        if (pressure.ConnectionPermitStarved) issues.Add(Issue.PermitStarved);
 
         switch (endReason)
         {

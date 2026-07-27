@@ -250,11 +250,11 @@ public class PlaybackDiagnosticContextTests
 
         Assert.Equal(
             LogEventLevel.Information,
-            PlaybackRequestDiagnostics.CompletionLogLevel(
+            PlaybackOutcomeClassifier.CompletionLogLevel(
                 clean, "completed", exception: null));
         Assert.Equal(
             LogEventLevel.Information,
-            PlaybackRequestDiagnostics.CompletionLogLevel(
+            PlaybackOutcomeClassifier.CompletionLogLevel(
                 clean with { DownstreamStalls = 1 },
                 "completed",
                 exception: null));
@@ -276,7 +276,7 @@ public class PlaybackDiagnosticContextTests
         foreach (var snapshot in informationSnapshots)
             Assert.Equal(
                 LogEventLevel.Information,
-                PlaybackRequestDiagnostics.CompletionLogLevel(
+                PlaybackOutcomeClassifier.CompletionLogLevel(
                     snapshot, "completed", exception: null));
 
         var warningSnapshots = new[]
@@ -296,16 +296,16 @@ public class PlaybackDiagnosticContextTests
         foreach (var snapshot in warningSnapshots)
             Assert.Equal(
                 LogEventLevel.Warning,
-                PlaybackRequestDiagnostics.CompletionLogLevel(
+                PlaybackOutcomeClassifier.CompletionLogLevel(
                     snapshot, "completed", exception: null));
 
         Assert.Equal(
             LogEventLevel.Warning,
-            PlaybackRequestDiagnostics.CompletionLogLevel(
+            PlaybackOutcomeClassifier.CompletionLogLevel(
                 clean, "timeout", exception: null));
         Assert.Equal(
             LogEventLevel.Warning,
-            PlaybackRequestDiagnostics.CompletionLogLevel(
+            PlaybackOutcomeClassifier.CompletionLogLevel(
                 clean,
                 "error",
                 new InvalidOperationException("upstream failed")));

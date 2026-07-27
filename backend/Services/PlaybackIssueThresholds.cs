@@ -10,7 +10,7 @@ namespace NzbWebDAV.Services;
 /// everything, by design. The page answers "did the viewer suffer", so
 /// successful recovery is neutral there. The log answers "did the server have
 /// to work around something", so a recovered wedged connection warns. See
-/// PlaybackRequestDiagnostics.CompletionLogLevel.
+/// <see cref="PlaybackOutcomeClassifier"/>.
 /// </summary>
 public static class PlaybackIssueThresholds
 {
