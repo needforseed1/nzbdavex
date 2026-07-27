@@ -42,6 +42,29 @@
     gap: 0 4px;
 }
 
+.stats {
+    color: var(--text-muted);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 8px;
+}
+
+.rate {
+    color: var(--text-secondary, var(--text-muted));
+    font-variant-numeric: tabular-nums;
+}
+
+.waited {
+    color: var(--warning, #d08770);
+}
+
+/* Louder than a wait on purpose: this one is not recoverable by waiting. */
+.damaged {
+    color: var(--danger, #bf616a);
+    font-weight: 500;
+}
+
 .providersIdle {
     color: var(--text-faint);
     font-style: italic;

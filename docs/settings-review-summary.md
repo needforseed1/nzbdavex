@@ -75,6 +75,7 @@ Legacy `UserAgent` values are now copied into blank/missing `SearchUserAgent` an
 The following controls now live under `Usenet → Advanced performance`:
 
 - `usenet.max-download-connections` — playback connection budget.
+- `usenet.playback-reserved-connections` — physical provider capacity protected for playback.
 - `usenet.max-queue-connections` — prep/queue connection budget.
 - `usenet.streaming-priority` — playback-versus-queue semaphore weighting.
 - `usenet.article-buffer-size` — per-stream article look-ahead.

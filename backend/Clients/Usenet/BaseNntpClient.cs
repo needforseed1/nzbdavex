@@ -1,4 +1,5 @@
 ﻿using System.Runtime.CompilerServices;
+using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -173,7 +174,10 @@ public class BaseNntpClient : NntpClient
     )
     {
         var ids = ToSegmentIds(segmentIds);
-        await foreach (var response in _client.BodyPipelinedAsync(ids, depth, cancellationToken)
+        var inactivityTimeout = cancellationToken
+            .GetContext<BodyReadInactivityContext>()?.Timeout;
+        await foreach (var response in _client.BodyPipelinedAsync(
+                               ids, depth, inactivityTimeout, cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             var found = response.ResponseType == UsenetResponseType.ArticleRetrievedBodyFollows

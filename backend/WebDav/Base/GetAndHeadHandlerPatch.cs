@@ -7,7 +7,10 @@ using NWebDav.Server.Stores;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models.Metrics;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Services;
+using NzbWebDAV.Utils;
+using Serilog;
 
 namespace NzbWebDAV.WebDav.Base;
 
@@ -27,17 +30,20 @@ public class GetAndHeadHandlerPatch : IRequestHandler
     private readonly ProviderUsageTracker _providerUsageTracker;
     private readonly ActiveReadRegistry _activeReadRegistry;
     private readonly ConfigManager _configManager;
+    private readonly PlaybackSessionStats _playbackSessionStats;
 
     public GetAndHeadHandlerPatch(
         IStore store,
         ProviderUsageTracker providerUsageTracker,
         ActiveReadRegistry activeReadRegistry,
-        ConfigManager configManager)
+        ConfigManager configManager,
+        PlaybackSessionStats playbackSessionStats)
     {
         _store = store;
         _providerUsageTracker = providerUsageTracker;
         _activeReadRegistry = activeReadRegistry;
         _configManager = configManager;
+        _playbackSessionStats = playbackSessionStats;
     }
     
     /// <summary>
@@ -100,30 +106,38 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         }
 
         var playbackPath = request.GetUri().AbsolutePath;
-        var playbackFileName = entry switch
-        {
-            NzbWebDAV.WebDav.DatabaseStoreIdFile idFile => idFile.FriendlyName,
-            _ => !string.IsNullOrEmpty(entry.Name)
+        var playbackIdFile = entry as NzbWebDAV.WebDav.DatabaseStoreIdFile;
+        var playbackFileName = playbackIdFile is not null
+            ? playbackIdFile.FriendlyName
+            : !string.IsNullOrEmpty(entry.Name)
                 ? entry.Name
-                : System.IO.Path.GetFileName(playbackPath)
-        };
+                : System.IO.Path.GetFileName(playbackPath);
         Guid? sessionId = null;
         PlaybackRequestDiagnostics? diagnostics = null;
         if (!isHeadRequest)
         {
-            var clientKey = $"{httpContext.Connection.RemoteIpAddress}|{request.Headers.UserAgent}";
+            // Resolved, not the socket peer: viewers reach playback through a
+            // local proxy, so the peer is the same loopback address for all of
+            // them and would collapse every device into one session.
+            var clientAddress = ClientAddressUtil.Resolve(httpContext);
+            var clientKey = $"{clientAddress}|{request.Headers.UserAgent}";
             sessionId = _activeReadRegistry.GetOrCreate(
                 playbackPath, clientKey, playbackFileName, fileSize: null);
             _activeReadRegistry.MarkRequestStarted(
                 sessionId.Value,
-                httpContext.Connection.RemoteIpAddress?.ToString(),
+                clientAddress,
                 request.Headers.UserAgent.ToString());
+            _activeReadRegistry.UpdateContentIds(
+                sessionId.Value,
+                playbackIdFile?.DavItemId,
+                playbackIdFile?.HistoryItemId);
             diagnostics = new PlaybackRequestDiagnostics(
                 sessionId.Value,
                 playbackPath,
                 playbackFileName,
                 FormatRange(range?.Start, range?.End),
-                range?.Start ?? 0);
+                range?.Start ?? 0,
+                sessionStats: _playbackSessionStats);
         }
 
         using var usageScope = sessionId.HasValue
@@ -233,6 +247,20 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             reason = "client-abort";
             endReason = ReadSession.EndReasonCode.Aborted;
             throw;
+        }
+        // The client stopped reading and never returned. Recorded as an abort
+        // because that is what it is from the viewer's side — the stream was
+        // abandoned, not failed — but logged with its own reason so the cause
+        // is not mistaken for a source problem.
+        catch (DownstreamStalledException e)
+        {
+            reason = "client-gone";
+            endReason = ReadSession.EndReasonCode.Aborted;
+            Log.Warning(
+                "playback-session session={SessionId} stage=client-gone offset={Offset} " +
+                "stalledMs={StalledMs} file={File}",
+                sessionId, e.Offset, e.StalledMs, playbackFileName);
+            return true;
         }
         catch (Exception exception)
         {

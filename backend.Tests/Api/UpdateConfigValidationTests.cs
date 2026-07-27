@@ -68,6 +68,81 @@ public class UpdateConfigValidationTests
             ]));
     }
 
+    [Fact]
+    public void PlaybackReservationAllowsZeroAndEnforcesGlobalRange()
+    {
+        ConfigUpdateValidator.Validate([
+            new ConfigItem
+            {
+                ConfigName = "usenet.playback-reserved-connections",
+                ConfigValue = "",
+            },
+        ]);
+        ConfigUpdateValidator.Validate([
+            new ConfigItem
+            {
+                ConfigName = "usenet.playback-reserved-connections",
+                ConfigValue = "0",
+            },
+        ]);
+        ConfigUpdateValidator.Validate([
+            new ConfigItem
+            {
+                ConfigName = "usenet.playback-reserved-connections",
+                ConfigValue = "512",
+            },
+        ]);
+
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem
+                {
+                    ConfigName = "usenet.playback-reserved-connections",
+                    ConfigValue = "513",
+                },
+            ]));
+    }
+
+    [Theory]
+    [InlineData("usenet.pipelining.depth")]
+    [InlineData("usenet.pipelining.health.depth")]
+    public void PipelineDepthSettingsSupportUpTo128(string key)
+    {
+        ConfigUpdateValidator.Validate([
+            new ConfigItem { ConfigName = key, ConfigValue = "128" },
+        ]);
+
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem { ConfigName = key, ConfigValue = "129" },
+            ]));
+    }
+
+    [Fact]
+    public void ProviderPipelineDepthOverridesSupportUpTo128()
+    {
+        ConfigUpdateValidator.Validate([
+            new ConfigItem
+            {
+                ConfigName = "usenet.providers",
+                ConfigValue = """
+                    {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":128,"HealthPipeliningDepth":128}]}
+                    """,
+            },
+        ]);
+
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem
+                {
+                    ConfigName = "usenet.providers",
+                    ConfigValue = """
+                        {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":129}]}
+                        """,
+                },
+            ]));
+    }
+
     [Theory]
     [InlineData("usenet.ready-connections.primary")]
     [InlineData("usenet.ready-connections.health")]

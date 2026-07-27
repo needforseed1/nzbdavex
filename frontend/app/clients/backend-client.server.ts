@@ -301,6 +301,43 @@ class BackendClient {
         return data.deleted ?? 0;
     }
 
+    public async getPlaybackSessions(limit: number = 500): Promise<PlaybackHistoryPage> {
+        const url = BACKEND_URL + `/api/get-playback-sessions?limit=${limit}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
+        const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to get playback sessions: ${(await response.json()).error}`);
+        }
+        const data = await response.json();
+        return {
+            plays: Array.isArray(data?.plays) ? data.plays : [],
+            sampledSessions: data?.sampledSessions ?? 0,
+            truncated: data?.truncated ?? false,
+            limit: data?.limit ?? limit,
+        };
+    }
+
+    public async getPlaybackSessionDetail(id: string): Promise<PlaybackSessionDetail> {
+        const url = BACKEND_URL + `/api/get-playback-session-detail?id=${encodeURIComponent(id)}`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
+        const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to get playback session: ${(await response.json()).error}`);
+        }
+        return await response.json();
+    }
+
+    public async clearPlaybackSessions(): Promise<number> {
+        const url = BACKEND_URL + `/api/clear-playback-sessions`;
+        const apiKey = FRONTEND_BACKEND_API_KEY;
+        const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey } });
+        if (!response.ok) {
+            throw new Error(`Failed to clear playback sessions: ${(await response.json()).error}`);
+        }
+        const data = await response.json();
+        return data.deleted ?? 0;
+    }
+
     public async getHealthCheckHistory(pageSize?: number): Promise<HealthCheckHistoryResponse> {
         let url = BACKEND_URL + "/api/get-health-check-history";
 
@@ -535,6 +572,161 @@ export type WatchdogHealthProvider = {
     workMs: number,
     rate: number,
 }
+
+/**
+ * Plays are grouped after the raw session rows are sampled, so the page has to
+ * know how deep the sample went: "3 with issues" out of the last 500 reads is a
+ * different statement from "3 with issues, ever".
+ */
+export type PlaybackHistoryPage = {
+    plays: PlaybackPlay[],
+    sampledSessions: number,
+    truncated: boolean,
+    limit: number,
+}
+
+/** One continuous viewing of one file by one client. */
+export type PlaybackPlay = {
+    key: string,
+    title: string,
+    nzbName?: string | null,
+    category?: string | null,
+    path: string,
+    davItemId?: string | null,
+    historyItemId?: string | null,
+    clientIp?: string | null,
+    clientUserAgent?: string | null,
+    startedAtUnix: number,
+    endedAtUnix: number,
+    watchedMs: number,
+    spanMs: number,
+    fileSize?: number | null,
+    maxOffset: number,
+    reachedPct?: number | null,
+    bytesServed: number,
+    bytesFetched: number,
+    avgBytesPerSecond: number,
+    /** What usenet delivered, against what the client took (avgBytesPerSecond). */
+    sourceBytesPerSecond: number,
+    firstByteMs?: number | null,
+    endReason: PlaybackEndReason,
+    errorNote?: string | null,
+    hasDiagnostics: boolean,
+    /** A media-scanner header read rather than someone watching something. */
+    isProbe: boolean,
+    issues: string[],
+    counters: PlaybackCounters,
+    providers: PlaybackProvider[],
+    sessions: PlaybackSession[],
+}
+
+export type PlaybackEndReason = "completed" | "aborted" | "timeout" | "error";
+
+export type PlaybackSession = {
+    id: string,
+    path: string,
+    fileName?: string | null,
+    davItemId?: string | null,
+    historyItemId?: string | null,
+    clientIp?: string | null,
+    clientUserAgent?: string | null,
+    startedAtUnix: number,
+    endedAtUnix: number,
+    startedAtMs: number,
+    endedAtMs: number,
+    durationMs: number,
+    requestCount: number,
+    bytesServed: number,
+    bytesFetched: number,
+    fileSize?: number | null,
+    maxOffset: number,
+    firstByteMs?: number | null,
+    endReason: PlaybackEndReason,
+    errorNote?: string | null,
+    hasDiagnostics: boolean,
+    issues: string[],
+    counters: PlaybackCounters,
+    providers: PlaybackProvider[],
+}
+
+export type PlaybackCounters = {
+    upstreamStalls: number,
+    maxUpstreamStallMs: number,
+    totalUpstreamStallMs: number,
+    /** Waits where ready segments sat behind one slow article. */
+    headOfLineStalls: number,
+    totalHeadOfLineStallMs: number,
+    downstreamStalls: number,
+    maxDownstreamStallMs: number,
+    totalDownstreamStallMs: number,
+    fallbackRescues: number,
+    providerRotations: number,
+    fallbackBudgetExhaustions: number,
+    cacheHits: number,
+    cacheMisses: number,
+    connectionPermitWaits: number,
+    maxConnectionPermitWaitMs: number,
+    providerPoolWaits: number,
+    maxProviderPoolWaitMs: number,
+    failoverSaves: number,
+    /** Articles served to the player as zeros. Wrong data, not late data. */
+    zeroFilledSegments: number,
+    zeroFilledBytes: number,
+    /** Bodies that went silent mid-transfer and had to be fetched again. */
+    bodyStallRecoveries: number,
+}
+
+export type PlaybackProvider = {
+    providerId: string,
+    host: string,
+    nickname?: string | null,
+    segments: number,
+    bytes: number,
+    attempts: number,
+    rescued: number,
+    missing: number,
+    timeouts: number,
+    errors: number,
+    isBackup: boolean,
+}
+
+export type PlaybackSessionDetail = {
+    session: PlaybackSession,
+    title?: string | null,
+    nzbName?: string | null,
+    category?: string | null,
+    articleDetailAvailable: boolean,
+    /** Whether "no article rows" is explained by retention having expired. */
+    articleDetailExpired: boolean,
+    articleRetentionHours: number,
+    articles: PlaybackArticleFetch[],
+    articleCounts: PlaybackArticleCount[],
+}
+
+export type PlaybackArticleFetch = {
+    atUnix: number,
+    atMs: number,
+    providerId: string,
+    host: string,
+    nickname?: string | null,
+    status: PlaybackArticleStatus,
+    durationMs: number,
+    retries: number,
+    bytes: number,
+}
+
+export type PlaybackArticleCount = {
+    providerId: string,
+    host: string,
+    nickname?: string | null,
+    status: PlaybackArticleStatus,
+    count: number,
+    avgDurationMs: number,
+    maxDurationMs: number,
+}
+
+export type PlaybackArticleStatus =
+    "Ok" | "Missing" | "Timeout" | "Corrupt" | "Auth" | "Network" | "Other";
 
 export type DirectoryItem = {
     name: string,
@@ -874,8 +1066,15 @@ export type ActiveRead = {
     startedAt: number,
     lastActivityAt: number,
     bytesRead: number,
+    bytesPerSecond: number,
     currentOffset: number,
     fileSize: number | null,
+    upstreamStalls: number,
+    totalUpstreamStallMs: number,
+    upstreamWaitsInProgress: number,
+    downstreamStalls: number,
+    zeroFilledSegments: number,
+    bodyStallRecoveries: number,
     providers: { host: string, nickname?: string | null, segments: number }[],
 }
 

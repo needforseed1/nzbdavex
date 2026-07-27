@@ -13,6 +13,7 @@ public class GetSettingsMetadataTests
             ("play.total-budget-seconds", ""),
             ("indexers.instances", ""),
             ("usenet.max-queue-connections", ""),
+            ("usenet.playback-reserved-connections", ""),
             ("general.base-url", ""));
 
         Assert.Equal("30", GetSettingsMetadataController.ResolveEffectiveValue(
@@ -21,6 +22,8 @@ public class GetSettingsMetadataTests
             GetSettingsMetadataController.ResolveEffectiveValue("indexers.instances", "", config));
         Assert.Equal("", GetSettingsMetadataController.ResolveEffectiveValue(
             "usenet.max-queue-connections", "", config));
+        Assert.Equal("", GetSettingsMetadataController.ResolveEffectiveValue(
+            "usenet.playback-reserved-connections", "", config));
         Assert.Equal("", GetSettingsMetadataController.ResolveEffectiveValue(
             "general.base-url", "", config));
     }

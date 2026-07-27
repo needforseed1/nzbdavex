@@ -32,6 +32,10 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
                     <div className={styles.title}>Watchdog</div>
                 </Item>
             )}
+            <Item target="/playback">
+                <div className={styles["playback-icon"]} />
+                <div className={styles.title}>Playback</div>
+            </Item>
             <Item target="/watchtower">
                 <div className={styles["watchtower-icon"]} />
                 <div className={styles.title}>Watchtower</div>

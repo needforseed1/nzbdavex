@@ -222,6 +222,8 @@ const PROVIDER_OVERVIEW_GROUPS: Array<{ key: ProviderOverviewGroupKey; label: st
     { key: "disabled", label: "Disabled" },
 ];
 
+const MAX_PIPELINING_DEPTH = 128;
+
 function getProviderRole(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">): ProviderRole {
     if (provider.Type === ProviderType.Disabled) return "disabled";
     if (provider.Type === ProviderType.HealthChecksOnly) return "health";
@@ -256,7 +258,8 @@ function isProviderConfigJsonValid(raw: string | undefined): boolean {
         const ids = new Set<string>();
         return (parsed.Providers ?? []).every((provider: any) => {
             const optionalDepthValid = (value: unknown) => value === null || value === undefined
-                || (Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 64);
+                || (Number.isInteger(value) && Number(value) >= 1
+                    && Number(value) <= MAX_PIPELINING_DEPTH);
             const id = String(provider?.Id ?? "");
             if (!isUuid(id) || ids.has(id)) return false;
             ids.add(id);
@@ -782,13 +785,13 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <input
                         type="text"
                         id="pipelining-depth"
-                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, 64) ? styles.error : ""}`}
+                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, MAX_PIPELINING_DEPTH) ? styles.error : ""}`}
                         placeholder="8"
                         value={config["usenet.pipelining.depth"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Requests kept in flight per connection (1–64). 8 is a good default. Each
+                        Requests kept in flight per connection (1–128). 8 is a good default. Each
                         provider can override this in its own settings.
                     </div>
                 </div>
@@ -799,13 +802,13 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <input
                         type="text"
                         id="health-pipelining-depth"
-                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, 64) ? styles.error : ""}`}
+                        className={`${styles["form-input"]} ${!isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, MAX_PIPELINING_DEPTH) ? styles.error : ""}`}
                         placeholder="32"
                         value={config["usenet.pipelining.health.depth"] ?? ""}
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.depth": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        STAT requests kept in flight per connection for article health checks (1–64). 32 is the default.
+                        STAT requests kept in flight per connection for article health checks (1–128). 32 is the default.
                     </div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -856,6 +859,16 @@ function ConcurrencyAndSchedulingSettings({
     providers,
 }: PerformanceSettingsProps & { pooledConnections: number; providers: ConnectionDetails[] }) {
     const warmValidationCapacity = getWarmValidationCapacity(providers);
+    const playbackReservableConnections = getPlaybackReservableConnections(providers);
+    const playbackReservedConnections = config["usenet.playback-reserved-connections"] ?? "";
+    const requestedPlaybackReservation = playbackReservedConnections.trim() === ""
+        ? 20
+        : Number(playbackReservedConnections);
+    const effectivePlaybackReservation = Math.min(
+        Number.isInteger(requestedPlaybackReservation)
+            ? Math.max(0, requestedPlaybackReservation)
+            : 0,
+        playbackReservableConnections);
     const automaticWarmValidationConnections = Math.min(warmValidationCapacity.total, 384);
     const warmValidationConcurrency = config["usenet.warm-validation-concurrency"] ?? "";
     const configuredWarmValidationConnections = Number.parseInt(warmValidationConcurrency, 10);
@@ -883,7 +896,7 @@ function ConcurrencyAndSchedulingSettings({
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
                 <label htmlFor="max-download-connections-input" className={styles["form-label"]}>
-                    Playback connections
+                    Playback concurrency limit
                 </label>
                 <input
                     type="text"
@@ -894,7 +907,26 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.max-download-connections"]}
                     onChange={e => setNewConfig({ ...config, "usenet.max-download-connections": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Maximum concurrent NNTP connections used by playback. Playback is prioritized over prep and health checks; provider capacity remains the physical ceiling.
+                    Maximum simultaneous playback downloads. This limits playback work; it does not reserve provider capacity.
+                </div>
+            </div>
+            <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                <label htmlFor="playback-reserved-connections-input" className={styles["form-label"]}>
+                    Reserved for playback
+                </label>
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    id="playback-reserved-connections-input"
+                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(playbackReservedConnections, 0, 512) ? styles.error : ""}`}
+                    placeholder="Automatic (20)"
+                    value={playbackReservedConnections}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "usenet.playback-reserved-connections": e.target.value,
+                    })} />
+                <div className={styles["form-hint"]}>
+                    Keeps real provider capacity available when prep or health checks are busy. Automatic protects up to 20; the current provider setup reserves {effectivePlaybackReservation} across playback-capable providers. Reserved connections are available on demand and are not kept open unnecessarily.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -910,7 +942,7 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.max-queue-connections"]}
                     onChange={e => setNewConfig({ ...config, "usenet.max-queue-connections": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Leave blank for Automatic, which uses pooled Primary capacity. Enter a lower limit to leave more pooled capacity available for simultaneous playback.
+                    Leave blank for Automatic, which uses pooled Primary capacity. The playback reservation above is always protected from prep work.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -926,7 +958,7 @@ function ConcurrencyAndSchedulingSettings({
                     value={config["usenet.streaming-priority"]}
                     onChange={e => setNewConfig({ ...config, "usenet.streaming-priority": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Controls how strongly playback is favored when it competes with preparation and health checks for a provider&apos;s connections.
+                    Controls which waiting work gets the next shared connection after the playback reservation has been protected.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -1492,9 +1524,10 @@ function ProviderModal({
     }, [onClose]);
 
     const isPipeliningDepthValid = pipeliningDepth.trim() === ""
-        || (isPositiveInteger(pipeliningDepth) && Number(pipeliningDepth) <= 64);
+        || (isPositiveInteger(pipeliningDepth) && Number(pipeliningDepth) <= MAX_PIPELINING_DEPTH);
     const isHealthPipeliningDepthValid = healthPipeliningDepth.trim() === ""
-        || (isPositiveInteger(healthPipeliningDepth) && Number(healthPipeliningDepth) <= 64);
+        || (isPositiveInteger(healthPipeliningDepth)
+            && Number(healthPipeliningDepth) <= MAX_PIPELINING_DEPTH);
     const isByteLimitValid = isOptionalByteValueValid(limitValue, limitUnit);
     const isInitialUsedValid = isEditing || isOptionalByteValueValid(initialUsedValue, initialUsedUnit);
 
@@ -2274,6 +2307,10 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
             && isPositiveInteger(config["usenet.segment-cache.max-gb"]));
     return isProviderConfigJsonValid(config["usenet.providers"])
         && isValidMaxDownloadConnections(config["usenet.max-download-connections"])
+        && isOptionalIntegerInRange(
+            config["usenet.playback-reserved-connections"] ?? "",
+            0,
+            512)
         && isValidMaxQueueConnections(
             config["usenet.max-queue-connections"], getTotalPooledConnections(config))
         && isOptionalIntegerInRange(
@@ -2285,8 +2322,8 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
         && isValidStreamingPriority(config["usenet.streaming-priority"])
         && isValidArticleBufferSize(config["usenet.article-buffer-size"])
         && segmentCacheValid
-        && isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, 64)
-        && isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, 64)
+        && isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, MAX_PIPELINING_DEPTH)
+        && isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, MAX_PIPELINING_DEPTH)
         && isIntegerInRange(config["usenet.pipelining.health.lanes"] ?? "", 1, 1024);
 }
 
@@ -2322,6 +2359,16 @@ function getTotalPooledConnections(config: Record<string, string>): number {
     } catch {
         return 1;
     }
+}
+
+function getPlaybackReservableConnections(providers: ConnectionDetails[]): number {
+    const reservable = providers
+        .filter(provider =>
+            !provider.PrepOnly
+            && provider.Type !== ProviderType.Disabled
+            && provider.Type !== ProviderType.HealthChecksOnly)
+        .reduce((sum, provider) => sum + Math.max(0, provider.MaxConnections - 1), 0);
+    return Math.min(512, reservable);
 }
 
 function getWarmValidationCapacity(providers: ConnectionDetails[]): { total: number; providers: number } {

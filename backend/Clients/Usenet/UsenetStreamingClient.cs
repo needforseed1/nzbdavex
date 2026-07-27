@@ -30,6 +30,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     private static readonly HashSet<string> PoolConfigurationKeys =
     [
         "usenet.providers",
+        "usenet.playback-reserved-connections",
         "usenet.ready-connections.primary",
         "usenet.ready-connections.health",
     ];
@@ -113,6 +114,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         var canonical = JsonSerializer.SerializeToUtf8Bytes(new
         {
             Providers = configManager.GetUsenetProviderConfig(),
+            PlaybackReservedConnections = configManager.GetPlaybackReservedConnections(),
             PrimaryReadyConnections = configManager.GetPrimaryReadyConnections(),
             HealthReadyConnections = configManager.GetHealthReadyConnections(),
         });
@@ -234,9 +236,13 @@ public class UsenetStreamingClient : WrappingNntpClient
             .GetAwaiter().GetResult();
 
         var connectionPoolStats = new ConnectionPoolStats(providerConfig, websocketManager);
+        var playbackReservations = AllocatePlaybackConnectionReserve(
+            providerConfig.Providers,
+            configManager.GetPlaybackReservedConnections());
         var providerClients = providerConfig.Providers
             .Select((provider, index) => CreateProviderClient(
                 provider,
+                playbackReservations[index],
                 connectionPoolStats.GetOnConnectionPoolChanged(index),
                 persistentIdleFloorOverride,
                 persistentWarmFloorOverride,
@@ -244,6 +250,16 @@ public class UsenetStreamingClient : WrappingNntpClient
                 warmConnectionTimings
             ))
             .ToList();
+        var reservedConnections = playbackReservations.Sum();
+        if (reservedConnections > 0)
+            Log.Information(
+                "NNTP playback capacity reserved connections={Connections} providers={Providers}",
+                reservedConnections,
+                string.Join(',', providerConfig.Providers
+                    .Select((provider, index) => new { provider, index })
+                    .Where(item => playbackReservations[item.index] > 0)
+                    .Select(item =>
+                        $"{item.provider.Host}:{playbackReservations[item.index]}")));
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
             cascadeEnabled: configManager.IsCascadeEnabled,
             warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget,
@@ -254,6 +270,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     private static MultiConnectionNntpClient CreateProviderClient
     (
         UsenetProviderConfig.ConnectionDetails connectionDetails,
+        int playbackReservedConnections,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged,
         int? persistentIdleFloorOverride,
         int? persistentWarmFloorOverride,
@@ -286,6 +303,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             minimumWarmConnections: keepValidated,
             warmConnectionTimings: warmConnectionTimings,
             useRecoveryCapacity: connectionDetails.Type == ProviderType.BackupOnly,
+            playbackReservedConnections: playbackReservedConnections,
             providerHost: connectionDetails.Host,
             onConnectionPoolChanged: onConnectionPoolChanged
         );
@@ -304,6 +322,60 @@ public class UsenetStreamingClient : WrappingNntpClient
             connectionDetails.HealthPipeliningDepth,
             connectionDetails.Id
         );
+    }
+
+    internal static int[] AllocatePlaybackConnectionReserve(
+        IReadOnlyList<UsenetProviderConfig.ConnectionDetails> providers,
+        int requestedConnections)
+    {
+        var allocations = new int[providers.Count];
+        if (requestedConnections <= 0 || providers.Count == 0) return allocations;
+
+        var eligible = providers
+            .Select((provider, index) => new
+            {
+                Provider = provider,
+                Index = index,
+                Capacity = UsenetProviderConfig.CanServePlayback(provider)
+                    ? Math.Max(0, provider.MaxConnections - 1)
+                    : 0,
+            })
+            .Where(item => item.Capacity > 0)
+            .OrderBy(item => item.Provider.Type)
+            .ThenBy(item => item.Provider.Priority)
+            .ThenBy(item => item.Index)
+            .ToArray();
+        var target = Math.Min(
+            requestedConnections,
+            eligible.Sum(item => item.Capacity));
+        if (target == 0) return allocations;
+
+        // Give each playback-capable provider one protected connection before
+        // distributing the remainder proportionally. This prevents a small
+        // provider from receiving no protection merely because a larger account
+        // dominates the configured connection total.
+        foreach (var item in eligible)
+        {
+            if (target == 0) return allocations;
+            allocations[item.Index]++;
+            target--;
+        }
+
+        while (target > 0)
+        {
+            var item = eligible
+                .Where(candidate => allocations[candidate.Index] < candidate.Capacity)
+                .OrderBy(candidate =>
+                    allocations[candidate.Index] / (double)candidate.Capacity)
+                .ThenBy(candidate => candidate.Provider.Type)
+                .ThenBy(candidate => candidate.Provider.Priority)
+                .ThenBy(candidate => candidate.Index)
+                .First();
+            allocations[item.Index]++;
+            target--;
+        }
+
+        return allocations;
     }
 
     private static int? GetPersistentIdleFloorTestOverride()
@@ -463,6 +535,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         int minimumWarmConnections,
         WarmConnectionTimings warmConnectionTimings,
         bool useRecoveryCapacity,
+        int playbackReservedConnections,
         string providerHost,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
@@ -495,7 +568,8 @@ public class UsenetStreamingClient : WrappingNntpClient
                         providerHost, warm, target);
             },
             connectionBudget: ConnectionBudget,
-            useRecoveryCapacity: useRecoveryCapacity);
+            useRecoveryCapacity: useRecoveryCapacity,
+            highPriorityReserve: playbackReservedConnections);
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;
         var args = new ConnectionPoolStats.ConnectionPoolChangedEventArgs(0, 0, maxConnections);
         onConnectionPoolChanged(connectionPool, args);

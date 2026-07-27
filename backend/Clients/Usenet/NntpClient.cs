@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Config;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
@@ -231,7 +232,7 @@ public abstract class NntpClient : INntpClient
             var processedCount = 0;
             var nextSegment = 0;
             var schedulerLock = new object();
-            var batchDepth = Math.Clamp(depth, 1, 64);
+            var batchDepth = Math.Clamp(depth, 1, UsenetProviderConfig.MaximumPipeliningDepth);
             var indeterminateSegments = new System.Collections.Concurrent.ConcurrentQueue<string>();
 
             IReadOnlyList<string>? TakeNextBatch()

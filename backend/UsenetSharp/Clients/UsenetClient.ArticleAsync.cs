@@ -61,9 +61,9 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, articleBodyResult =>
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, (articleBodyResult, failure) =>
                 {
-                    pipe.Writer.Complete();
+                    pipe.Writer.Complete(failure);
                     _commandLock.Release();
                     onConnectionReadyAgain?.Invoke(articleBodyResult);
                     operationCts.Dispose();

@@ -3,6 +3,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using Serilog;
 using UsenetSharp.Models;
@@ -179,6 +180,21 @@ public class NzbFileStream(
                 head = new MemoryStream(capacity);
                 await body.CopyToAsync(head, ct).ConfigureAwait(false);
                 head.Position = 0;
+            }
+            catch (Exception e) when (!ct.IsCancellationRequested)
+            {
+                // The fast seek is an optimization, not a separate reliability
+                // tier. Falling back routes the same segment through
+                // MultiSegmentStream's retry loop instead of failing the range
+                // request on the first wedged body.
+                if (e is BodyProgressStalledException stalled)
+                    PlaybackDiagnosticContext.Current?.RecordBodyStallRecovery(
+                        stalled.ProviderId,
+                        stalled.ProviderHost,
+                        fileSegmentIds[index],
+                        stalled.TransferredBytes,
+                        attempt: 1);
+                return null;
             }
             finally
             {

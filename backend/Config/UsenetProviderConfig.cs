@@ -1,9 +1,12 @@
-﻿using NzbWebDAV.Models;
+﻿using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Models;
 
 namespace NzbWebDAV.Config;
 
 public class UsenetProviderConfig
 {
+    public const int MaximumPipeliningDepth = 128;
+
     public List<ConnectionDetails> Providers { get; set; } = [];
 
     public int TotalPooledConnections => Math.Max(1, Providers
@@ -17,6 +20,18 @@ public class UsenetProviderConfig
             or ProviderType.HealthChecksOnly)
         .Select(x => x.MaxConnections)
         .Sum());
+
+    public int PlaybackReservableConnections => (int)Math.Min(
+        UsenetStreamingClient.ApplicationConnectionLimit,
+        Providers
+            .Where(CanServePlayback)
+            .Sum(provider => Math.Max(0L, (long)provider.MaxConnections - 1)));
+
+    public static bool CanServePlayback(ConnectionDetails provider) =>
+        !provider.PrepOnly &&
+        provider.Type is (ProviderType.Pooled
+            or ProviderType.BackupAndStats
+            or ProviderType.BackupOnly);
 
     public class ConnectionDetails
     {

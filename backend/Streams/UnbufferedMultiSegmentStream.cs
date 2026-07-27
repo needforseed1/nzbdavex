@@ -45,9 +45,12 @@ public class UnbufferedMultiSegmentStream : FastReadOnlyNonSeekableStream
                 catch (UsenetArticleNotFoundException e)
                 {
                     var fill = _expectedSegmentSize > 0 ? _expectedSegmentSize : 1;
-                    Log.Warning(
-                        "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
-                        e.SegmentId, fill);
+                    if (_playbackDiagnostics is not null)
+                        _playbackDiagnostics.RecordZeroFill(e.SegmentId, fill, e);
+                    else
+                        Log.Warning(
+                            "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
+                            e.SegmentId, fill);
                     _stream = new MemoryStream(new byte[fill], writable: false);
                     _playbackDiagnostics?.UpstreamOperationCompleted();
                 }

@@ -1,0 +1,716 @@
+.page {
+    min-width: 100%;
+    min-height: 100%;
+    padding: 32px 32px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+@media not (min-width: 720px) {
+    .page {
+        padding: 18px 14px;
+    }
+}
+
+/* ---------- Groups ---------- */
+
+/* A group is a label row plus its list. Deliberately unboxed: the cards below
+   already carry a border, and wrapping them in a second one made "Playing now"
+   and "Playback history" look like different kinds of thing. */
+.group {
+    width: 100%;
+    margin-bottom: 28px;
+}
+
+.group:last-child {
+    margin-bottom: 0;
+}
+
+.groupHeader {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.groupHeading {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    white-space: nowrap;
+}
+
+.subtitle {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.toolbarBtn {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.toolbarBtn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-default);
+}
+
+.toolbarBtn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.toolbarBtn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.toolbarBtnDanger:hover:not(:disabled) {
+    color: var(--danger);
+    border-color: var(--danger-muted);
+}
+
+.toolbarIcon {
+    width: 13px;
+    height: 13px;
+}
+
+.spinning {
+    animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.liveBtn {
+    gap: 7px;
+}
+
+.liveBtnOn {
+    color: var(--text-primary);
+    border-color: var(--border-default);
+}
+
+.liveDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-faint);
+}
+
+.liveDotOn {
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent);
+}
+
+.liveTag {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* ---------- Filters ---------- */
+
+.filterBar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.filterChip {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+}
+
+.filterChip:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.filterChip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.filterChipActive {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    background: var(--bg-surface-2);
+}
+
+.filterChipCount {
+    font-size: 11px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+}
+
+.filterChipActive .filterChipCount {
+    color: var(--text-secondary);
+}
+
+.errorBox {
+    margin-bottom: 12px;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--danger-muted);
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    font-size: 12px;
+}
+
+.emptyState {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+}
+
+/* ---------- Play cards ---------- */
+
+.playList {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.playCard {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+/* One row per play until it is expanded. The row itself is the click target;
+   the chevron is the real button, so keyboard and assistive tech still have a
+   named control and the provider chip can stay a sibling rather than a button
+   nested inside a button. */
+.playRow {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+}
+
+.playRowClickable {
+    cursor: pointer;
+}
+
+.playRowClickable:hover {
+    background: var(--bg-hover);
+}
+
+.playRowOpen {
+    background: var(--bg-surface);
+}
+
+.playIdent {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    flex: 1 1 240px;
+}
+
+.playTitle {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playMeta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-faint);
+    min-width: 0;
+}
+
+.metaText {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+}
+
+.metaBadge {
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    white-space: nowrap;
+}
+
+.metaDot {
+    color: var(--border-strong);
+}
+
+.timestamp {
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+
+.verdictPill {
+    flex: 0 0 auto;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.verdict-info {
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border-color: var(--border-subtle);
+}
+
+.verdict-warn {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.verdict-bad {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border-color: var(--danger-muted);
+}
+
+/* ---------- Stats ---------- */
+
+/* A fixed six-column track, shared by live and finished plays. Flex-wrapped
+   stats put every card's numbers at a different x-position; a column that never
+   lines up reads as noise rather than as a table of the same six facts. */
+.statGrid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 2px 12px;
+    flex: 0 0 auto;
+    width: min(100%, 470px);
+}
+
+@media not (min-width: 1100px) {
+    .statGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        width: min(100%, 300px);
+    }
+}
+
+.statBox {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.statLabel {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.statValue {
+    font-size: 12px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rowTail {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.badgeRow {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.issueBadge {
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.issue-info {
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border-color: var(--border-subtle);
+}
+
+.issue-warn {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+.issue-bad {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border-color: var(--danger-muted);
+}
+
+.detailsToggle {
+    all: unset;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    color: var(--text-faint);
+}
+
+.detailsToggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-2);
+}
+
+.detailsToggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* The session row is itself a button, so its chevron is decoration only and
+   must not pick up the play row's hover-as-a-control styling. */
+.chevronHolder {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-faint);
+}
+
+.detailsChevron {
+    width: 14px;
+    height: 14px;
+    transition: transform 140ms ease;
+}
+
+.detailsChevronOpen {
+    transform: rotate(180deg);
+}
+
+/* ---------- Expanded detail ---------- */
+
+.detailPanel {
+    padding: 4px 14px 16px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-surface);
+}
+
+.notice,
+.errorNote {
+    margin-top: 14px;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.noticeBar {
+    margin: 0 0 12px 0;
+}
+
+.notice {
+    color: var(--text-muted);
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-subtle);
+}
+
+.errorNote {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border: 1px solid var(--danger-muted);
+    word-break: break-word;
+}
+
+.detailGrid {
+    /* Columns only when there is room for a whole block; below that the blocks
+       stack, because a half-width block of label/value rows collapses into a
+       column of clipped values. */
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.detailBlock {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+}
+
+.detailBlockTitle {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    margin-bottom: 8px;
+}
+
+.detailRow {
+    /* Grid, not space-between flex: a long label used to run straight into the
+       value, and the value then clipped itself rather than giving way. */
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 3px 0;
+    font-size: 12px;
+}
+
+.detailLabel {
+    color: var(--text-muted);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.detailValue {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    min-width: 0;
+    /* Wrap rather than truncate: these are short facts, and a clipped one
+       ("2 waits · longest 1.4…") is worse than a second line. */
+    overflow-wrap: anywhere;
+}
+
+.quietLine {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.detailEmpty {
+    font-size: 12px;
+    color: var(--text-faint);
+    padding: 3px 0;
+}
+
+.detailNote {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+/* ---------- Tables ---------- */
+
+.tableWrap {
+    margin-top: 12px;
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+}
+
+.dataTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.dataTable th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-faint);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+}
+
+.dataTable td {
+    padding: 8px 12px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+}
+
+.dataTable tr:last-child td {
+    border-bottom: none;
+}
+
+/* Qualified by the table: bare .numeric loses to `.dataTable th`, which is a
+   class plus an element, so the headers stayed left while their numbers went
+   right. */
+.dataTable th.numeric,
+.dataTable td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.backupTag {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+}
+
+.statusTag {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+}
+
+.statusOk {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.statusBad {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* ---------- Sessions ---------- */
+
+.sessionList {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sessionListTitle {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    margin-bottom: 2px;
+}
+
+.sessionCard {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    overflow: hidden;
+}
+
+.sessionHeader {
+    all: unset;
+    cursor: pointer;
+    box-sizing: border-box;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 9px 12px;
+    font-size: 12px;
+}
+
+.sessionHeader:hover {
+    background: var(--bg-hover);
+}
+
+.sessionHeader:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.sessionTime {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.sessionFacts {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    color: var(--text-muted);
+    flex: 1 1 auto;
+}
+
+.sessionReason {
+    color: var(--text-faint);
+}
+
+.sessionDetail {
+    padding: 0 12px 12px 12px;
+    border-top: 1px solid var(--border-subtle);
+}

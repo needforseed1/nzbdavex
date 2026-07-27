@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Text;
 using RapidYencSharp;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace UsenetSharp.Streams;
@@ -36,6 +37,13 @@ public class YencStream : FastReadOnlyNonSeekableStream
 
     private bool _endReached;
 
+    // Completeness tracking. A body that decodes to fewer bytes than its part
+    // declares is truncated, and accepting it would silently shift every later
+    // byte of the file it belongs to.
+    private long _decodedBytes;
+
+    private TimeSpan? _readInactivityTimeout;
+
     private const int ReadBufferSize = 8192; // 8KB read chunks for efficient I/O
     private const int DecodeBufferSize = 512; // Typical yEnc line decodes to ~128 bytes
     private const int LineAssemblyBufferSize = 1024; // Max line length with overhead
@@ -57,6 +65,20 @@ public class YencStream : FastReadOnlyNonSeekableStream
         _decodeBuffer = ArrayPool<byte>.Shared.Rent(DecodeBufferSize);
         _lineAssemblyBuffer = ArrayPool<byte>.Shared.Rent(LineAssemblyBufferSize);
     }
+
+    /// <summary>
+    /// Requires the byte source to keep delivering. Each read of the inner stream
+    /// gets its own window, so a slow but moving transfer is never interrupted —
+    /// only silence is. Arm before the first read.
+    /// </summary>
+    public virtual void ArmReadInactivityWatchdog(TimeSpan inactivity) =>
+        _readInactivityTimeout = inactivity;
+
+    /// <summary>
+    /// Bytes decoded so far. Reflects what arrived from the byte source, which a
+    /// caller reading into a large buffer cannot infer from its own read count.
+    /// </summary>
+    public virtual long DecodedBytes => _decodedBytes;
 
     /// <summary>
     /// Gets the yEnc headers from the stream. If headers haven't been read yet, reads and parses them asynchronously.
@@ -106,6 +128,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                 if (lineMemory.Length == 0)
                 {
                     _endReached = true;
+                    ThrowIfIncomplete();
                     break;
                 }
 
@@ -115,6 +138,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                 if (StartsWithYEnd(lineSpan))
                 {
                     _endReached = true;
+                    ThrowIfIncomplete();
                     break;
                 }
 
@@ -128,6 +152,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                     int decodedLength = YencDecoder.DecodeEx(
                         lineSpan, buffer.Span.Slice(totalRead), ref _decoderState, isRaw: false);
                     totalRead += decodedLength;
+                    _decodedBytes += decodedLength;
                 }
                 else
                 {
@@ -136,6 +161,7 @@ public class YencStream : FastReadOnlyNonSeekableStream
                     int decodedLength = YencDecoder.DecodeEx(lineSpan, _decodeBuffer, ref _decoderState, isRaw: false);
                     _decodeBufferPosition = 0;
                     _decodeBufferLength = decodedLength;
+                    _decodedBytes += decodedLength;
                     // Next iteration will copy from decode buffer
                 }
             }
@@ -225,8 +251,28 @@ public class YencStream : FastReadOnlyNonSeekableStream
     private async ValueTask<bool> FillReadBufferAsync(CancellationToken cancellationToken)
     {
         _readBufferPosition = 0;
-        _readBufferLength = await _innerStream.ReadAsync(_readBuffer.AsMemory(0, ReadBufferSize), cancellationToken);
+        _readBufferLength = _readInactivityTimeout is null
+            ? await _innerStream.ReadAsync(_readBuffer.AsMemory(0, ReadBufferSize), cancellationToken)
+            : await FillWithInactivityDeadlineAsync(_readInactivityTimeout.Value, cancellationToken);
         return _readBufferLength > 0;
+    }
+
+    private async ValueTask<int> FillWithInactivityDeadlineAsync(
+        TimeSpan inactivity,
+        CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(inactivity);
+        try
+        {
+            return await _innerStream.ReadAsync(_readBuffer.AsMemory(0, ReadBufferSize), deadline.Token);
+        }
+        catch (OperationCanceledException e) when (
+            deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ReadInactivityTimeoutException(
+                $"The stream delivered no bytes for {inactivity.TotalSeconds:0.###} seconds.", e);
+        }
     }
 
     private async Task ParseHeadersAsync(CancellationToken cancellationToken)
@@ -271,17 +317,42 @@ public class YencStream : FastReadOnlyNonSeekableStream
                 ypartLine = Encoding.Latin1.GetString(nextLineSpan);
                 // Next line will be encoded data, ReadAsync will handle it
             }
-            else if (!StartsWithYEnd(nextLineSpan))
+            else if (StartsWithYEnd(nextLineSpan))
+            {
+                // An article whose trailer follows its header carries no data.
+                _endReached = true;
+            }
+            else
             {
                 // This is the first encoded data line - decode it now
                 EnsureDecodeBufferCapacity(nextLineSpan.Length);
                 int decodedLength = YencDecoder.DecodeEx(nextLineSpan, _decodeBuffer!, ref _decoderState, isRaw: false);
                 _decodeBufferPosition = 0;
                 _decodeBufferLength = decodedLength;
+                _decodedBytes += decodedLength;
             }
         }
 
         _yencHeaders = ParseYencHeaders(ybeginLine, ypartLine);
+    }
+
+    /// <summary>
+    /// Rejects a body that stopped early. Only under-runs are treated as errors:
+    /// a part that decodes to more than its declared size cannot be truncated,
+    /// so an over-run is left to the caller rather than failing the download.
+    /// </summary>
+    private void ThrowIfIncomplete()
+    {
+        // A missing =yend is deliberately not an error. Real articles reach EOF
+        // without one often enough — observed on ngPost-posted parts that had
+        // already delivered every declared byte — and rejecting those sends a
+        // complete segment down the retry path to be zero-filled, which is the
+        // corruption this guard exists to prevent. Short delivery is the signal
+        // that actually means truncation.
+        var declared = _yencHeaders?.PartSize ?? 0;
+        if (declared > 0 && _decodedBytes < declared)
+            throw new InvalidDataException(
+                $"yEnc part decoded to {_decodedBytes} bytes but declares {declared}.");
     }
 
     private void EnsureDecodeBufferCapacity(int required)

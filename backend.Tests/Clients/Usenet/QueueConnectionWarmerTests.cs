@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Config;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 using UsenetSharp.Models;
@@ -11,6 +12,45 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 
 public class QueueConnectionWarmerTests
 {
+    [Fact]
+    public void PlaybackReservationIsGlobalAndDistributedOnlyToPlaybackProviders()
+    {
+        var providers = new[]
+        {
+            Provider(ProviderType.Pooled, 10, priority: 0),
+            Provider(ProviderType.BackupAndStats, 5, priority: 1),
+            Provider(ProviderType.HealthChecksOnly, 50, priority: 2),
+            Provider(ProviderType.Pooled, 100, priority: 3, prepOnly: true),
+            Provider(ProviderType.BackupOnly, 4, priority: 4),
+        };
+
+        var allocations =
+            UsenetStreamingClient.AllocatePlaybackConnectionReserve(providers, 10);
+
+        Assert.Equal(10, allocations.Sum());
+        Assert.All(new[] { 0, 1, 4 }, index =>
+        {
+            Assert.InRange(allocations[index], 1, providers[index].MaxConnections - 1);
+        });
+        Assert.Equal(0, allocations[2]);
+        Assert.Equal(0, allocations[3]);
+    }
+
+    [Fact]
+    public void PlaybackReservationLeavesOneBackgroundSlotPerEligibleProvider()
+    {
+        var providers = new[]
+        {
+            Provider(ProviderType.Pooled, 5, priority: 0),
+            Provider(ProviderType.BackupOnly, 3, priority: 1),
+        };
+
+        var allocations =
+            UsenetStreamingClient.AllocatePlaybackConnectionReserve(providers, 100);
+
+        Assert.Equal(new[] { 4, 2 }, allocations);
+    }
+
     [Theory]
     [InlineData(ProviderType.HealthChecksOnly, 40, 36)]
     [InlineData(ProviderType.HealthChecksOnly, 95, 86)]
@@ -186,6 +226,25 @@ public class QueueConnectionWarmerTests
         Assert.Equal(3, backupAndStats.LiveConnections);
         Assert.Equal(0, backupOnly.LiveConnections);
     }
+
+    private static UsenetProviderConfig.ConnectionDetails Provider(
+        ProviderType type,
+        int maxConnections,
+        int priority,
+        bool prepOnly = false) =>
+        new()
+        {
+            Id = Guid.NewGuid().ToString(),
+            Type = type,
+            Host = $"{type}-{priority}.example",
+            Port = 563,
+            UseSsl = true,
+            User = "user",
+            Pass = "pass",
+            MaxConnections = maxConnections,
+            Priority = priority,
+            PrepOnly = prepOnly,
+        };
 
     [Fact]
     public async Task PrimaryHealthPrewarmRefillsPooledProvidersOnly()

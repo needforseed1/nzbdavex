@@ -7,6 +7,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models.Metrics;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Par2Recovery;
 using NzbWebDAV.Services;
@@ -22,7 +23,8 @@ public class GetWebdavItemController(
     ConfigManager configManager,
     ProviderUsageTracker providerUsageTracker,
     ActiveReadRegistry activeReadRegistry,
-    CandidateNegativeCache negativeCache
+    CandidateNegativeCache negativeCache,
+    PlaybackSessionStats playbackSessionStats
 ) : ControllerBase
 {
     private async Task<Stream> GetWebdavItem(GetWebdavItemRequest request)
@@ -54,6 +56,7 @@ public class GetWebdavItemController(
         if (HttpContext.Items["readSessionId"] is Guid sid)
         {
             activeReadRegistry.UpdateInfo(sid, displayName, fileSize);
+            activeReadRegistry.UpdateContentIds(sid, idFile?.DavItemId, idFile?.HistoryItemId);
         }
 
         // set the content-type and content-disposition headers
@@ -128,10 +131,11 @@ public class GetWebdavItemController(
             sessionId,
             request.Item,
             Path.GetFileName(request.Item),
-            requestedRange);
+            requestedRange,
+            sessionStats: playbackSessionStats);
         activeReadRegistry.MarkRequestStarted(
             sessionId,
-            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            ClientAddressUtil.Resolve(HttpContext),
             Request.Headers.UserAgent.ToString());
 
         using var usageScope = providerUsageTracker.BeginScope(sessionId);
@@ -168,6 +172,17 @@ public class GetWebdavItemController(
             reason = "client-abort";
             endReason = ReadSession.EndReasonCode.Aborted;
             throw;
+        }
+        // See GetAndHeadHandlerPatch: the client stopped reading and never came
+        // back, so the request is abandoned rather than failed.
+        catch (DownstreamStalledException e)
+        {
+            reason = "client-gone";
+            endReason = ReadSession.EndReasonCode.Aborted;
+            Serilog.Log.Warning(
+                "playback-session session={SessionId} stage=client-gone offset={Offset} " +
+                "stalledMs={StalledMs} file={File}",
+                sessionId, e.Offset, e.StalledMs, Path.GetFileName(request.Item));
         }
         catch (Exception exception)
         {
@@ -276,7 +291,8 @@ public class GetWebdavItemController(
         // Provisional name from the URL path. GetWebdavItem replaces it with
         // item.Name (the real human-readable filename) once the store lookup runs.
         var fileName = Path.GetFileName(itemPath);
-        var clientKey = $"{HttpContext.Connection.RemoteIpAddress}|{Request.Headers.UserAgent}";
+        // See GetAndHeadHandlerPatch: the socket peer is the proxy, not the viewer.
+        var clientKey = $"{ClientAddressUtil.Resolve(HttpContext)}|{Request.Headers.UserAgent}";
         return activeReadRegistry.GetOrCreate(itemPath, clientKey, fileName, fileSize: null);
     }
 

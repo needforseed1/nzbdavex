@@ -1,3 +1,4 @@
+using System.Text.Json;
 using NzbWebDAV.Config;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Database.Models;
@@ -31,11 +32,15 @@ public class ConfigManagerTests
             ("usenet.max-download-connections", "-5"),
             ("usenet.article-buffer-size", "0"),
             ("usenet.segment-cache.max-gb", long.MaxValue.ToString()),
+            ("usenet.pipelining.depth", "96"),
+            ("usenet.pipelining.health.depth", "129"),
             ("usenet.streaming-priority", "500"));
 
         Assert.Equal(1, config.GetMaxDownloadConnections());
         Assert.Equal(1, config.GetArticleBufferSize());
         Assert.True(config.GetSegmentCacheMaxBytes() > 0);
+        Assert.Equal(96, config.GetPipeliningDepth());
+        Assert.Equal(128, config.GetHealthPipeliningDepth());
         Assert.Equal(100, config.GetStreamingPriority().HighPriorityOdds);
     }
 
@@ -67,6 +72,24 @@ public class ConfigManagerTests
             ("usenet.ready-connections.health", "999"));
         Assert.Equal(0, overridden.GetPrimaryReadyConnections());
         Assert.Equal(512, overridden.GetHealthReadyConnections());
+    }
+
+    [Fact]
+    public void PlaybackReservationDefaultsToTwentyAndClampsToUsableCapacity()
+    {
+        var largeProviders = JsonSerializer.Serialize(
+            ProviderConfig(providerCount: 2, connectionsPerProvider: 20));
+        var smallProviders = JsonSerializer.Serialize(
+            ProviderConfig(providerCount: 2, connectionsPerProvider: 5));
+
+        Assert.Equal(20, WithValues(
+            ("usenet.providers", largeProviders)).GetPlaybackReservedConnections());
+        Assert.Equal(8, WithValues(
+            ("usenet.providers", smallProviders)).GetPlaybackReservedConnections());
+        Assert.Equal(3, WithValues(
+            ("usenet.providers", largeProviders),
+            ("usenet.playback-reserved-connections", "3"))
+            .GetPlaybackReservedConnections());
     }
 
     [Fact]
@@ -218,6 +241,17 @@ public class ConfigManagerTests
         Assert.NotEqual(
             UsenetStreamingClient.GetPoolConfigFingerprint(firstConfig),
             UsenetStreamingClient.GetPoolConfigFingerprint(changedReadyFloor));
+
+        const string playbackProvider =
+            """{"Providers":[{"Type":1,"Host":"news.example","Port":563,"UseSsl":true,"User":"user","Pass":"pass","MaxConnections":10}]}""";
+        var defaultPlaybackReserve = WithValues(
+            ("usenet.providers", playbackProvider));
+        var changedPlaybackReserve = WithValues(
+            ("usenet.providers", playbackProvider),
+            ("usenet.playback-reserved-connections", "1"));
+        Assert.NotEqual(
+            UsenetStreamingClient.GetPoolConfigFingerprint(defaultPlaybackReserve),
+            UsenetStreamingClient.GetPoolConfigFingerprint(changedPlaybackReserve));
     }
 
     private static ConfigManager WithValues(params (string Key, string Value)[] values)

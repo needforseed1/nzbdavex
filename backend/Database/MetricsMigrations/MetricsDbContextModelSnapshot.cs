@@ -209,11 +209,29 @@ namespace NzbWebDAV.Database.MetricsMigrations
                     b.Property<long>("BytesServed")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("CacheHits")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CacheMisses")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("ClientIp")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ClientUserAgent")
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("BodyStallRecoveries")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ConnectionPermitWaits")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("DavItemId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("DownstreamStalls")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("DurationMs")
                         .HasColumnType("INTEGER");
@@ -224,17 +242,83 @@ namespace NzbWebDAV.Database.MetricsMigrations
                     b.Property<long>("EndedAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ErrorNote")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("FailoverSaves")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("FallbackBudgetExhaustions")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("FallbackRescues")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FileName")
+                        .HasColumnType("TEXT");
+
                     b.Property<long?>("FileSize")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("FirstByteMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("HeadOfLineStalls")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("HistoryItemId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("MaxConnectionPermitWaitMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MaxDownstreamStallMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MaxOffset")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MaxProviderPoolWaitMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MaxUpstreamStallMs")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Path")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("ProviderPoolWaits")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ProviderRotations")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProviderStatsJson")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("RequestCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("StartedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("TotalDownstreamStallMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("TotalHeadOfLineStallMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("TotalUpstreamStallMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UpstreamStalls")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ZeroFilledBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ZeroFilledSegments")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
@@ -242,6 +326,8 @@ namespace NzbWebDAV.Database.MetricsMigrations
                     b.HasIndex("Path");
 
                     b.HasIndex("StartedAt");
+
+                    b.HasIndex("DavItemId", "StartedAt");
 
                     b.ToTable("ReadSessions", (string)null);
                 });

@@ -6,6 +6,7 @@ using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
@@ -15,6 +16,7 @@ using NzbWebDAV.Services.Metrics;
 using NzbWebDAV.Streams;
 using NzbWebDAV.Utils;
 using Serilog;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
@@ -32,7 +34,8 @@ public class MultiProviderNntpClient(
     ConnectionLifetimeBudget? connectionBudget = null,
     TimeSpan? indeterminateRecoveryBudget = null,
     TimeSpan? bulkStatProbeTimeout = null,
-    TimeSpan? pipelinedStatResponseInactivityTimeout = null
+    TimeSpan? pipelinedStatResponseInactivityTimeout = null,
+    TimeSpan? bodyProgressInactivityTimeout = null
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int HealthPrimeConnectionLimitPerProvider = 4;
@@ -55,6 +58,9 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
+    // Silence, not slowness. A body that keeps delivering bytes is left alone
+    // however slow it runs, because refetching costs more than finishing.
+    private static readonly TimeSpan DefaultBodyProgressInactivityTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultProviderOperationTimeout = TimeSpan.FromSeconds(15);
     private const int StatRecoveryConcurrencyLimit = 4;
     private const int HealthLaneGrowthHeadroom =
@@ -120,6 +126,8 @@ public class MultiProviderNntpClient(
     private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
     private TimeSpan? PipelinedStatResponseInactivityTimeout =>
         pipelinedStatResponseInactivityTimeout;
+    private TimeSpan BodyProgressInactivityTimeout =>
+        bodyProgressInactivityTimeout ?? DefaultBodyProgressInactivityTimeout;
     private TimeSpan BulkProbeTimeout => bulkStatProbeTimeout ?? BulkStatProbeTimeout;
     private TimeSpan GetIndeterminateRecoveryBudget(int segmentCount) =>
         indeterminateRecoveryBudget ?? ResolveIndeterminateRecoveryBudget(segmentCount);
@@ -793,32 +801,114 @@ public class MultiProviderNntpClient(
 
                 var returnedArticle =
                     result.ResponseType != UsenetResponseType.NoArticleWithThatMessageId;
-                if (isPlaybackBackupAttempt)
-                    playback?.RecordBackupOutcome(
-                        provider.Id,
-                        provider.Host,
-                        playbackSegmentId,
-                        returnedArticle ? "rescued" : "missing",
-                        providerStopwatch.ElapsedMilliseconds);
-                if (returnedArticle && i > 0 && playbackSegmentId is not null)
-                    playback?.RecordFallbackRescue(
-                        provider.Host,
-                        playbackSegmentId,
-                        DescribePriorFailures(priorMisses),
-                        providerStopwatch.ElapsedMilliseconds);
+                var streamingResponse =
+                    result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse &&
+                    result.ResponseType is UsenetResponseType.ArticleRetrievedBodyFollows
+                        or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow;
+                Action? onBodyCompleted = null;
+                Action<Exception, long>? onBodyFailure = null;
+
+                // A streaming response is only a success once its body reaches
+                // EOF. Recording it when the 222 status arrives makes a body that
+                // later wedges appear as Ok and as a successful rescue.
+                if (!streamingResponse || playback is null)
+                {
+                    if (isPlaybackBackupAttempt)
+                        playback?.RecordBackupOutcome(
+                            provider.Id,
+                            provider.Host,
+                            playbackSegmentId,
+                            returnedArticle ? "rescued" : "missing",
+                            providerStopwatch.ElapsedMilliseconds);
+                    if (returnedArticle && i > 0 && playbackSegmentId is not null)
+                        playback?.RecordFallbackRescue(
+                            provider.Host,
+                            playbackSegmentId,
+                            DescribePriorFailures(priorMisses),
+                            providerStopwatch.ElapsedMilliseconds);
+                }
 
                 // record per-queue-item attribution only for bytes-bearing responses (BODY/ARTICLE).
-                if (result is UsenetDecodedBodyResponse or UsenetDecodedArticleResponse
-                    && result.ResponseType is UsenetResponseType.ArticleRetrievedBodyFollows
-                                          or UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
+                if (streamingResponse)
                 {
-                    usageTracker.RecordSuccess(provider.Id);
-                    RecordFetch(provider.Id, SegmentFetch.FetchStatus.Ok,
-                        providerStopwatch.ElapsedMilliseconds, i);
-                    if (i > 0)
+                    var responseMs = providerStopwatch.ElapsedMilliseconds;
+                    if (playback is null)
                     {
-                        usageTracker.RecordFailoverSave();
-                        RecordFailoverMisses(priorMisses, rescuer: provider.Id);
+                        usageTracker.RecordSuccess(provider.Id);
+                        RecordFetch(provider.Id, SegmentFetch.FetchStatus.Ok, responseMs, i);
+                        if (i > 0)
+                        {
+                            usageTracker.RecordFailoverSave();
+                            RecordFailoverMisses(priorMisses, rescuer: provider.Id);
+                        }
+                    }
+                    else
+                    {
+                        var bodyTimer = Stopwatch.StartNew();
+                        onBodyCompleted = () =>
+                        {
+                            try
+                            {
+                                usageTracker.RecordSuccess(provider.Id);
+                                RecordFetch(
+                                    provider.Id,
+                                    SegmentFetch.FetchStatus.Ok,
+                                    responseMs + bodyTimer.ElapsedMilliseconds,
+                                    i);
+                                if (isPlaybackBackupAttempt)
+                                    playback.RecordBackupOutcome(
+                                        provider.Id,
+                                        provider.Host,
+                                        playbackSegmentId,
+                                        "rescued",
+                                        responseMs + bodyTimer.ElapsedMilliseconds);
+                                if (i > 0 && playbackSegmentId is not null)
+                                {
+                                    playback.RecordFallbackRescue(
+                                        provider.Host,
+                                        playbackSegmentId,
+                                        DescribePriorFailures(priorMisses),
+                                        responseMs + bodyTimer.ElapsedMilliseconds);
+                                    usageTracker.RecordFailoverSave();
+                                    RecordFailoverMisses(priorMisses, rescuer: provider.Id);
+                                }
+                            }
+                            catch (Exception callbackError)
+                            {
+                                Log.Debug(
+                                    callbackError,
+                                    "Could not record completed playback body for provider {Provider}.",
+                                    provider.Host);
+                            }
+                        };
+                        onBodyFailure = (failure, _) =>
+                        {
+                            try
+                            {
+                                var status = ClassifyException(failure);
+                                RecordFetch(
+                                    provider.Id,
+                                    status,
+                                    responseMs + bodyTimer.ElapsedMilliseconds,
+                                    i);
+                                if (isPlaybackBackupAttempt)
+                                    playback.RecordBackupOutcome(
+                                        provider.Id,
+                                        provider.Host,
+                                        playbackSegmentId,
+                                        status == SegmentFetch.FetchStatus.Timeout
+                                            ? "timeout"
+                                            : "error",
+                                        responseMs + bodyTimer.ElapsedMilliseconds);
+                            }
+                            catch (Exception callbackError)
+                            {
+                                Log.Debug(
+                                    callbackError,
+                                    "Could not record failed playback body for provider {Provider}.",
+                                    provider.Host);
+                            }
+                        };
                     }
                     result = WrapStreamForByteCounting(result, provider.Id);
                 }
@@ -829,7 +919,15 @@ public class MultiProviderNntpClient(
                 }
 
                 result = PreserveCallerCancellationForStreamingResult(
-                    result, attemptCts, fallbackAdmission, out attemptLifetimeTransferred);
+                    result, attemptCts, fallbackAdmission,
+                    // Queue downloads tolerate a slow body; a playback read cannot,
+                    // because one wedged socket starves the whole stream.
+                    playback is null ? null : BodyProgressInactivityTimeout,
+                    onBodyCompleted,
+                    onBodyFailure,
+                    provider.Id,
+                    provider.Host,
+                    out attemptLifetimeTransferred);
                 if (attemptLifetimeTransferred) fallbackAdmission = null;
                 return result;
             }
@@ -998,9 +1096,28 @@ public class MultiProviderNntpClient(
         T result,
         ContextualCancellationTokenSource attemptCts,
         IDisposable? accompanyingLifetime,
+        TimeSpan? bodyProgressTimeout,
+        Action? onBodyCompleted,
+        Action<Exception, long>? onBodyFailure,
+        string providerId,
+        string providerHost,
         out bool lifetimeTransferred) where T : UsenetResponse
     {
         lifetimeTransferred = false;
+
+        void OnStall()
+        {
+            try
+            {
+                attemptCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The body finished and released its lifetime while the stall was
+                // being reported. Nothing left to cancel.
+            }
+        }
+
         switch (result)
         {
             case UsenetDecodedBodyResponse body when body.Stream is not null:
@@ -1010,7 +1127,13 @@ public class MultiProviderNntpClient(
                 {
                     Stream = new LifetimeYencStream(
                         body.Stream,
-                        CombineLifetimes(attemptCts, accompanyingLifetime)),
+                        CombineLifetimes(attemptCts, accompanyingLifetime),
+                        bodyProgressTimeout,
+                        OnStall,
+                        onBodyCompleted,
+                        onBodyFailure,
+                        providerId,
+                        providerHost),
                 });
             case UsenetDecodedArticleResponse article when article.Stream is not null:
                 attemptCts.CancelAfter(Timeout.InfiniteTimeSpan);
@@ -1019,7 +1142,13 @@ public class MultiProviderNntpClient(
                 {
                     Stream = new LifetimeYencStream(
                         article.Stream,
-                        CombineLifetimes(attemptCts, accompanyingLifetime)),
+                        CombineLifetimes(attemptCts, accompanyingLifetime),
+                        bodyProgressTimeout,
+                        OnStall,
+                        onBodyCompleted,
+                        onBodyFailure,
+                        providerId,
+                        providerHost),
                 });
             default:
                 return result;
@@ -1045,11 +1174,18 @@ public class MultiProviderNntpClient(
 
     private static SegmentFetch.FetchStatus ClassifyException(Exception ex)
     {
-        if (ex.TryGetCausingException(out UsenetArticleNotFoundException _))
+        if (ex.TryGetCausingException(out UsenetArticleNotFoundException? _))
             return SegmentFetch.FetchStatus.Missing;
-        if (ex is TimeoutException) return SegmentFetch.FetchStatus.Timeout;
-        if (ex is UnauthorizedAccessException) return SegmentFetch.FetchStatus.Auth;
-        if (ex is System.IO.IOException || ex is System.Net.Sockets.SocketException) return SegmentFetch.FetchStatus.Network;
+        if (ex.TryGetCausingException(out ReadInactivityTimeoutException? _) ||
+            ex is BodyProgressStalledException or TimeoutException)
+            return SegmentFetch.FetchStatus.Timeout;
+        if (ex.TryGetCausingException(out InvalidDataException? _))
+            return SegmentFetch.FetchStatus.Corrupt;
+        if (ex.TryGetCausingException(out UnauthorizedAccessException? _))
+            return SegmentFetch.FetchStatus.Auth;
+        if (ex.TryGetCausingException(out System.Net.Sockets.SocketException? _) ||
+            ex is System.IO.IOException)
+            return SegmentFetch.FetchStatus.Network;
         return SegmentFetch.FetchStatus.Other;
     }
 
@@ -1101,7 +1237,7 @@ public class MultiProviderNntpClient(
                 .OrderBy(ReadinessRank)
                 .ThenBy(x => x.ProviderType);
             var prioritized = cascadeEnabled?.Invoke() == true
-                ? byTier.ThenBy(EffectivePriority)
+                ? byTier.ThenBy(provider => EffectivePriority(provider, priority))
                 : byTier;
             var ordered = prioritized
                 .ThenByDescending(x => GetRemainingBytes(x))
@@ -1178,7 +1314,7 @@ public class MultiProviderNntpClient(
                 var preferred = PreferLiveStatProviders(preferredCandidates)
                     .OrderBy(plan.SelectionScore)
                     .ThenBy(plan.ProbeRank)
-                    .ThenBy(EffectivePriority)
+                    .ThenBy(provider => EffectivePriority(provider, priority))
                     .ToList();
                 if (preferred.Count > 0)
                 {
@@ -1196,12 +1332,12 @@ public class MultiProviderNntpClient(
                         .Skip(1)
                         .OrderByDescending(plan.Coverage)
                         .ThenBy(plan.ProbeRank)
-                        .ThenBy(EffectivePriority);
+                        .ThenBy(provider => EffectivePriority(provider, priority));
                     var plannedFallback = routablePool
                         .Where(x => !preferredSet.Contains(x))
                         .OrderBy(plan.ProbeRank)
                         .ThenBy(x => x.ProviderType)
-                        .ThenBy(EffectivePriority)
+                        .ThenBy(provider => EffectivePriority(provider, priority))
                         .ThenByDescending(GetRemainingBytes);
                     var planned = new[] { selectedPrimary }
                         .Concat(preferredFallback)
@@ -1223,8 +1359,8 @@ public class MultiProviderNntpClient(
             // publishes a connection. BackupOnly providers remain rescue-only.
             var primaryCandidates = SelectPrimaryStatTier(pool).ToList();
             var primary = PreferLiveStatProviders(primaryCandidates)
-                .OrderBy(StatSpreadScore)
-                .ThenBy(EffectivePriority)
+                .OrderBy(provider => StatSpreadScore(provider, priority))
+                .ThenBy(provider => EffectivePriority(provider, priority))
                 .ThenBy(EstimatedDeliveryScore)
                 .ThenByDescending(GetRemainingBytes)
                 .ToList();
@@ -1232,7 +1368,7 @@ public class MultiProviderNntpClient(
             var fallback = pool
                 .Where(x => !primarySet.Contains(x))
                 .OrderBy(x => x.ProviderType)
-                .ThenBy(EffectivePriority)
+                .ThenBy(provider => EffectivePriority(provider, priority))
                 .ThenBy(EstimatedDeliveryScore)
                 .ThenByDescending(GetRemainingBytes);
             var ordered = primary.Concat(fallback).ToList();
@@ -1243,10 +1379,16 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private static int EffectivePriority(MultiConnectionNntpClient provider)
+    private static int EffectivePriority(MultiConnectionNntpClient provider) =>
+        EffectivePriority(provider, SemaphorePriority.Low);
+
+    private static int EffectivePriority(
+        MultiConnectionNntpClient provider,
+        SemaphorePriority priority)
     {
         const int saturationDemotion = 1 << 20;
-        return provider.Priority + (provider.HasSpareConnection ? 0 : saturationDemotion);
+        return provider.Priority +
+               (provider.HasSpareConnection(priority) ? 0 : saturationDemotion);
     }
 
     private static int ReadinessRank(MultiConnectionNntpClient provider) =>
@@ -1264,14 +1406,24 @@ public class MultiProviderNntpClient(
         // Route against capacity that exists now, not the configured maximum.
         // Otherwise a provider with slow or stalled handshakes can accumulate a
         // full share of reservations while healthy providers sit idle.
-        var capacity = Math.Max(1, provider.LiveConnections);
+        var capacity = Math.Max(
+            1,
+            Math.Min(provider.LiveConnections, provider.LowPriorityConnectionLimit));
         var committed = provider.ActiveConnections + provider.PendingSelections;
         return committed / (double)capacity;
     }
 
-    private static double StatSpreadScore(MultiConnectionNntpClient provider)
+    private static double StatSpreadScore(
+        MultiConnectionNntpClient provider,
+        SemaphorePriority priority)
     {
-        var capacity = Math.Max(1, provider.LiveConnections);
+        var capacity = Math.Max(
+            1,
+            Math.Min(
+                provider.LiveConnections,
+                priority == SemaphorePriority.High
+                    ? provider.MaxConnections
+                    : provider.LowPriorityConnectionLimit));
         var committed = StatCommittedDemand(provider);
         return committed / (double)capacity;
     }
@@ -1442,14 +1594,14 @@ public class MultiProviderNntpClient(
     private static int ResolveBodyDepth(MultiConnectionNntpClient primary, int fallbackDepth)
     {
         return primary.ConfiguredPipeliningDepth is int d and > 0
-            ? Math.Clamp(d, 1, 64)
+            ? Math.Clamp(d, 1, UsenetProviderConfig.MaximumPipeliningDepth)
             : fallbackDepth;
     }
 
     private static int ResolveHealthDepth(MultiConnectionNntpClient primary, int fallbackDepth)
     {
         return primary.ConfiguredHealthPipeliningDepth is int d and > 0
-            ? Math.Clamp(d, 1, 64)
+            ? Math.Clamp(d, 1, UsenetProviderConfig.MaximumPipeliningDepth)
             : fallbackDepth;
     }
 
@@ -2472,6 +2624,7 @@ public class MultiProviderNntpClient(
             var rotatePrimary = false;
             var rotationReason = "none";
             var chunkTimer = Stopwatch.StartNew();
+            var lastResponseAtMs = 0L;
             var playback = PlaybackDiagnosticContext.Current;
             var primaryIsPlaybackBackup =
                 primary.ProviderType == ProviderType.BackupOnly && playback is not null;
@@ -2483,9 +2636,15 @@ public class MultiProviderNntpClient(
                     $"pipeline-chunk:{chunk.Count}",
                     pipelined: true);
 
+            using var pipelineCts =
+                ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (playback is not null)
+                pipelineCts.SetContext(
+                    new BodyReadInactivityContext(BodyProgressInactivityTimeout));
+            var pipelineToken = pipelineCts.Token;
             await using (var enumerator = primary
-                             .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, cancellationToken)
-                             .GetAsyncEnumerator(cancellationToken))
+                             .DecodedBodiesPipelinedAsync(chunk, effectiveDepth, pipelineToken)
+                             .GetAsyncEnumerator(pipelineToken))
             {
                 while (nextIndex < chunk.Count)
                 {
@@ -2507,10 +2666,29 @@ public class MultiProviderNntpClient(
                             primary.Host);
                         rotatePrimary = true;
                         rotationReason = e.GetType().Name;
+                        var failureStatus = ClassifyException(e);
+                        RecordFetch(
+                            primary.Id,
+                            failureStatus,
+                            TakeResponseElapsedMs(chunkTimer, ref lastResponseAtMs),
+                            retries: 0);
+                        if (playback is not null &&
+                            e.TryGetCausingException(out ReadInactivityTimeoutException? stalled) &&
+                            stalled is not null)
+                            playback.RecordBodyStallRecovery(
+                                primary.Id,
+                                primary.Host,
+                                chunk[nextIndex],
+                                stalled.TransferredBytes,
+                                attempt: 1,
+                                pipelined: true);
                         if (primaryIsPlaybackBackup)
                             playback!.RecordBackupOutcome(
                                 primary.Id, primary.Host, chunk[nextIndex],
-                                "error", chunkTimer.ElapsedMilliseconds);
+                                failureStatus == SegmentFetch.FetchStatus.Timeout
+                                    ? "timeout"
+                                    : "error",
+                                chunkTimer.ElapsedMilliseconds);
                         rescueFrom = nextIndex;
                         break;
                     }
@@ -2519,6 +2697,12 @@ public class MultiProviderNntpClient(
                     {
                         nextIndex++;
                         usageTracker.RecordSuccess(primary.Id);
+                        // The pipeline answers many segments on one connection, so
+                        // time each response from the previous one rather than from
+                        // the start of the chunk.
+                        RecordFetch(
+                            primary.Id, SegmentFetch.FetchStatus.Ok,
+                            TakeResponseElapsedMs(chunkTimer, ref lastResponseAtMs), retries: 0);
                         if (primaryIsPlaybackBackup)
                             playback!.RecordBackupOutcome(
                                 primary.Id, primary.Host, result.SegmentId,
@@ -2527,6 +2711,9 @@ public class MultiProviderNntpClient(
                         continue;
                     }
 
+                    RecordFetch(
+                        primary.Id, SegmentFetch.FetchStatus.Missing,
+                        TakeResponseElapsedMs(chunkTimer, ref lastResponseAtMs), retries: 0);
                     if (primaryIsPlaybackBackup)
                         playback!.RecordBackupOutcome(
                             primary.Id, primary.Host, result.SegmentId,
@@ -2560,12 +2747,18 @@ public class MultiProviderNntpClient(
                 var failedProvider = primary;
                 var replacement = SelectReplacementPipelinedProvider(
                     failedProvider, failedProviders, cancellationToken, ref reserved);
-                playback?.RecordProviderRotation(
-                    failedProvider.Host,
-                    replacement.Host,
-                    replacement.ProviderType == ProviderType.BackupOnly,
-                    chunk.Count - rescueFrom,
-                    rotationReason);
+                if (!ReferenceEquals(failedProvider, replacement))
+                    playback?.RecordProviderRotation(
+                        failedProvider.Host,
+                        replacement.Host,
+                        replacement.ProviderType == ProviderType.BackupOnly,
+                        chunk.Count - rescueFrom,
+                        rotationReason);
+                else
+                    playback?.RecordPipelineReset(
+                        failedProvider.Host,
+                        chunk.Count - rescueFrom,
+                        rotationReason);
                 primary = replacement;
             }
 
@@ -2692,12 +2885,18 @@ public class MultiProviderNntpClient(
                 var failedProvider = primary;
                 var replacement = SelectReplacementPipelinedProvider(
                     failedProvider, failedProviders, cancellationToken, ref reserved);
-                playback?.RecordProviderRotation(
-                    failedProvider.Host,
-                    replacement.Host,
-                    replacement.ProviderType == ProviderType.BackupOnly,
-                    chunk.Count - rescueFrom,
-                    rotationReason);
+                if (!ReferenceEquals(failedProvider, replacement))
+                    playback?.RecordProviderRotation(
+                        failedProvider.Host,
+                        replacement.Host,
+                        replacement.ProviderType == ProviderType.BackupOnly,
+                        chunk.Count - rescueFrom,
+                        rotationReason);
+                else
+                    playback?.RecordPipelineReset(
+                        failedProvider.Host,
+                        chunk.Count - rescueFrom,
+                        rotationReason);
                 primary = replacement;
             }
 
@@ -2757,7 +2956,8 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private static int ResolvePipelinedChunkSize(int depth) => Math.Clamp(depth, 1, 64);
+    private static int ResolvePipelinedChunkSize(int depth) =>
+        Math.Clamp(depth, 1, UsenetProviderConfig.MaximumPipeliningDepth);
 
     private static List<string> Slice(IReadOnlyList<string> items, int offset, int maxCount)
     {
@@ -2767,14 +2967,30 @@ public class MultiProviderNntpClient(
         return result;
     }
 
-    private PipelinedBodyResult WrapPipelinedBody(PipelinedBodyResult result, string host)
+    /// <summary>
+    /// Elapsed time attributable to one pipelined response: the gap since the
+    /// previous one, not the age of the whole chunk. Chunk-relative timings
+    /// would climb with position in the chunk and make every deep pipeline look
+    /// like a slow provider.
+    /// </summary>
+    private static long TakeResponseElapsedMs(Stopwatch chunkTimer, ref long lastResponseAtMs)
     {
-        if (bytesTracker == null || result.Stream == null) return result;
-        return result with
-        {
-            Stream = new CountingYencStream(
-                result.Stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes))
-        };
+        var now = chunkTimer.ElapsedMilliseconds;
+        var elapsed = Math.Max(0, now - lastResponseAtMs);
+        lastResponseAtMs = now;
+        return elapsed;
+    }
+
+    private PipelinedBodyResult WrapPipelinedBody(
+        PipelinedBodyResult result,
+        string host)
+    {
+        if (result.Stream == null) return result;
+        var stream = result.Stream;
+        if (bytesTracker != null)
+            stream = new CountingYencStream(
+                stream, bytesTracker, host, bytes => usageTracker.RecordBytes(host, bytes));
+        return ReferenceEquals(stream, result.Stream) ? result : result with { Stream = stream };
     }
 
     private PipelinedArticleResult WrapPipelinedArticle(PipelinedArticleResult result, string host)

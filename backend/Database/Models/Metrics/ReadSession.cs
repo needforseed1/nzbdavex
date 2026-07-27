@@ -15,6 +15,69 @@ public class ReadSession
     public string? ClientIp { get; set; }
     public EndReasonCode EndReason { get; set; }
 
+    // Content identity. Path is an opaque /content/{guid} for id-files, so the
+    // playback page resolves display names through these instead.
+    public string? FileName { get; set; }
+    public Guid? DavItemId { get; set; }
+    public Guid? HistoryItemId { get; set; }
+
+    // Playback quality, folded up from the per-request diagnostics of every
+    // range request that belonged to this session.
+    public int RequestCount { get; set; }
+    public int? FirstByteMs { get; set; }
+    public long MaxOffset { get; set; }
+    public int UpstreamStalls { get; set; }
+    public int MaxUpstreamStallMs { get; set; }
+    // Time actually spent waiting, which count and max together cannot express.
+    public long TotalUpstreamStallMs { get; set; }
+
+    /// <summary>
+    /// The subset of <see cref="UpstreamStalls"/> where segments had already been
+    /// downloaded and were queued behind the one the reader needed. A high share
+    /// means the source kept up and one slow article held up the rest; a low
+    /// share means the source genuinely could not deliver in time.
+    /// </summary>
+    public int HeadOfLineStalls { get; set; }
+
+    public long TotalHeadOfLineStallMs { get; set; }
+    public int DownstreamStalls { get; set; }
+    public int MaxDownstreamStallMs { get; set; }
+    public long TotalDownstreamStallMs { get; set; }
+    public int FallbackRescues { get; set; }
+    public int ProviderRotations { get; set; }
+    public int FallbackBudgetExhaustions { get; set; }
+    public int CacheHits { get; set; }
+    public int CacheMisses { get; set; }
+    public int ConnectionPermitWaits { get; set; }
+    public int MaxConnectionPermitWaitMs { get; set; }
+    public int ProviderPoolWaits { get; set; }
+    public int MaxProviderPoolWaitMs { get; set; }
+
+    /// <summary>
+    /// Articles that could not be retrieved and were served to the player as
+    /// zeros. Unlike every other counter here this one is not about delay: the
+    /// bytes the viewer received were wrong.
+    /// </summary>
+    public int ZeroFilledSegments { get; set; }
+
+    public long ZeroFilledBytes { get; set; }
+
+    /// <summary>
+    /// Bodies that stopped mid-transfer and were recovered by refetching. The
+    /// stream survived, so nothing else on the row would record that a provider
+    /// connection wedged.
+    /// </summary>
+    public int BodyStallRecoveries { get; set; }
+
+    /// <summary>
+    /// Per-provider breakdown, denormalised because SegmentFetches expire after
+    /// 24 h while sessions are kept for 90 days. Hosts and nicknames stay out of
+    /// it — those are resolved from live config when the page is rendered.
+    /// </summary>
+    public string? ProviderStatsJson { get; set; }
+
+    public string? ErrorNote { get; set; }
+
     public enum EndReasonCode
     {
         Completed = 0,

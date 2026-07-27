@@ -13,7 +13,12 @@ type Read = {
     startedAt: number;
     lastActivityAt: number;
     bytesRead: number;
+    bytesPerSecond: number;
     fileSize: number | null;
+    upstreamStalls: number;
+    totalUpstreamStallMs: number;
+    downstreamStalls: number;
+    zeroFilledSegments: number;
     providers: ProviderUsage[];
 };
 type Snapshot = { reads: Read[] };
@@ -29,6 +34,23 @@ function stripHost(host: string): string {
     const identifying = labels.find(label => !GENERIC_HOST_PREFIXES.has(label.toLowerCase()));
     if (identifying) return identifying;
     return labels[0].length >= labels[1].length ? labels[0] : labels[1];
+}
+
+function formatRate(bytesPerSecond: number): string {
+    if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "0 B/s";
+    const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+    let value = bytesPerSecond;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatSeconds(ms: number): string {
+    const seconds = ms / 1000;
+    return seconds >= 10 ? `${Math.round(seconds)}s` : `${seconds.toFixed(1)}s`;
 }
 
 function shortName(name: string): string {
@@ -83,9 +105,29 @@ function ReadRow({ item }: { item: Read }) {
     return (
         <div className={styles.row} title={item.fileName}>
             <div className={styles.fileName}>{shortName(item.fileName)}</div>
+            <div className={styles.stats}>
+                <span className={styles.rate}>{formatRate(item.bytesPerSecond)}</span>
+                {item.totalUpstreamStallMs > 0 && (
+                    <span
+                        className={styles.waited}
+                        title={`${item.upstreamStalls} wait(s) on usenet so far this session`}>
+                        waited {formatSeconds(item.totalUpstreamStallMs)} on usenet
+                    </span>
+                )}
+                {/* Not a delay — this part of the file is being served as zeros. */}
+                {item.zeroFilledSegments > 0 && (
+                    <span
+                        className={styles.damaged}
+                        title="Articles that could not be fetched and were replaced with zeros.">
+                        {item.zeroFilledSegments} article{item.zeroFilledSegments === 1 ? "" : "s"} missing
+                    </span>
+                )}
+            </div>
             <div className={styles.providers}>
+                {/* An empty provider list means no articles have been attributed
+                    yet, which is how a read starts — not evidence of buffering. */}
                 {item.providers.length === 0
-                    ? <span className={styles.providersIdle}>buffering…</span>
+                    ? <span className={styles.providersIdle}>starting…</span>
                     : item.providers.map((p, i) => (
                         <span key={p.host} className={styles.providersEntry}>
                             {i > 0 && <span className={styles.providersSep}>·</span>}

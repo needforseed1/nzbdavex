@@ -30,6 +30,8 @@ public class DatabaseStoreIdFile(
 
     public Guid? HistoryItemId => davItem.HistoryItemId;
 
+    public Guid DavItemId => davItem.Id;
+
     public override Task<Stream> GetReadableStreamAsync(CancellationToken cancellationToken)
     {
         return GetItem(davItem).GetReadableStreamAsync(cancellationToken);

@@ -7,6 +7,37 @@ namespace NzbWebDAV.Tests.Clients.Usenet;
 public class ConnectionPoolTests
 {
     [Fact]
+    public async Task BackgroundWorkCannotConsumePlaybackReserve()
+    {
+        await using var pool = new ConnectionPool<TrackedConnection>(
+            4,
+            _ => ValueTask.FromResult(new TrackedConnection(1, () => { })),
+            highPriorityReserve: 2);
+
+        var firstBackground = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var secondBackground = await pool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var waitingBackground = pool.GetConnectionLockAsync(SemaphorePriority.Low);
+
+        var firstPlayback = await pool.GetConnectionLockAsync(SemaphorePriority.High)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        var secondPlayback = await pool.GetConnectionLockAsync(SemaphorePriority.High)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.False(waitingBackground.IsCompleted);
+        Assert.Equal(0, pool.GetAvailableConnections(SemaphorePriority.High));
+        Assert.Equal(0, pool.GetAvailableConnections(SemaphorePriority.Low));
+
+        firstPlayback.Dispose();
+        secondPlayback.Dispose();
+        Assert.False(waitingBackground.IsCompleted);
+
+        firstBackground.Dispose();
+        using var releasedBackground =
+            await waitingBackground.WaitAsync(TimeSpan.FromSeconds(1));
+        secondBackground.Dispose();
+    }
+
+    [Fact]
     public async Task PlaybackPriorityWinsTheNextReturnedConnectionOverHealthWork()
     {
         await using var pool = new ConnectionPool<TrackedConnection>(

@@ -67,9 +67,32 @@ public sealed class MetricsDbContext() : DbContext(Options.Value)
             e.Property(x => x.BytesFetched).IsRequired();
             e.Property(x => x.FailoverSaves).IsRequired();
             e.Property(x => x.EndReason).HasConversion<int>().IsRequired();
+            e.Property(x => x.RequestCount).IsRequired();
+            e.Property(x => x.MaxOffset).IsRequired();
+            e.Property(x => x.UpstreamStalls).IsRequired();
+            e.Property(x => x.MaxUpstreamStallMs).IsRequired();
+            e.Property(x => x.TotalUpstreamStallMs).IsRequired();
+            e.Property(x => x.HeadOfLineStalls).IsRequired();
+            e.Property(x => x.TotalHeadOfLineStallMs).IsRequired();
+            e.Property(x => x.DownstreamStalls).IsRequired();
+            e.Property(x => x.MaxDownstreamStallMs).IsRequired();
+            e.Property(x => x.TotalDownstreamStallMs).IsRequired();
+            e.Property(x => x.FallbackRescues).IsRequired();
+            e.Property(x => x.ProviderRotations).IsRequired();
+            e.Property(x => x.FallbackBudgetExhaustions).IsRequired();
+            e.Property(x => x.CacheHits).IsRequired();
+            e.Property(x => x.CacheMisses).IsRequired();
+            e.Property(x => x.ConnectionPermitWaits).IsRequired();
+            e.Property(x => x.MaxConnectionPermitWaitMs).IsRequired();
+            e.Property(x => x.ProviderPoolWaits).IsRequired();
+            e.Property(x => x.MaxProviderPoolWaitMs).IsRequired();
+            e.Property(x => x.ZeroFilledSegments).IsRequired();
+            e.Property(x => x.ZeroFilledBytes).IsRequired();
+            e.Property(x => x.BodyStallRecoveries).IsRequired();
 
             e.HasIndex(x => x.StartedAt);
             e.HasIndex(x => x.Path);
+            e.HasIndex(x => new { x.DavItemId, x.StartedAt });
         });
 
         b.Entity<MetricEvent>(e =>

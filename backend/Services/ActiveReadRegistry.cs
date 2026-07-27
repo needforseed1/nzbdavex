@@ -38,9 +38,13 @@ public class ActiveReadRegistry
             if (_keyToId.TryGetValue(key, out var existingId)
                 && _entries.TryGetValue(existingId, out var existing))
             {
-                existing.LastActivityAt = now;
-                if (fileSize is { } size) existing.FileSize = size;
-                return existingId;
+                lock (existing.LifetimeLock)
+                {
+                    if (existing.Removed) continue;
+                    existing.LastActivityAt = now;
+                    if (fileSize is { } size) existing.FileSize = size;
+                    return existingId;
+                }
             }
 
             var newId = Guid.NewGuid();
@@ -69,14 +73,21 @@ public class ActiveReadRegistry
     {
         if (_entries.TryGetValue(id, out var entry))
         {
-            entry.LastActivityAt = DateTimeOffset.UtcNow;
-            if (bytesRead > 0)
+            lock (entry.LifetimeLock)
             {
-                Interlocked.Add(ref entry.BytesRead, bytesRead);
-                Interlocked.Add(ref _totalBytesServed, bytesRead);
+                if (entry.Removed) return;
+                entry.LastActivityAt = DateTimeOffset.UtcNow;
+                if (bytesRead > 0)
+                {
+                    Interlocked.Add(ref entry.BytesRead, bytesRead);
+                    Interlocked.Add(ref _totalBytesServed, bytesRead);
+                }
+                if (currentOffset.HasValue)
+                {
+                    Interlocked.Exchange(ref entry.CurrentOffset, currentOffset.Value);
+                    UpdateMaximum(ref entry.MaxOffset, currentOffset.Value);
+                }
             }
-            if (currentOffset.HasValue)
-                Interlocked.Exchange(ref entry.CurrentOffset, currentOffset.Value);
         }
     }
 
@@ -88,66 +99,152 @@ public class ActiveReadRegistry
     public void UpdateInfo(Guid id, string? fileName, long? fileSize)
     {
         if (!_entries.TryGetValue(id, out var entry)) return;
-        if (!string.IsNullOrWhiteSpace(fileName)) entry.FileName = fileName;
-        if (fileSize is { } size) entry.FileSize = size;
+        lock (entry.LifetimeLock)
+        {
+            if (entry.Removed) return;
+            if (!string.IsNullOrWhiteSpace(fileName)) entry.FileName = fileName;
+            if (fileSize is { } size) entry.FileSize = size;
+        }
+    }
+
+    /// <summary>
+    /// Attach the content identity behind an opaque playback path, so the
+    /// persisted session can be tied back to its dav item and grab history.
+    /// </summary>
+    public void UpdateContentIds(Guid id, Guid? davItemId, Guid? historyItemId)
+    {
+        if (!_entries.TryGetValue(id, out var entry)) return;
+        lock (entry.LifetimeLock)
+        {
+            if (entry.Removed) return;
+            if (davItemId.HasValue) entry.DavItemId = davItemId;
+            if (historyItemId.HasValue) entry.HistoryItemId = historyItemId;
+        }
     }
 
     public void MarkRequestStarted(Guid id, string? clientIp, string? clientUserAgent)
     {
         if (!_entries.TryGetValue(id, out var entry)) return;
-        entry.LastActivityAt = DateTimeOffset.UtcNow;
-        entry.ClientIp = clientIp;
-        entry.ClientUserAgent = clientUserAgent;
-        // A seek commonly cancels one range and immediately starts another.
-        // The newest request therefore owns the eventual terminal reason.
-        entry.EndReason = ReadSession.EndReasonCode.Completed;
+        lock (entry.LifetimeLock)
+        {
+            if (entry.Removed) return;
+            entry.LastActivityAt = DateTimeOffset.UtcNow;
+            entry.ClientIp = clientIp;
+            entry.ClientUserAgent = clientUserAgent;
+            Interlocked.Increment(ref entry.OpenRequests);
+            // A seek commonly cancels one range and immediately starts another.
+            // The newest request therefore owns the eventual terminal reason.
+            entry.EndReason = ReadSession.EndReasonCode.Completed;
+        }
     }
 
     public void MarkRequestEnded(Guid id, ReadSession.EndReasonCode endReason)
     {
         if (!_entries.TryGetValue(id, out var entry)) return;
-        entry.LastActivityAt = DateTimeOffset.UtcNow;
-        entry.EndReason = endReason;
+        lock (entry.LifetimeLock)
+        {
+            if (entry.Removed) return;
+            entry.LastActivityAt = DateTimeOffset.UtcNow;
+            entry.EndReason = endReason;
+            DecrementNonNegative(ref entry.OpenRequests);
+        }
     }
 
     public IReadOnlyList<Entry> Snapshot()
     {
         var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
-        return _entries.Values
-            .Where(e => e.LastActivityAt >= cutoff)
-            .OrderBy(e => e.StartedAt)
-            .ToList();
+        var active = new List<Entry>();
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry.LifetimeLock)
+            {
+                if (!entry.Removed &&
+                    (entry.LastActivityAt >= cutoff || entry.IsRequestOpen))
+                    active.Add(entry);
+            }
+        }
+        return active.OrderBy(e => e.StartedAt).ToList();
     }
 
     /// <summary>
-    /// Remove entries that haven't been touched within the activity window.
-    /// Returns the pruned entries so callers can clear external bookkeeping
-    /// and persist a terminal record of the session.
+    /// Remove entries that haven't been touched within the activity window and
+    /// have no HTTP request still open. Returns the pruned entries so callers
+    /// can clear external bookkeeping and persist a terminal record of the
+    /// session.
     /// </summary>
     public IReadOnlyList<Entry> PruneExpired()
     {
         var cutoff = DateTimeOffset.UtcNow - ActivityWindow;
-        var expired = _entries
-            .Where(kv => kv.Value.LastActivityAt < cutoff)
-            .Select(kv => kv.Value)
-            .ToList();
-        foreach (var entry in expired)
+        var expired = new List<Entry>();
+        foreach (var entry in _entries.Values)
         {
-            // Clear the dedup mapping first, and only if it still points to
-            // this expired entry — a fresh session for the same player and
-            // file may have already claimed the key, in which case we leave
-            // the new mapping intact.
-            var key = BuildKey(entry.Path, entry.ClientKey);
-            ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
-                .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
-            _entries.TryRemove(entry.Id, out _);
+            lock (entry.LifetimeLock)
+            {
+                // Re-check under the same lock used by Touch and request start.
+                // A range that resumes while pruning is being decided therefore
+                // wins cleanly instead of having its refreshed session removed.
+                if (entry.Removed || entry.IsRequestOpen || entry.LastActivityAt >= cutoff)
+                    continue;
+                entry.Removed = true;
+                var key = BuildKey(entry.Path, entry.ClientKey);
+                ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
+                    .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
+                if (_entries.TryRemove(entry.Id, out _))
+                    expired.Add(entry);
+            }
         }
         return expired;
+    }
+
+    /// <summary>
+    /// Remove and return every entry regardless of activity. Used on shutdown so
+    /// reads still in flight are persisted instead of vanishing. Draining in one
+    /// pass keeps a session from being returned twice and colliding on its
+    /// primary key.
+    /// </summary>
+    public IReadOnlyList<Entry> DrainAll()
+    {
+        var all = _entries.Values.ToList();
+        var drained = new List<Entry>(all.Count);
+        foreach (var entry in all)
+        {
+            lock (entry.LifetimeLock)
+            {
+                if (entry.Removed) continue;
+                entry.Removed = true;
+                var key = BuildKey(entry.Path, entry.ClientKey);
+                ((ICollection<KeyValuePair<string, Guid>>)_keyToId)
+                    .Remove(new KeyValuePair<string, Guid>(key, entry.Id));
+                if (_entries.TryRemove(entry.Id, out _))
+                    drained.Add(entry);
+            }
+        }
+        return drained;
     }
 
     public int Count => _entries.Count;
 
     private static string BuildKey(string path, string clientKey) => path + "\n" + clientKey;
+
+    private static void UpdateMaximum(ref long target, long candidate)
+    {
+        while (true)
+        {
+            var current = Interlocked.Read(ref target);
+            if (candidate <= current) return;
+            if (Interlocked.CompareExchange(ref target, candidate, current) == current) return;
+        }
+    }
+
+    private static void DecrementNonNegative(ref int value)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref value);
+            if (current <= 0) return;
+            if (Interlocked.CompareExchange(ref value, current - 1, current) == current) return;
+        }
+    }
 
     public sealed class Entry
     {
@@ -158,10 +255,21 @@ public class ActiveReadRegistry
         public string ClientKey { get; init; } = "";
         public string? ClientUserAgent { get; set; }
         public string? ClientIp { get; set; }
+        public Guid? DavItemId { get; set; }
+        public Guid? HistoryItemId { get; set; }
         public ReadSession.EndReasonCode EndReason { get; set; } =
             ReadSession.EndReasonCode.Completed;
         public DateTimeOffset StartedAt { get; init; }
         public DateTimeOffset LastActivityAt { get; set; }
+        /// <summary>
+        /// HTTP requests currently streaming from this session. A session with
+        /// one open request is alive by definition, however long it has been
+        /// since it last moved a byte.
+        /// </summary>
+        public int OpenRequests;
+        public bool IsRequestOpen => Volatile.Read(ref OpenRequests) > 0;
+        internal object LifetimeLock { get; } = new();
+        internal bool Removed;
         public long BytesRead;
         /// <summary>
         /// Most recent absolute file offset the player has been served (i.e. the
@@ -170,5 +278,11 @@ public class ActiveReadRegistry
         /// transferred bytes (which over-counts on seek/rewind).
         /// </summary>
         public long CurrentOffset;
+        /// <summary>
+        /// Furthest offset reached during the session. Unlike CurrentOffset it
+        /// never rewinds on a seek, so it approximates how far into the file the
+        /// player actually got.
+        /// </summary>
+        public long MaxOffset;
     }
 }

@@ -20,17 +20,25 @@ public class PrioritizedSemaphore : IDisposable
     private readonly LinkedList<TaskCompletionSource<bool>> _lowPriorityWaiters = [];
     private SemaphorePriorityOdds _priorityOdds;
     private int _maxAllowed;
+    private readonly int _highPriorityReserve;
     private int _enteredCount;
     private bool _disposed = false;
     private readonly Lock _lock = new();
     private int _accumulatedOdds;
 
-    public PrioritizedSemaphore(int initialAllowed, int maxAllowed, SemaphorePriorityOdds? priorityOdds = null)
+    public PrioritizedSemaphore(
+        int initialAllowed,
+        int maxAllowed,
+        SemaphorePriorityOdds? priorityOdds = null,
+        int highPriorityReserve = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(initialAllowed);
         ArgumentOutOfRangeException.ThrowIfNegative(maxAllowed);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(initialAllowed, maxAllowed);
+        ArgumentOutOfRangeException.ThrowIfNegative(highPriorityReserve);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(highPriorityReserve, maxAllowed);
         _priorityOdds = priorityOdds ?? new SemaphorePriorityOdds { HighPriorityOdds = 100 };
+        _highPriorityReserve = highPriorityReserve;
         _enteredCount = maxAllowed - initialAllowed;
         _maxAllowed = maxAllowed;
     }
@@ -42,7 +50,7 @@ public class PrioritizedSemaphore : IDisposable
             if (_disposed)
                 throw new ObjectDisposedException(nameof(AsyncSemaphore));
 
-            if (_enteredCount < _maxAllowed)
+            if (_enteredCount < GetPriorityLimit(priority))
             {
                 _enteredCount++;
                 return Task.CompletedTask;
@@ -101,13 +109,22 @@ public class PrioritizedSemaphore : IDisposable
             else if (_highPriorityWaiters.Count == 0)
             {
                 // if there are no high-priority waiters,
-                // then release a low-priority waiter.
-                toRelease = Release(_lowPriorityWaiters);
+                // release a low-priority waiter only if doing so preserves
+                // the configured high-priority reserve.
+                toRelease = CanReplaceReleasedPermit(SemaphorePriority.Low)
+                    ? Release(_lowPriorityWaiters)
+                    : null;
             }
             else if (_lowPriorityWaiters.Count == 0)
             {
                 // if there are no low-priority waiters,
                 // then release a high-priority waiter.
+                toRelease = Release(_highPriorityWaiters);
+            }
+            else if (!CanReplaceReleasedPermit(SemaphorePriority.Low))
+            {
+                // Low-priority work cannot refill this permit until enough
+                // capacity has drained to restore the high-priority reserve.
                 toRelease = Release(_highPriorityWaiters);
             }
             else
@@ -157,6 +174,38 @@ public class PrioritizedSemaphore : IDisposable
         }
 
         return null;
+    }
+
+    public int GetAvailableCount(SemaphorePriority priority)
+    {
+        lock (_lock)
+        {
+            return Math.Max(0, GetPriorityLimit(priority) - _enteredCount);
+        }
+    }
+
+    public int GetAllowedCount(SemaphorePriority priority)
+    {
+        lock (_lock)
+        {
+            return GetPriorityLimit(priority);
+        }
+    }
+
+    private bool CanReplaceReleasedPermit(SemaphorePriority priority) =>
+        _enteredCount <= GetPriorityLimit(priority);
+
+    private int GetPriorityLimit(SemaphorePriority priority)
+    {
+        if (priority == SemaphorePriority.High) return _maxAllowed;
+
+        // If provider capacity is reduced at runtime, retain one slot for
+        // background work instead of allowing the configured reserve to
+        // deadlock prep and health checks.
+        var effectiveReserve = Math.Min(
+            _highPriorityReserve,
+            Math.Max(0, _maxAllowed - 1));
+        return _maxAllowed - effectiveReserve;
     }
 
     public void UpdateMaxAllowed(int newMaxAllowed)

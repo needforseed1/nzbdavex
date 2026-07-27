@@ -70,7 +70,7 @@ public sealed class BenchmarkProfile
             HealthStatSegments = 128,
             HealthStatRounds = 3,
             HealthStatRoundTimeout = TimeSpan.FromSeconds(6),
-            HealthPipelineDepths = [1, 4, 8, 16, 32, 64],
+            HealthPipelineDepths = [1, 4, 8, 16, 32, 64, 80, 96, 128],
         },
         _ => new BenchmarkProfile
         {
@@ -83,10 +83,10 @@ public sealed class BenchmarkProfile
             PipelineTestConnections = 4,
             PipelineDepths = [8, 16],
             StartupSegments = 8,
-            HealthStatSegments = 64,
+            HealthStatSegments = 128,
             HealthStatRounds = 2,
             HealthStatRoundTimeout = TimeSpan.FromSeconds(4),
-            HealthPipelineDepths = [1, 4, 8, 16, 32, 64],
+            HealthPipelineDepths = [1, 4, 8, 16, 32, 64, 80, 96, 128],
         },
     };
 }

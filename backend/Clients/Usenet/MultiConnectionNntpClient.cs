@@ -10,6 +10,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 using Serilog;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Clients.Usenet;
@@ -63,6 +64,7 @@ public class MultiConnectionNntpClient(
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int PendingAcquisitions => connectionPool.PendingAcquisitions;
     public int AvailableConnections => connectionPool.AvailableConnections;
+    public int LowPriorityConnectionLimit => connectionPool.LowPriorityConnectionLimit;
     public int MaxConnections => connectionPool.MaxConnections;
 
     private int _pendingSelections;
@@ -70,7 +72,8 @@ public class MultiConnectionNntpClient(
     public void ReservePending() => Interlocked.Increment(ref _pendingSelections);
     public void ReleasePending() => Interlocked.Decrement(ref _pendingSelections);
 
-    public bool HasSpareConnection => AvailableConnections - PendingSelections > 0;
+    public bool HasSpareConnection(SemaphorePriority priority) =>
+        connectionPool.GetAvailableConnections(priority) - PendingSelections > 0;
 
     internal void ActivateIdlePrewarming() => connectionPool.ActivateIdlePrewarming();
 
@@ -505,6 +508,15 @@ public class MultiConnectionNntpClient(
                 : CancellationTokenSource.CreateLinkedTokenSource(
                     commandCts?.Token ?? cancellationToken);
             var commandToken = inactivityCts?.Token ?? commandCts?.Token ?? cancellationToken;
+            // CancellationTokenSource linking preserves cancellation but not
+            // our out-of-band token context. Forward the playback BODY silence
+            // policy to the transport token that batchFactory actually sees.
+            var bodyReadContext =
+                cancellationToken.GetContext<BodyReadInactivityContext>();
+            using var forwardedBodyReadContext =
+                bodyReadContext is null || commandToken == cancellationToken
+                ? null
+                : CancellationTokenContext.SetContext(commandToken, bodyReadContext);
             inactivityCts?.CancelAfter(attempt!.ResponseInactivityTimeout!.Value);
             await using var enumerator = batchFactory(connectionLock.Connection, commandToken)
                 .GetAsyncEnumerator(commandToken);
@@ -566,6 +578,15 @@ public class MultiConnectionNntpClient(
                             $"{attempt!.CommandTimeout.TotalSeconds:0.#} seconds after acquiring a connection; " +
                             $"{DescribePipelinedAttempt()}.",
                             e);
+                    }
+                    catch (ReadInactivityTimeoutException)
+                    {
+                        // One BODY stopped making byte progress. Replace the
+                        // wedged socket so the caller can retry the unresolved
+                        // segment, but keep this breaker-neutral: a single stale
+                        // connection is not evidence that the provider is down.
+                        connectionLock.Replace();
+                        throw;
                     }
                     catch (Exception e) when (!e.IsCancellationException())
                     {

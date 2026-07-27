@@ -12,6 +12,7 @@ internal static class ConfigUpdateValidator
     private static readonly HashSet<string> OptionalIntegerSettings =
     [
         "usenet.max-queue-connections",
+        "usenet.playback-reserved-connections",
         "usenet.warm-validation-concurrency",
     ];
 
@@ -99,9 +100,12 @@ internal static class ConfigUpdateValidator
                 Invalid("Every Usenet provider needs a username and password.");
             if (p.MaxConnections is < 1 or > 1024)
                 Invalid("Usenet provider connections must be between 1 and 1024.");
-            if (p.PipeliningDepth is not null and (< 1 or > 64)
-                || p.HealthPipeliningDepth is not null and (< 1 or > 64))
-                Invalid("Usenet provider pipeline depths must be between 1 and 64.");
+            if (p.PipeliningDepth is not null
+                    and (< 1 or > UsenetProviderConfig.MaximumPipeliningDepth)
+                || p.HealthPipeliningDepth is not null
+                    and (< 1 or > UsenetProviderConfig.MaximumPipeliningDepth))
+                Invalid(
+                    $"Usenet provider pipeline depths must be between 1 and {UsenetProviderConfig.MaximumPipeliningDepth}.");
             if (p.ByteLimit is < 0) Invalid("A Usenet provider data cap cannot be negative.");
         }
     }

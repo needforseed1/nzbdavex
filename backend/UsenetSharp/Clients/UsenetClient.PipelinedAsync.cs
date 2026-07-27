@@ -165,6 +165,14 @@ public partial class UsenetClient
         IReadOnlyList<SegmentId> segmentIds,
         int depth,
         CancellationToken cancellationToken
+    ) => BodyPipelinedAsync(segmentIds, depth, bodyReadInactivityTimeout: null, cancellationToken);
+
+    public IAsyncEnumerable<UsenetBodyResponse> BodyPipelinedAsync
+    (
+        IReadOnlyList<SegmentId> segmentIds,
+        int depth,
+        TimeSpan? bodyReadInactivityTimeout,
+        CancellationToken cancellationToken
     )
     {
         return RunPipelinedAsync(
@@ -175,7 +183,7 @@ public partial class UsenetClient
             {
                 Stream? body = null;
                 if (code == (int)UsenetResponseType.ArticleRetrievedBodyFollows)
-                    body = await ReadBodyToBufferAsync(ct);
+                    body = await ReadBodyToBufferAsync(ct, bodyReadInactivityTimeout);
                 return new UsenetBodyResponse
                 {
                     SegmentId = segmentId,
@@ -206,7 +214,7 @@ public partial class UsenetClient
                 if (code == (int)UsenetResponseType.ArticleRetrievedHeadAndBodyFollow)
                 {
                     headers = await ParseArticleHeadersAsync(ct);
-                    body = await ReadBodyToBufferAsync(ct);
+                    body = await ReadBodyToBufferAsync(ct, bodyReadInactivityTimeout: null);
                 }
 
                 return new UsenetArticleResponse
@@ -277,7 +285,9 @@ public partial class UsenetClient
         }
     }
 
-    private async Task<MemoryStream> ReadBodyToBufferAsync(CancellationToken cancellationToken)
+    private async Task<MemoryStream> ReadBodyToBufferAsync(
+        CancellationToken cancellationToken,
+        TimeSpan? bodyReadInactivityTimeout)
     {
         var buffer = new MemoryStream();
         var scratch = ArrayPool<byte>.Shared.Rent(8192);
@@ -285,7 +295,10 @@ public partial class UsenetClient
         {
             while (true)
             {
-                var line = await ReadLineAsync(cancellationToken);
+                var line = bodyReadInactivityTimeout is null
+                    ? await ReadLineAsync(cancellationToken)
+                    : await ReadLineWithInactivityDeadlineAsync(
+                        bodyReadInactivityTimeout.Value, buffer.Length, cancellationToken);
                 if (line == null) break;
                 if (line == ".") break;
 
@@ -313,5 +326,27 @@ public partial class UsenetClient
 
         buffer.Position = 0;
         return buffer;
+    }
+
+    private async ValueTask<string?> ReadLineWithInactivityDeadlineAsync(
+        TimeSpan inactivityTimeout,
+        long transferredBytes,
+        CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(inactivityTimeout);
+        try
+        {
+            return await ReadLineAsync(deadline.Token);
+        }
+        catch (OperationCanceledException e) when (
+            deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ReadInactivityTimeoutException(
+                $"The pipelined article body delivered no bytes for " +
+                $"{inactivityTimeout.TotalSeconds:0.###} seconds.",
+                e,
+                transferredBytes);
+        }
     }
 }

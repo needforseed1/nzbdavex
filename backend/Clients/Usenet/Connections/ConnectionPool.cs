@@ -40,6 +40,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     internal int MinimumIdleConnections => _minimumIdleConnections;
     internal int MinimumWarmConnections => _minimumWarmConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
+    public int LowPriorityConnectionLimit => _gate.GetAllowedCount(SemaphorePriority.Low);
+    public int GetAvailableConnections(SemaphorePriority priority) =>
+        _gate.GetAvailableCount(priority);
     public int PendingAcquisitions => Volatile.Read(ref _pendingAcquisitions);
     public bool CapacityUnavailable => Volatile.Read(ref _capacityUnavailable) == 1;
 
@@ -105,7 +108,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         Action<int, Exception>? onConnectionCapacityReduced = null,
         Action<int, int, bool>? onWarmFloorStateChanged = null,
         ConnectionLifetimeBudget? connectionBudget = null,
-        bool useRecoveryCapacity = false)
+        bool useRecoveryCapacity = false,
+        int highPriorityReserve = 0)
     {
         if (maxConnections <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxConnections));
@@ -120,6 +124,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(warmConnectionRefreshInterval));
         if (warmMaintenanceRetryInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(warmMaintenanceRetryInterval));
+        if (highPriorityReserve < 0 || highPriorityReserve >= maxConnections)
+            throw new ArgumentOutOfRangeException(nameof(highPriorityReserve));
 
         _factory = connectionFactory
                    ?? throw new ArgumentNullException(nameof(connectionFactory));
@@ -139,7 +145,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
         _maxConnections = maxConnections;
         _effectiveMaxConnections = maxConnections;
-        _gate = new PrioritizedSemaphore(maxConnections, maxConnections);
+        _gate = new PrioritizedSemaphore(
+            maxConnections,
+            maxConnections,
+            highPriorityReserve: highPriorityReserve);
         _creationGate = new SemaphoreSlim(
             Math.Min(maxConnections, ConcurrentConnectionCreationLimit),
             Math.Min(maxConnections, ConcurrentConnectionCreationLimit));
@@ -149,9 +158,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     /* ============================== public API ==================================== */
 
     /// <summary>
-    /// Borrow a connection while reserving capacity for higher-priority callers.
-    /// Waits until at least (`reservedCount` + 1) slots are free before acquiring one,
-    /// ensuring that after acquisition at least `reservedCount` remain available.
+    /// Borrow a connection. Low-priority callers are admitted only through the
+    /// pool's non-reserved capacity; high-priority callers may use the full pool.
     /// </summary>
     public async Task<ConnectionLock<T>> GetConnectionLockAsync
     (

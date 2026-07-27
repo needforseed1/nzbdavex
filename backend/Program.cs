@@ -122,6 +122,7 @@ class Program
             .AddHostedService<LogBroadcaster>()
             .AddSingleton<ProviderUsageTracker>()
             .AddSingleton<ActiveReadRegistry>()
+            .AddSingleton<PlaybackSessionStats>()
             .AddSingleton<QueueItemSourceTracker>()
             .AddSingleton<UsenetStreamingClient>()
             .AddSingleton<NzbWebDAV.Services.LazyRarResolver>()

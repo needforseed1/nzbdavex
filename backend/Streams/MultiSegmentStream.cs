@@ -13,7 +13,7 @@ namespace NzbWebDAV.Streams;
 
 public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 {
-    private const int MaxBodyRetries = 2;
+    internal const int MaxBodyRetries = 2;
 
     private readonly Memory<string> _segmentIds;
     private readonly INntpClient _usenetClient;
@@ -154,14 +154,14 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
 
                 return ZeroFillSegment(
                     "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
-                    e.SegmentId);
+                    e.SegmentId,
+                    e);
             }
             catch (Exception e) when (!cancellationToken.IsCancellationRequested)
             {
                 if (attempt < MaxBodyRetries)
                 {
-                    Log.Debug(e, "Transient failure fetching segment {SegmentId} (attempt {Attempt}). Retrying.",
-                        segmentId, attempt + 1);
+                    ReportRetry(segmentId, e, attempt + 1);
                     await Task.Delay(TimeSpan.FromMilliseconds(250 * (attempt + 1)), cancellationToken)
                         .ConfigureAwait(false);
                     continue;
@@ -236,9 +236,12 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             catch (Exception e) when (!cancellationToken.IsCancellationRequested)
             {
                 if (_failFastOnFirstSegment && isFirstSegment) throw;
-                return ZeroFillSegment(
-                    "Segment {SegmentId} failed to materialize. Zero-filling {Bytes} bytes to keep playback alive.",
-                    result.SegmentId, e);
+                // A body that started and then broke — a wedged socket, or a part
+                // that decoded short — is refetchable. Substituting zeros on the
+                // first failure corrupts the file for a fault the sequential path
+                // routinely recovers from on the next attempt.
+                return await RefetchSegmentAsync(result.SegmentId, e, cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -250,11 +253,88 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             result.SegmentId);
     }
 
+    /// <summary>
+    /// Fetches a segment again outside the pipeline after its pipelined body
+    /// failed to materialize, giving it the same retry budget the sequential
+    /// path has before any zeros are served.
+    /// </summary>
+    private async Task<Stream> RefetchSegmentAsync(
+        string segmentId,
+        Exception cause,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= MaxBodyRetries; attempt++)
+        {
+            ReportRetry(segmentId, cause, attempt);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), cancellationToken)
+                    .ConfigureAwait(false);
+                var response = await _usenetClient
+                    .DecodedBodyAsync(segmentId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (response.Stream is null)
+                    return ZeroFillSegment(
+                        "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
+                        segmentId);
+                return await DrainSegmentAsync(response.Stream, cancellationToken).ConfigureAwait(false);
+            }
+            catch (UsenetArticleNotFoundException e)
+            {
+                return ZeroFillSegment(
+                    "Article {SegmentId} missing on all providers. Zero-filling {Bytes} bytes to keep playback alive.",
+                    segmentId,
+                    e);
+            }
+            catch (Exception e) when (!cancellationToken.IsCancellationRequested)
+            {
+                cause = e;
+            }
+        }
+
+        return ZeroFillSegment(
+            "Segment {SegmentId} failed to materialize. Zero-filling {Bytes} bytes to keep playback alive.",
+            segmentId, cause);
+    }
+
+    /// <summary>
+    /// A retry is the stream recovering from something. Silence here is how a
+    /// wedged provider socket becomes invisible the moment it heals, so the body
+    /// watchdog's catches are counted on the session rather than only logged.
+    /// </summary>
+    private void ReportRetry(string segmentId, Exception cause, int attempt)
+    {
+        if (cause is BodyProgressStalledException stalled)
+        {
+            _playbackDiagnostics?.RecordBodyStallRecovery(
+                stalled.ProviderId,
+                stalled.ProviderHost,
+                segmentId,
+                stalled.TransferredBytes,
+                attempt);
+            if (_playbackDiagnostics is null)
+                Log.Debug(cause, "Body for segment {SegmentId} stalled (attempt {Attempt}). Refetching.",
+                    segmentId, attempt);
+            return;
+        }
+
+        Log.Debug(cause, "Transient failure fetching segment {SegmentId} (attempt {Attempt}). Retrying.",
+            segmentId, attempt);
+    }
+
     private Stream ZeroFillSegment(string messageTemplate, string segmentId, Exception? exception = null)
     {
         var fill = _expectedSegmentSize > 0 ? _expectedSegmentSize : 1;
-        if (exception == null) Log.Warning(messageTemplate, segmentId, fill);
-        else Log.Warning(exception, messageTemplate, segmentId, fill);
+        if (_playbackDiagnostics is not null)
+        {
+            // One structured Warning is enough. Logging here as well would emit
+            // two warnings for every missing article.
+            _playbackDiagnostics.RecordZeroFill(segmentId, fill, exception);
+        }
+        else if (exception == null)
+            Log.Warning(messageTemplate, segmentId, fill);
+        else
+            Log.Warning(exception, messageTemplate, segmentId, fill);
         return new MemoryStream(new byte[fill], writable: false);
     }
 

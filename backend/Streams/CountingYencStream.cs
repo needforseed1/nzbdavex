@@ -35,6 +35,11 @@ public sealed class CountingYencStream : YencStream
     public override ValueTask<UsenetYencHeader?> GetYencHeadersAsync(CancellationToken cancellationToken = default)
         => _inner.GetYencHeadersAsync(cancellationToken);
 
+    public override void ArmReadInactivityWatchdog(TimeSpan inactivity) =>
+        _inner.ArmReadInactivityWatchdog(inactivity);
+
+    public override long DecodedBytes => _inner.DecodedBytes;
+
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         var start = Stopwatch.GetTimestamp();

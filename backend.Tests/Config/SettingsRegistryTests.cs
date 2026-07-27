@@ -8,6 +8,10 @@ public class SettingsRegistryTests
     public void RegistryDescribesValidationRules()
     {
         Assert.Equal("false", SettingsRegistry.Defaults["usenet.segment-cache.enabled"]);
+        Assert.Equal("", SettingsRegistry.Defaults["usenet.playback-reserved-connections"]);
+        Assert.Equal((0, 512), SettingsRegistry.Ranges["usenet.playback-reserved-connections"]);
+        Assert.Equal((1, 128), SettingsRegistry.Ranges["usenet.pipelining.depth"]);
+        Assert.Equal((1, 128), SettingsRegistry.Ranges["usenet.pipelining.health.depth"]);
         Assert.Equal((1, 100000), SettingsRegistry.Ranges["watchtower.active-set-cap"]);
         Assert.Contains("strm", SettingsRegistry.Choices["api.import-strategy"]);
     }
@@ -30,7 +34,8 @@ public class SettingsRegistryTests
         var numericKeys = SettingsRegistry.Defaults
             .Where(x => long.TryParse(x.Value, out _))
             .Select(x => x.Key)
-            .Append("usenet.max-queue-connections");
+            .Append("usenet.max-queue-connections")
+            .Append("usenet.playback-reserved-connections");
 
         foreach (var key in numericKeys)
             Assert.True(SettingsRegistry.Ranges.ContainsKey(key), $"Missing range for {key}");

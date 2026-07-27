@@ -240,6 +240,16 @@ public class ConfigManager
         return GetInteger("usenet.max-download-connections", defaultValue, 1, int.MaxValue);
     }
 
+    public int GetPlaybackReservedConnections()
+    {
+        var requested = GetInteger(
+            "usenet.playback-reserved-connections",
+            20,
+            0,
+            UsenetStreamingClient.ApplicationConnectionLimit);
+        return Math.Min(requested, GetUsenetProviderConfig().PlaybackReservableConnections);
+    }
+
     public int GetMaxQueueConnections()
     {
         var pool = Math.Max(1, GetUsenetProviderConfig().TotalPooledConnections);
@@ -304,14 +314,14 @@ public class ConfigManager
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.depth"));
         if (configured is null || !int.TryParse(configured, out var value)) return 8;
-        return Math.Clamp(value, 1, 64);
+        return Math.Clamp(value, 1, UsenetProviderConfig.MaximumPipeliningDepth);
     }
 
     public int GetHealthPipeliningDepth()
     {
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.pipelining.health.depth"));
         if (configured is null || !int.TryParse(configured, out var value)) return 32;
-        return Math.Clamp(value, 1, 64);
+        return Math.Clamp(value, 1, UsenetProviderConfig.MaximumPipeliningDepth);
     }
 
     public int GetHealthPipeliningLanes()

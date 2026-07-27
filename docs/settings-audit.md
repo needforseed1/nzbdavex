@@ -30,13 +30,14 @@ Verdicts used below:
 |---|---|---|
 | `usenet.providers`: Host, Port, User, Pass, SSL, MaxConnections, Type/role, PrepOnly | **Fixed** | Structural validation now covers host, port 1–65535, credentials, enum role, and connection count 1–1024. Test/benchmark responses can no longer approve credentials edited while the request was in flight. Unknown JSON fields survive edits. |
 | Provider `Nickname`, `Priority`, drag ordering, enable/disable | **Fixed** | Persistent UUIDs now anchor React/DnD identity, live connection snapshots, usage joins and reordering independently of host or array position. |
-| Provider `PipeliningDepth`, `HealthPipeliningDepth` | **Fixed** | Optional overrides are restricted to 1–64 in UI and backend payload validation. |
+| Provider `PipeliningDepth`, `HealthPipeliningDepth` | **Fixed** | Optional overrides are restricted to 1–128 in UI and backend payload validation. |
 | Provider `PrepSpreadEnabled` | **Fixed / missing UI** | The stored flag was ignored by provider selection; it now controls first-choice prep spreading and is preserved by edits. It should be exposed under provider advanced settings or deliberately removed after migration. |
 | Provider `ByteLimit`, `BytesUsedOffset`, `BytesUsedResetAt` | **Fixed with limitation** | UUID-keyed accounting isolates multiple accounts on one host. Legacy host history remains readable, and usage is seeded before pools become available. Existing-account offset adjustment is still missing from the UI. |
 | `usenet.cascade.enabled` | **Working** | Ordered vs balanced routing is wired. Low-priority prep spreading intentionally has separate selection behavior. |
-| `usenet.pipelining.playback.enabled`, `usenet.pipelining.depth` | **Working / validated** | Runtime and per-provider fallback are wired; depth is 1–64. |
-| `usenet.pipelining.health.enabled`, `.health.depth`, `.health.lanes` | **Working / validated** | Health depth is 1–64; lanes are 1–1024 and then bounded by available eligible connections, now stated in the UI. |
+| `usenet.pipelining.playback.enabled`, `usenet.pipelining.depth` | **Working / validated** | Runtime and per-provider fallback are wired; depth is 1–128. |
+| `usenet.pipelining.health.enabled`, `.health.depth`, `.health.lanes` | **Working / validated** | Health depth is 1–128; lanes are 1–1024 and then bounded by available eligible connections, now stated in the UI. |
 | `usenet.max-download-connections` | **Working** | Controls the playback-side concurrency budget. Actual provider capacity remains the physical ceiling. |
+| `usenet.playback-reserved-connections` | **Working** | Keeps physical provider capacity available to playback when prep and health work are busy. Blank uses Automatic (up to 20); explicit values support 0–512 and are safely capped to current playback-capable provider capacity. |
 | `usenet.max-queue-connections` | **Fixed** | Blank directly means Automatic and follows pooled capacity; there is no redundant enable toggle. An explicit limit is validated against current pooled capacity instead of being silently clamped. |
 | `usenet.streaming-priority` | **Working / validated** | Integer 0–100 controls playback-vs-prep semaphore odds. |
 | `usenet.article-buffer-size` | **Working** | Positive article look-ahead value is consumed by stream buffering. A very high value is allowed; a memory-based upper-bound policy may be worth adding. |

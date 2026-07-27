@@ -1,6 +1,7 @@
 using System.IO.Pipelines;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace UsenetSharp.Clients;
@@ -55,9 +56,12 @@ public partial class UsenetClient
 
                 // Start background task to read the body and write to pipe
                 isReadBodyToPipeAsyncStarted = true;
-                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, articleBodyResult =>
+                _ = ReadBodyToPipeAsync(pipe.Writer, operationToken, (articleBodyResult, failure) =>
                 {
-                    pipe.Writer.Complete();
+                    // Complete with the failure so the reader sees a fault instead of
+                    // an ordinary EOF. A silent EOF would hand the caller a truncated
+                    // body that looks successful, shifting every later byte of the file.
+                    pipe.Writer.Complete(failure);
                     _commandLock.Release();
                     onConnectionReadyAgain?.Invoke(articleBodyResult);
                     operationCts.Dispose();
@@ -95,14 +99,16 @@ public partial class UsenetClient
     private async Task ReadBodyToPipeAsync(
         PipeWriter writer,
         CancellationToken cancellationToken,
-        Action<ArticleBodyResult> onFinally)
+        Action<ArticleBodyResult, Exception?> onFinally)
     {
         var completed = false;
+        Exception? failure = null;
         try
         {
             if (_reader == null)
             {
-                await writer.CompleteAsync();
+                failure = new UsenetNotConnectedException(
+                    "The connection was closed before its body could be read.");
                 return;
             }
 
@@ -115,7 +121,10 @@ public partial class UsenetClient
 
                 if (line == null)
                 {
-                    // End of stream
+                    // The server closed the socket before sending the terminating
+                    // dot, so whatever reached the pipe is an incomplete body.
+                    failure = new UsenetProtocolException(
+                        "The connection ended before the article body was complete.");
                     break;
                 }
 
@@ -151,9 +160,14 @@ public partial class UsenetClient
                     shouldWrite = false;
                 }
             }
+
+            if (!completed && failure == null)
+                failure = new OperationCanceledException(
+                    "The article body was cancelled before it was complete.", cancellationToken);
         }
         catch (Exception e)
         {
+            failure = e;
             lock (this)
             {
                 _backgroundException = ExceptionDispatchInfo.Capture(e);
@@ -161,7 +175,9 @@ public partial class UsenetClient
         }
         finally
         {
-            onFinally.Invoke(completed ? ArticleBodyResult.Retrieved : ArticleBodyResult.NotRetrieved);
+            onFinally.Invoke(
+                completed ? ArticleBodyResult.Retrieved : ArticleBodyResult.NotRetrieved,
+                completed ? null : failure);
         }
     }
 }
