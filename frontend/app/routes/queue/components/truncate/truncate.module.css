@@ -1,5 +1,6 @@
 .truncate {
-    word-break: break-all;
+    word-break: break-word;
+    overflow-wrap: anywhere;
     line-clamp: 1;
     -webkit-line-clamp: 1;
     -webkit-box-orient: vertical;
@@ -9,11 +10,14 @@
     white-space: initial;
 }
 
-/* mobile */
+/* mobile: the row has no other columns competing for width, so show the whole
+   release name rather than clamping it. */
 @media not (min-width: 900px) {
     .truncate {
-        line-clamp: 10;
-        -webkit-line-clamp: 10;
+        display: block;
+        overflow: visible;
+        line-clamp: none;
+        -webkit-line-clamp: none;
     }
 }
 

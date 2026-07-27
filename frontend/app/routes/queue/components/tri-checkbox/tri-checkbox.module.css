@@ -10,3 +10,16 @@
     min-width: 45px;
     text-align: center;
 }
+
+/* mobile: 45px of gutter is a lot of a 360px row */
+@media not (min-width: 900px) {
+    .container {
+        align-items: flex-start;
+    }
+
+    .checkbox {
+        width: 30px;
+        min-width: 30px;
+        text-align: left;
+    }
+}

@@ -133,14 +133,6 @@
     border-bottom: none;
 }
 
-.badges {
-    display: flex;
-    flex-wrap: wrap;
-    margin-top: 3px;
-    margin-bottom: 5px;
-    gap: 10px;
-}
-
 .categoryBadge {
     display: inline-block;
     line-height: 1;
@@ -243,11 +235,59 @@
     }
 
     .mobile {
-        display: block;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        margin-top: 6px;
+    }
+
+    /* Size, category and indexer as dot-separated text: three bordered chips
+       for three short values was most of the row's height. */
+    .mobileFacts {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0 6px;
+        min-width: 0;
+        color: var(--text-muted);
+        font-size: 11px;
+    }
+
+    .mobileFacts > span + span::before {
+        content: "·";
+        margin-right: 6px;
+        color: var(--text-faint);
+    }
+
+    .mobileActions {
+        display: inline-flex;
+        align-items: center;
+        margin-left: auto;
     }
 
     .table thead tr th:first-child {
         width: unset;
+    }
+
+    /* Row padding was tuned for the desktop grid; on a phone it just eats
+       width that the filename needs. */
+    .table tbody td {
+        padding: 11px 4px;
+    }
+
+    .table tbody td:first-child {
+        padding-left: 12px;
+    }
+
+    /* Name is the only remaining column, so it runs edge to edge. */
+    .table tbody td:first-child,
+    .table thead th:first-child {
+        padding-right: 12px;
+    }
+
+    .table thead th:first-child {
+        padding-left: 12px;
     }
 
     /* Mobile collapses to a single Name+Actions layout — no need for the
@@ -269,13 +309,9 @@
         white-space: normal;
     }
 
-}
-
-/* really skinny devices */
-@media not (min-width: 410px) {
+    /* Keep the delete button beside the row rather than stacked below it. */
     .actions {
-        flex-direction: column;
-        align-items: end;
-        margin-right: 20px;
+        justify-content: flex-end;
+        gap: 6px;
     }
 }

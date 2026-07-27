@@ -3,6 +3,9 @@ declare const styles: {
   readonly "queueContainer": string;
   readonly "section": string;
   readonly "sectionTitle": string;
+  readonly "categoryControl": string;
+  readonly "categoryLabel": string;
+  readonly "uploadButton": string;
   readonly "historyCategoryControl": string;
   readonly "historyCategoryFilter": string;
   readonly "tableFooter": string;

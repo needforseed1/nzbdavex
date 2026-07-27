@@ -6,15 +6,10 @@
     font-size: 14px;
 }
 
+/* Was 382.9px (413.9px on narrow screens) to reserve room for the old
+   full-height empty state; the strip that replaced it needs no floor. */
 .queueContainer {
-    min-height: 382.9px;
     margin-bottom: 40px;
-}
-
-@media not (min-width: 450px) {
-    .queueContainer {
-        min-height: 413.9px;
-    }
 }
 
 .section {
@@ -34,6 +29,70 @@
         font-weight: 600;
         letter-spacing: -0.02em;
     }
+}
+
+/* Reads as a control: bordered, filled, with a static label naming what the
+   value means. Previously a bare word with a caret, easy to miss. */
+.categoryControl {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px 4px 9px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 120ms ease;
+}
+
+.categoryControl:hover {
+    border-color: var(--accent);
+}
+
+.categoryLabel {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.uploadButton {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+
+.uploadButton svg {
+    width: 13px;
+    height: 13px;
+}
+
+/* mobile: the word carries it; the glyph is just noise in the header */
+@media not (min-width: 900px) {
+    .uploadButton svg {
+        display: none;
+    }
+}
+
+.uploadButton:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.uploadButton:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .historyCategoryControl {

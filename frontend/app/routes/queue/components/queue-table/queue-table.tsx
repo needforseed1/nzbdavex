@@ -9,8 +9,6 @@ import { Pagination } from "../pagination/pagination"
 import { EmptyQueue } from "../empty-queue/empty-queue"
 import { SimpleDropdown } from "../simple-dropdown/simple-dropdown"
 import styles from "../../route.module.css"
-import { WideViewport } from "../wide-viewport/wide-viewport"
-import { ThinViewport } from "../thin-viewport/thin-viewport"
 
 export type QueueTableProps = {
     queueSlots: PresentationQueueSlot[],
@@ -103,31 +101,35 @@ export function QueueTable({
 
     // view
     const categoryDropdown = useMemo(() => (
-        <div title="Choose the category for manual nzb uploads.">
+        <div
+            className={styles.categoryControl}
+            title="Choose the category for manual nzb uploads.">
+            <span className={styles.categoryLabel}>Category</span>
             <SimpleDropdown options={categories} valueRef={manualCategoryRef} />
         </div>
     ), [categories]);
 
     const sectionTitle = (
         <div className={styles.sectionTitle}>
-            <h3 onClick={onUploadClicked} style={{ cursor: 'pointer' }}>
-                Queue
-            </h3>
+            <h3>Queue</h3>
+            {categoryDropdown}
+            {/* Uploading used to be reachable only by dropping a file or by
+                clicking the heading, which nothing advertised. */}
+            {queueSlots.length > 0 &&
+                <button type="button" className={styles.uploadButton} onClick={onUploadClicked}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M12 15V4" />
+                        <path d="m8 8 4-4 4 4" />
+                        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+                    </svg>
+                    Upload
+                </button>
+            }
             {headerCheckboxState !== 'none' &&
                 <ActionButton type="delete" onClick={onRemove} />
             }
-            <WideViewport width="450px">
-                <div style={{ marginLeft: '10px' }}>
-                    {categoryDropdown}
-                </div>
-            </WideViewport>
         </div>
-    );
-
-    const sectionSubTitle = (
-        <ThinViewport width="450px">
-            {categoryDropdown}
-        </ThinViewport>
     );
 
     const footer = totalPages > 1 ? (
@@ -138,7 +140,7 @@ export function QueueTable({
     ) : undefined;
 
     return (
-        <PageSection title={sectionTitle} subTitle={sectionSubTitle}>
+        <PageSection title={sectionTitle}>
             {queueSlots?.length == 0 ? (
                 <EmptyQueue onUploadClicked={onUploadClicked} />
             ) : (

@@ -33,7 +33,7 @@ export function PageTable({ children, headerCheckboxState, onHeaderCheckboxChang
                         <th className={styles.desktop}>Provider</th>
                         <th className={styles.desktop}>Status</th>
                         <th className={styles.desktop}>Size</th>
-                        <th>Actions</th>
+                        <th className={styles.desktop}>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -74,14 +74,21 @@ export function PageRow(props: PageRowProps) {
             <td>
                 <TriCheckbox state={props.isSelected} onChange={props.onRowSelectionChanged}>
                     <Truncate>{props.name}</Truncate>
+                    {/* One meta line: status carries the progress, everything
+                        else is plain muted text rather than a stack of chips. */}
                     <div className={styles.mobile}>
-                        <div className={styles.badges}>
-                            <QueueStatus {...props} />
-                            <CategoryBadge category={props.category} />
-                            {props.indexer && <IndexerBadge indexer={props.indexer} />}
-                            {props.providers && props.providers.length > 0 && <ProvidersBadge providers={props.providers} />}
-                        </div>
-                        <div>{formatFileSize(props.fileSizeBytes)}</div>
+                        <QueueStatus {...props} />
+                        <span className={styles.mobileFacts}>
+                            <span>{formatFileSize(props.fileSizeBytes)}</span>
+                            <span>{props.category?.toLowerCase()}</span>
+                            {props.indexer && <span>via {props.indexer}</span>}
+                        </span>
+                        {props.providers && props.providers.length > 0 &&
+                            <ProvidersBadge providers={props.providers} />
+                        }
+                        {/* Sits at the end of the meta line instead of claiming
+                            a column, so the filename gets the full row width. */}
+                        <span className={styles.mobileActions}>{props.actions}</span>
                     </div>
                 </TriCheckbox>
             </td>
@@ -102,7 +109,7 @@ export function PageRow(props: PageRowProps) {
             <td className={styles.desktop}>
                 {formatFileSize(props.fileSizeBytes)}
             </td>
-            <td>
+            <td className={styles.desktop}>
                 <div className={styles.actions}>
                     {props.actions}
                 </div>
