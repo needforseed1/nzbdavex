@@ -70,29 +70,73 @@ public class HealthPipeliningTests
         await check;
     }
 
+    [Fact]
+    public async Task LaneAdmissionPausesExcessLanesBetweenBatches()
+    {
+        var client = new LaneCountingClient(
+            initialLaneTarget: 4,
+            retirementInitialWaveSize: 4);
+        var segments = Enumerable.Range(0, 200).Select(x => $"segment-{x}").ToArray();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        var check = client.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 1, fallbackConcurrency: 4, progress: null, timeout.Token);
+
+        while (client.StartedLanes < 4)
+            await Task.Delay(5, timeout.Token);
+
+        client.SetLaneTarget(2);
+        client.ReleaseInitialWave();
+
+        while (client.SecondWaveStarted < 2)
+            await Task.Delay(5, timeout.Token);
+        await Task.Delay(25, timeout.Token);
+
+        Assert.Equal(2, client.SecondWaveStarted);
+        Assert.Equal(2, client.SecondWaveActive);
+
+        client.ReleaseLanes();
+        await check;
+    }
+
     private sealed class LaneCountingClient : NntpClient
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondWaveRelease =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly bool _blockFirstLaneOnly;
+        private readonly int _retirementInitialWaveSize;
         private int _activeLanes;
         private int _startedLanes;
         private int _maxConcurrentLanes;
         private int _processedSegments;
         private int _laneTarget;
+        private int _secondWaveStarted;
+        private int _secondWaveActive;
 
         public LaneCountingClient(
             bool blockFirstLaneOnly = false,
-            int initialLaneTarget = int.MaxValue)
+            int initialLaneTarget = int.MaxValue,
+            int retirementInitialWaveSize = 0)
         {
             _blockFirstLaneOnly = blockFirstLaneOnly;
             _laneTarget = initialLaneTarget;
+            _retirementInitialWaveSize = retirementInitialWaveSize;
         }
 
         public int StartedLanes => Volatile.Read(ref _startedLanes);
         public int MaxConcurrentLanes => Volatile.Read(ref _maxConcurrentLanes);
         public int ProcessedSegments => Volatile.Read(ref _processedSegments);
+        public int SecondWaveStarted => Volatile.Read(ref _secondWaveStarted);
+        public int SecondWaveActive => Volatile.Read(ref _secondWaveActive);
 
-        public void ReleaseLanes() => _release.TrySetResult();
+        public void ReleaseInitialWave() => _release.TrySetResult();
+        public void ReleaseLanes()
+        {
+            _release.TrySetResult();
+            _secondWaveRelease.TrySetResult();
+        }
+
         public void SetLaneTarget(int target) => Volatile.Write(ref _laneTarget, target);
 
         protected override int GetPipelinedStatLaneTarget(int requestedLanes) =>
@@ -108,7 +152,20 @@ public class HealthPipeliningTests
             UpdateMaximum(active);
             try
             {
-                if (!_blockFirstLaneOnly || started == 1)
+                if (_retirementInitialWaveSize > 0 && started > _retirementInitialWaveSize)
+                {
+                    Interlocked.Increment(ref _secondWaveStarted);
+                    Interlocked.Increment(ref _secondWaveActive);
+                    try
+                    {
+                        await _secondWaveRelease.Task.WaitAsync(cancellationToken);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _secondWaveActive);
+                    }
+                }
+                else if (!_blockFirstLaneOnly || started == 1)
                     await _release.Task.WaitAsync(cancellationToken);
                 foreach (var segmentId in segmentIds)
                 {

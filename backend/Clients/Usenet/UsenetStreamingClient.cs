@@ -40,17 +40,6 @@ public class UsenetStreamingClient : WrappingNntpClient
     internal static readonly TimeSpan ConnectionSetupTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
 
-    /// <summary>
-    /// Bounds the silence between responses within one pipelined health STAT
-    /// batch. A provider that stops answering mid-batch is otherwise only
-    /// noticed when it eventually closes the socket, which leaves the last few
-    /// articles of a check outstanding for seconds while every other lane has
-    /// finished. Healthy lanes answer in tens of milliseconds, so this only
-    /// rotates sockets that have genuinely stalled. The absolute command window
-    /// still applies on top of it.
-    /// </summary>
-    private static readonly TimeSpan PipelinedStatResponseInactivityTimeout =
-        TimeSpan.FromSeconds(2);
     private static readonly WarmConnectionTimings DefaultWarmConnectionTimings =
         new(TimeSpan.FromSeconds(45), TimeSpan.FromSeconds(30));
     private static readonly ConnectionLifetimeBudget ConnectionBudget = new(
@@ -263,8 +252,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
             cascadeEnabled: configManager.IsCascadeEnabled,
             warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget,
-            connectionBudget: ConnectionBudget,
-            pipelinedStatResponseInactivityTimeout: PipelinedStatResponseInactivityTimeout);
+            connectionBudget: ConnectionBudget);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient

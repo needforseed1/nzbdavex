@@ -65,4 +65,51 @@ public class BulkStatProviderSelectionTests
         Assert.Equal(1, snapshot.ProviderFaults);
         Assert.Equal(1, stats.ProviderFaultCount);
     }
+
+    [Fact]
+    public void RepeatedPartialStallsReduceLaneCapacityInSteps()
+    {
+        var backoff = new MultiProviderNntpClient.BulkStatLaneBackoff();
+
+        var first = backoff.Observe(64, Snapshot(batches: 400, failures: 4));
+        var duplicate = backoff.Observe(64, Snapshot(batches: 400, failures: 4));
+        var second = backoff.Observe(64, Snapshot(batches: 800, failures: 8));
+
+        Assert.NotNull(first);
+        Assert.Equal(64, first.Value.PreviousLimit);
+        Assert.Equal(48, first.Value.NewLimit);
+        Assert.Null(duplicate);
+        Assert.NotNull(second);
+        Assert.Equal(48, second.Value.PreviousLimit);
+        Assert.Equal(36, second.Value.NewLimit);
+        Assert.Equal(36, backoff.LaneLimit);
+    }
+
+    [Fact]
+    public void SparseStallsAndProviderFaultsDoNotReduceLaneCapacity()
+    {
+        var backoff = new MultiProviderNntpClient.BulkStatLaneBackoff();
+
+        var sparse = backoff.Observe(64, Snapshot(batches: 1_000, failures: 4));
+        var providerFaults = backoff.Observe(
+            64, Snapshot(batches: 100, failures: 8, providerFaults: 8));
+
+        Assert.Null(sparse);
+        Assert.Null(providerFaults);
+        Assert.Null(backoff.LaneLimit);
+    }
+
+    private static MultiProviderNntpClient.BulkStatAttemptSnapshot Snapshot(
+        long batches,
+        long failures,
+        long providerFaults = 0) =>
+        new(
+            Batches: batches,
+            Attempted: batches * 64,
+            Received: batches * 64 - failures,
+            Found: batches * 64 - failures,
+            Missing: 0,
+            Failures: failures,
+            ElapsedMs: batches * 10,
+            ProviderFaults: providerFaults);
 }

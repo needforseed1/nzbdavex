@@ -54,7 +54,7 @@ public class BulkStatTransportTests
     }
 
     [Fact]
-    public async Task BulkStatYieldsEachResponseBeforeTheBatchCompletes()
+    public async Task BulkStatBuffersResponsesUntilTheBatchCompletes()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -72,12 +72,14 @@ public class BulkStatTransportTests
             .StatsPipelinedAsync(["a", "b"], 2, timeout.Token)
             .GetAsyncEnumerator(timeout.Token);
 
-        Assert.True(await results.MoveNextAsync());
+        var firstResult = results.MoveNextAsync().AsTask();
+        await Task.Delay(50, timeout.Token);
+        Assert.False(firstResult.IsCompleted);
+        releaseSecondResponse.TrySetResult();
+
+        Assert.True(await firstResult);
         Assert.Equal("a", results.Current.SegmentId);
         Assert.True(results.Current.Exists);
-        Assert.False(server.IsCompleted);
-
-        releaseSecondResponse.TrySetResult();
         Assert.True(await results.MoveNextAsync());
         Assert.Equal("b", results.Current.SegmentId);
         Assert.True(results.Current.Exists);
@@ -86,7 +88,7 @@ public class BulkStatTransportTests
     }
 
     [Fact]
-    public async Task AbandonedStreamingBatchCannotReuseConnectionWithUnreadReplies()
+    public async Task AbandonedBufferedBatchCanReuseConnectionAfterRepliesAreDrained()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -95,7 +97,8 @@ public class BulkStatTransportTests
         var releaseSecondResponse = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var server = RunIncrementalServerAsync(
-            listener, releaseSecondResponse.Task, timeout.Token);
+            listener, releaseSecondResponse.Task, timeout.Token,
+            expectLaterCommand: true);
 
         using var client = new BaseNntpClient();
         await client.ConnectAsync("127.0.0.1", port, false, timeout.Token);
@@ -104,12 +107,14 @@ public class BulkStatTransportTests
             .StatsPipelinedAsync(["a", "b"], 2, timeout.Token)
             .GetAsyncEnumerator(timeout.Token);
 
-        Assert.True(await results.MoveNextAsync());
-        await results.DisposeAsync();
+        var firstResult = results.MoveNextAsync().AsTask();
+        await Task.Delay(50, timeout.Token);
         releaseSecondResponse.TrySetResult();
+        Assert.True(await firstResult);
+        await results.DisposeAsync();
 
-        await Assert.ThrowsAsync<IOException>(
-            () => client.StatAsync("later-command", timeout.Token));
+        var later = await client.StatAsync("later-command", timeout.Token);
+        Assert.True(later.ArticleExists);
         await server;
     }
 
@@ -133,6 +138,67 @@ public class BulkStatTransportTests
         stopwatch.Stop();
 
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Cancellation took {stopwatch.Elapsed}.");
+        serverTimeout.Cancel();
+        await server;
+    }
+
+    [Fact]
+    public async Task BulkStatTimesOutWhenAResponseStalls()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var serverTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var server = RunStallingServerAsync(listener, ["a", "b"], serverTimeout.Token);
+
+        using var client = new BaseNntpClient();
+        await client.ConnectAsync("127.0.0.1", port, false, serverTimeout.Token);
+        await client.AuthenticateAsync("user", "pass", serverTimeout.Token);
+
+        var stopwatch = Stopwatch.StartNew();
+        var failure = await Assert.ThrowsAsync<UsenetPipelinedStatStalledException>(async () =>
+            await CollectAsync(client.StatsPipelinedAsync(["a", "b"], 2, serverTimeout.Token)));
+        stopwatch.Stop();
+
+        Assert.Equal(0, failure.ReceivedResponses);
+        Assert.InRange(
+            stopwatch.Elapsed,
+            TimeSpan.FromSeconds(1.5),
+            TimeSpan.FromSeconds(4));
+        serverTimeout.Cancel();
+        await server;
+    }
+
+    [Fact]
+    public async Task BulkStatYieldsCompletedResponsesBeforeReportingAStall()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var serverTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var server = RunPartiallyStallingServerAsync(listener, serverTimeout.Token);
+
+        using var client = new BaseNntpClient();
+        await client.ConnectAsync("127.0.0.1", port, false, serverTimeout.Token);
+        await client.AuthenticateAsync("user", "pass", serverTimeout.Token);
+        await using var results = client
+            .StatsPipelinedAsync(["a", "b"], 2, serverTimeout.Token)
+            .GetAsyncEnumerator(serverTimeout.Token);
+
+        var stopwatch = Stopwatch.StartNew();
+        Assert.True(await results.MoveNextAsync());
+        Assert.Equal("a", results.Current.SegmentId);
+        Assert.True(results.Current.Exists);
+
+        var failure = await Assert.ThrowsAsync<UsenetPipelinedStatStalledException>(
+            () => results.MoveNextAsync().AsTask());
+        stopwatch.Stop();
+
+        Assert.Equal(1, failure.ReceivedResponses);
+        Assert.InRange(
+            stopwatch.Elapsed,
+            TimeSpan.FromSeconds(1.5),
+            TimeSpan.FromSeconds(4));
         serverTimeout.Cancel();
         await server;
     }
@@ -161,7 +227,8 @@ public class BulkStatTransportTests
     private static async Task RunIncrementalServerAsync(
         TcpListener listener,
         Task releaseSecondResponse,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool expectLaterCommand = false)
     {
         using var socket = await listener.AcceptTcpClientAsync(cancellationToken);
         await using var stream = socket.GetStream();
@@ -180,6 +247,11 @@ public class BulkStatTransportTests
         await writer.WriteLineAsync("223 0 <a>");
         await releaseSecondResponse.WaitAsync(cancellationToken);
         await writer.WriteLineAsync("223 0 <b>");
+        if (expectLaterCommand)
+        {
+            Assert.Equal("STAT <later-command>", await reader.ReadLineAsync(cancellationToken));
+            await writer.WriteLineAsync("223 0 <later-command>");
+        }
     }
 
     private static async Task RunStallingServerAsync(
@@ -199,6 +271,33 @@ public class BulkStatTransportTests
             await writer.WriteLineAsync("281 authenticated");
             foreach (var expectedId in expectedIds)
                 Assert.Equal($"STAT <{expectedId}>", await reader.ReadLineAsync(cancellationToken));
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task RunPartiallyStallingServerAsync(
+        TcpListener listener,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var socket = await listener.AcceptTcpClientAsync(cancellationToken);
+            await using var stream = socket.GetStream();
+            using var reader = new StreamReader(stream, Encoding.Latin1, leaveOpen: true);
+            await using var writer = new StreamWriter(stream, Encoding.Latin1, leaveOpen: true)
+            {
+                AutoFlush = true,
+            };
+
+            await writer.WriteLineAsync("200 ready");
+            Assert.StartsWith("AUTHINFO USER", await reader.ReadLineAsync(cancellationToken));
+            await writer.WriteLineAsync("281 authenticated");
+            Assert.Equal("STAT <a>", await reader.ReadLineAsync(cancellationToken));
+            Assert.Equal("STAT <b>", await reader.ReadLineAsync(cancellationToken));
+            await writer.WriteLineAsync("223 0 <a>");
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
         catch (OperationCanceledException)

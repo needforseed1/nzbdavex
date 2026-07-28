@@ -254,6 +254,11 @@ public abstract class NntpClient : INntpClient
                 }
             }
 
+            bool HasUnclaimedWork()
+            {
+                lock (schedulerLock) return nextSegment < segmentIds.Count;
+            }
+
             var laneTasks = new List<Task>(lanes);
 
             void StartAdmittedLanes()
@@ -261,9 +266,13 @@ public abstract class NntpClient : INntpClient
                 var admitted = Math.Clamp(GetPipelinedStatLaneTarget(lanes), 1, lanes);
                 while (laneTasks.Count < admitted)
                 {
+                    var laneIndex = laneTasks.Count;
                     laneTasks.Add(CheckPipelinedStatLaneAsync(
                         TakeNextBatch,
                         batchDepth,
+                        laneIndex,
+                        lanes,
+                        HasUnclaimedWork,
                         progress,
                         childCt,
                         token,
@@ -345,6 +354,9 @@ public abstract class NntpClient : INntpClient
     private async Task CheckPipelinedStatLaneAsync(
         Func<IReadOnlyList<string>?> takeNextBatch,
         int depth,
+        int laneIndex,
+        int requestedLanes,
+        Func<bool> hasUnclaimedWork,
         IProgress<int>? progress,
         CancellationTokenSource childCt,
         CancellationToken cancellationToken,
@@ -353,8 +365,21 @@ public abstract class NntpClient : INntpClient
     {
         try
         {
-            while (takeNextBatch() is { } segmentIds)
+            while (true)
             {
+                // Admission can shrink after lanes have started. A paused lane
+                // finishes its current batch, then waits without claiming more
+                // work. If capacity recovers it can resume; otherwise the lower
+                // lanes drain the shared queue and let it exit.
+                while (laneIndex >= Math.Clamp(
+                           GetPipelinedStatLaneTarget(requestedLanes), 1, requestedLanes))
+                {
+                    if (!hasUnclaimedWork()) return;
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                if (takeNextBatch() is not { } segmentIds) return;
                 await foreach (var result in StatsPipelinedAsync(segmentIds, depth, cancellationToken)
                                    .WithCancellation(cancellationToken).ConfigureAwait(false))
                 {
@@ -406,9 +431,9 @@ public abstract class NntpClient : INntpClient
 
     /// <summary>
     /// Returns how many of the requested pipelined STAT lanes may currently run.
-    /// Implementations can raise this value as usable connection capacity grows;
-    /// the scheduler polls it while work remains and never removes lanes already
-    /// admitted.
+    /// Implementations can raise this value as usable connection capacity grows
+    /// or lower it when live feedback indicates overload. The scheduler polls it
+    /// while work remains; lanes above a reduced target pause between batches.
     /// </summary>
     protected virtual int GetPipelinedStatLaneTarget(int requestedLanes) => requestedLanes;
 

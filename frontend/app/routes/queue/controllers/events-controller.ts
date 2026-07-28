@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react";
 import type { HistorySlot, QueueSlot } from "~/clients/backend-client.server";
 import type { PresentationHistorySlot, PresentationQueueSlot, UploadingFile } from "../route";
 import { matchesHistoryCategory } from "../history-category-filter";
+import { parseQueueStatusMessage } from "./queue-status-message";
 
 export type QueueEvents = {
     onAddQueueSlot: (queueSlot: QueueSlot) => void,
@@ -49,8 +50,11 @@ export function useQueueEvents(
     }, [setQueueSlots]);
 
     const onChangeQueueSlotStatus = useCallback((message: string) => {
-        const [nzo_id, status] = message.split('|');
-        setQueueSlots(slots => slots.map(x => x.nzo_id === nzo_id ? { ...x, status } : x));
+        const update = parseQueueStatusMessage(message);
+        if (update === null) return;
+        setQueueSlots(slots => slots.map(x => x.nzo_id === update.nzo_id
+            ? { ...x, status: update.status, error: update.error }
+            : x));
     }, [setQueueSlots]);
 
     const onChangeQueueSlotPercentage = useCallback((message: string) => {

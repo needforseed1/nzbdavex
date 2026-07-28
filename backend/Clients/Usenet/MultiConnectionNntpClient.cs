@@ -190,6 +190,19 @@ public class MultiConnectionNntpClient(
         );
     }
 
+    internal Task<UsenetStatResponse> StatRecoveryOnceAsync(
+        SegmentId segmentId, CancellationToken ct)
+    {
+        return RunWithConnection(
+            "STAT",
+            SemaphorePriority.Low,
+            (connection, _) => connection.StatAsync(segmentId, ct),
+            onConnectionReadyAgain: null,
+            ct,
+            retryCount: 0
+        );
+    }
+
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken ct)
     {
         return RunWithConnection(
@@ -577,6 +590,21 @@ public class MultiConnectionNntpClient(
                             $"Provider {Host} did not complete the pipelined batch within " +
                             $"{attempt!.CommandTimeout.TotalSeconds:0.#} seconds after acquiring a connection; " +
                             $"{DescribePipelinedAttempt()}.",
+                            e);
+                    }
+                    catch (UsenetPipelinedStatStalledException e)
+                    {
+                        // The transport buffered a healthy prefix, yielded it,
+                        // then detected silence while draining the rest of this
+                        // STAT batch. Rotate only the socket. The provider keeps
+                        // serving its other lanes, and callers retry from the
+                        // outer received count rather than replaying the prefix.
+                        connectionLock.Replace();
+                        throw new PipelinedResponseStalledException(
+                            $"Provider {Host} did not return the next pipelined response; " +
+                            $"{e.Message} " +
+                            $"{DescribePipelinedAttempt()}.",
+                            received,
                             e);
                     }
                     catch (ReadInactivityTimeoutException)

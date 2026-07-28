@@ -47,6 +47,7 @@ public class MultiProviderNntpClient(
     private const int HealthRecoveryConnectionReserve = 4;
     private const int HealthRecoveryMaxConnectionsPerProvider = 8;
     private const int HealthRecoverySegmentsPerConnection = 512;
+    private const int HealthSequentialRecoverySegmentLimit = 8;
     // Deliberately loose. The qualification probe samples only 32 articles, so
     // its coverage estimate carries several percentage points of error: a
     // provider holding 75% of a release commonly samples near 69%. A tighter
@@ -73,6 +74,11 @@ public class MultiProviderNntpClient(
     // Cumulative, not consecutive: concurrent lanes complete out of order, so a
     // stale success must not erase a burst of failures. See RecordAttempt.
     private const int QuarantineFailureThreshold = 2;
+    private const int PartialStallBackoffMinimumEvents = 4;
+    private const int PartialStallBackoffMinimumLanes = 4;
+    private const int PartialStallBackoffPercent = 1;
+    private const int PartialStallBackoffNumerator = 3;
+    private const int PartialStallBackoffDenominator = 4;
     private readonly SemaphoreSlim _statRecoveryGate = new(
         StatRecoveryConcurrencyLimit, StatRecoveryConcurrencyLimit);
     private static readonly AsyncLocal<Guid?> ReadSessionScope = new();
@@ -2173,39 +2179,117 @@ public class MultiProviderNntpClient(
                 attemptTimer = Stopwatch.StartNew();
                 await Task.WhenAll(recoveryBatches.Select(async batch =>
                 {
-                    var results = provider.IsTripped
-                        ? provider.StatsPipelinedRecoveryProbeAsync(
-                            batch, providerDepth, budgetCts.Token)
-                        : provider.StatsPipelinedAsync(
-                            batch, providerDepth, budgetCts.Token);
-                    var batchReceived = 0;
-                    await foreach (var result in results
-                                       .WithCancellation(budgetCts.Token).ConfigureAwait(false))
+                    try
                     {
-                        if (batchReceived >= batch.Length ||
-                            !string.Equals(
-                                result.SegmentId, batch[batchReceived], StringComparison.Ordinal))
-                            throw new InvalidDataException(
-                                $"Provider {provider.Host} returned an invalid recovery STAT response.");
-
-                        if (result.Exists)
+                        await ExecuteRecoveryBatchAsync().ConfigureAwait(false);
+                    }
+                    catch (PipelinedResponseStalledException e) when (
+                        provider.ProviderType == ProviderType.BackupOnly &&
+                        e.ReceivedResponses == 0 &&
+                        !budgetCts.IsCancellationRequested)
+                    {
+                        // BackupOnly gets a single coordinated batch, so a
+                        // zero-response socket would otherwise force a full
+                        // health-check retry. RunPipelinedAsync has already
+                        // evicted the silent connection. Account for that failed
+                        // attempt, then use the remaining operation budget for
+                        // exactly one fresh-socket retry.
+                        plan?.RecordAttempt(
+                            provider, batch.Length, 0, 0, 0,
+                            attemptTimer.ElapsedMilliseconds, failed: true);
+                        Log.Debug(
+                            "health-stat recovery provider={Provider} " +
+                            "action=fresh-socket-retry targets={Targets} " +
+                            "reason=zero-response-stall",
+                            provider.Host, batch.Length);
+                        attemptTimer.Restart();
+                        try
                         {
-                            foundSegments.TryAdd(result.SegmentId, 0);
-                            Interlocked.Increment(ref found);
+                            await ExecuteRecoveryBatchAsync().ConfigureAwait(false);
                         }
-                        else
+                        catch (PipelinedResponseStalledException retryException) when (
+                            retryException.ReceivedResponses == 0 &&
+                            batch.Length <= HealthSequentialRecoverySegmentLimit &&
+                            !budgetCts.IsCancellationRequested)
                         {
-                            collector.RecordMissing(result.SegmentId, provider);
-                            Interlocked.Increment(ref missing);
+                            // A second silent socket makes a stale pooled
+                            // connection unlikely. Tiny recovery tails are still
+                            // cheap to verify without pipelining, and some servers
+                            // respond to one-at-a-time STAT even when they ignore
+                            // a pipelined command burst. Keep this bounded to one
+                            // sequential pass within the existing operation budget.
+                            plan?.RecordAttempt(
+                                provider, batch.Length, 0, 0, 0,
+                                attemptTimer.ElapsedMilliseconds, failed: true);
+                            Log.Debug(
+                                "health-stat recovery provider={Provider} " +
+                                "action=sequential-fallback targets={Targets} " +
+                                "reason=second-zero-response-stall",
+                                provider.Host, batch.Length);
+                            attemptTimer.Restart();
+                            await ExecuteSequentialRecoveryBatchAsync().ConfigureAwait(false);
                         }
-                        batchReceived++;
-                        Interlocked.Increment(ref received);
                     }
 
-                    if (batchReceived != batch.Length)
-                        throw new IOException(
-                            $"Provider {provider.Host} ended a recovery STAT pass after " +
-                            $"{batchReceived} of {batch.Length} responses.");
+                    return;
+
+                    async Task ExecuteRecoveryBatchAsync()
+                    {
+                        var results = provider.IsTripped
+                            ? provider.StatsPipelinedRecoveryProbeAsync(
+                                batch, providerDepth, budgetCts.Token)
+                            : provider.StatsPipelinedAsync(
+                                batch, providerDepth, budgetCts.Token);
+                        var batchReceived = 0;
+                        await foreach (var result in results
+                                           .WithCancellation(budgetCts.Token).ConfigureAwait(false))
+                        {
+                            if (batchReceived >= batch.Length ||
+                                !string.Equals(
+                                    result.SegmentId, batch[batchReceived], StringComparison.Ordinal))
+                                throw new InvalidDataException(
+                                    $"Provider {provider.Host} returned an invalid recovery STAT response.");
+
+                            if (result.Exists)
+                            {
+                                foundSegments.TryAdd(result.SegmentId, 0);
+                                Interlocked.Increment(ref found);
+                            }
+                            else
+                            {
+                                collector.RecordMissing(result.SegmentId, provider);
+                                Interlocked.Increment(ref missing);
+                            }
+                            batchReceived++;
+                            Interlocked.Increment(ref received);
+                        }
+
+                        if (batchReceived != batch.Length)
+                            throw new IOException(
+                                $"Provider {provider.Host} ended a recovery STAT pass after " +
+                                $"{batchReceived} of {batch.Length} responses.");
+                    }
+
+                    async Task ExecuteSequentialRecoveryBatchAsync()
+                    {
+                        foreach (var segmentId in batch)
+                        {
+                            var response = await provider
+                                .StatRecoveryOnceAsync(segmentId, budgetCts.Token)
+                                .ConfigureAwait(false);
+                            if (response.ResponseType == UsenetResponseType.ArticleExists)
+                            {
+                                foundSegments.TryAdd(segmentId, 0);
+                                Interlocked.Increment(ref found);
+                            }
+                            else
+                            {
+                                collector.RecordMissing(segmentId, provider);
+                                Interlocked.Increment(ref missing);
+                            }
+                            Interlocked.Increment(ref received);
+                        }
+                    }
                 })).ConfigureAwait(false);
 
                 plan?.Requalify(provider);
@@ -3036,6 +3120,7 @@ public class MultiProviderNntpClient(
         private readonly HashSet<MultiConnectionNntpClient> _preferred;
         private readonly HashSet<MultiConnectionNntpClient> _quarantined;
         private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatAttemptStats> _attempts = new();
+        private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatLaneBackoff> _laneBackoffs = new();
         private HealthConnectionAllocation? _connectionAllocation;
 
         public BulkStatPlan(
@@ -3178,14 +3263,17 @@ public class MultiProviderNntpClient(
 
         public (int Target, int PreferredLive) GetLaneAdmission(int requestedLanes)
         {
-            int preferredLive;
+            MultiConnectionNntpClient[] preferred;
             lock (_preferred)
-                preferredLive = _preferred
+                preferred = _preferred
                     .Where(provider => !_quarantined.Contains(provider))
-                    .Sum(provider => provider.LiveConnections);
+                    .ToArray();
 
+            var preferredLive = preferred.Sum(provider => provider.LiveConnections);
+            var hasBackoff = preferred.Any(HasLaneBackoff);
+            var effectiveLive = preferred.Sum(EffectiveLaneCapacity);
             var target = Math.Clamp(
-                preferredLive + HealthLaneGrowthHeadroom,
+                effectiveLive + (hasBackoff ? 0 : HealthLaneGrowthHeadroom),
                 1,
                 Math.Max(1, requestedLanes));
             return (target, preferredLive);
@@ -3193,7 +3281,7 @@ public class MultiProviderNntpClient(
 
         public double SelectionScore(MultiConnectionNntpClient provider)
         {
-            var capacity = Math.Max(1, provider.LiveConnections);
+            var capacity = EffectiveLaneCapacity(provider);
             var committed = StatCommittedDemand(provider);
             var rate = EffectiveRate(provider);
             MultiConnectionNntpClient[] preferred;
@@ -3216,6 +3304,25 @@ public class MultiProviderNntpClient(
             var stats = _attempts.GetOrAdd(provider, static _ => new BulkStatAttemptStats());
             stats.Record(attempted, received, found, missing, elapsedMs, failed, providerFaulted);
 
+            if (failed && !providerFaulted && received > 0)
+            {
+                var backoff = _laneBackoffs.GetOrAdd(
+                    provider, static _ => new BulkStatLaneBackoff());
+                var capacity = Math.Max(
+                    1, Math.Max(provider.LiveConnections, provider.ActiveConnections));
+                var change = backoff.Observe(capacity, stats.Snapshot());
+                if (change is { } applied)
+                {
+                    var operationTarget = GetLaneAdmission(int.MaxValue).Target;
+                    Log.Information(
+                        "health-stat lane-backoff provider={Provider} stalls={Stalls} " +
+                        "batches={Batches} previous={Previous} target={Target} " +
+                        "operationTarget={OperationTarget}",
+                        provider.Host, applied.Stalls, applied.Batches,
+                        applied.PreviousLimit, applied.NewLimit, operationTarget);
+                }
+            }
+
             // Concurrent lanes complete out of order, so "consecutive" failures
             // are not a stable signal: one older success can otherwise erase a
             // timeout storm and immediately re-admit the provider. Two faulted
@@ -3229,6 +3336,19 @@ public class MultiProviderNntpClient(
                 if (stats.ProviderFaultCount >= QuarantineFailureThreshold)
                     Quarantine(provider);
             }
+        }
+
+        private bool HasLaneBackoff(MultiConnectionNntpClient provider) =>
+            _laneBackoffs.TryGetValue(provider, out var backoff) &&
+            backoff.LaneLimit.HasValue;
+
+        private int EffectiveLaneCapacity(MultiConnectionNntpClient provider)
+        {
+            var live = Math.Max(1, provider.LiveConnections);
+            return _laneBackoffs.TryGetValue(provider, out var backoff) &&
+                   backoff.LaneLimit is { } laneLimit
+                ? Math.Min(live, laneLimit)
+                : live;
         }
 
         private double EffectiveRate(MultiConnectionNntpClient provider)
@@ -3276,6 +3396,68 @@ public class MultiProviderNntpClient(
             }
         }
     }
+
+    internal sealed class BulkStatLaneBackoff
+    {
+        private readonly object _lock = new();
+        private long _nextStallThreshold = PartialStallBackoffMinimumEvents;
+        private int _laneLimit;
+
+        public int? LaneLimit
+        {
+            get
+            {
+                lock (_lock) return _laneLimit == 0 ? null : _laneLimit;
+            }
+        }
+
+        public BulkStatLaneBackoffChange? Observe(
+            int currentCapacity,
+            BulkStatAttemptSnapshot snapshot)
+        {
+            var stalls = Math.Max(0, snapshot.Failures - snapshot.ProviderFaults);
+            lock (_lock)
+            {
+                if (stalls < _nextStallThreshold || snapshot.Batches == 0)
+                    return null;
+
+                // A few isolated socket losses across a large healthy run should
+                // not cost throughput. Back off only while partial stalls are at
+                // least one percent of completed provider attempts.
+                if (stalls * 100 < snapshot.Batches * PartialStallBackoffPercent)
+                    return null;
+
+                var previousLimit = _laneLimit == 0
+                    ? Math.Max(1, currentCapacity)
+                    : Math.Min(_laneLimit, Math.Max(1, currentCapacity));
+                var minimum = Math.Min(
+                    PartialStallBackoffMinimumLanes, previousLimit);
+                var newLimit = Math.Max(
+                    minimum,
+                    (previousLimit * PartialStallBackoffNumerator +
+                     PartialStallBackoffDenominator - 1) /
+                    PartialStallBackoffDenominator);
+
+                _nextStallThreshold = Math.Max(
+                    _nextStallThreshold * 2, stalls + 1);
+                if (newLimit >= previousLimit)
+                {
+                    _laneLimit = previousLimit;
+                    return null;
+                }
+
+                _laneLimit = newLimit;
+                return new BulkStatLaneBackoffChange(
+                    previousLimit, newLimit, stalls, snapshot.Batches);
+            }
+        }
+    }
+
+    internal readonly record struct BulkStatLaneBackoffChange(
+        int PreviousLimit,
+        int NewLimit,
+        long Stalls,
+        long Batches);
 
     private sealed class HealthConnectionAllocation(
         MultiProviderNntpClient owner,

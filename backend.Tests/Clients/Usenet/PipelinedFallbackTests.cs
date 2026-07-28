@@ -5,6 +5,7 @@ using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 using UsenetSharp.Streams;
 
@@ -158,6 +159,39 @@ public class PipelinedFallbackTests
 
         Assert.All(results, result => Assert.True(result.Exists));
         Assert.Equal(["b", "c"], backupClient.Batches.Single());
+    }
+
+    [Fact]
+    public async Task TransportStallRetriesOnlyUnreadTailWithoutTrippingProvider()
+    {
+        var stalledClient = new RecordingPipelineClient(
+            [true], transportStallAfterResults: true);
+        var backupClient = new RecordingPipelineClient([true, true]);
+        var stalledProvider = CreateProvider(
+            stalledClient, ProviderType.Pooled, "stalled", 0);
+        using var client = new MultiProviderNntpClient([
+            stalledProvider,
+            CreateProvider(backupClient, ProviderType.Pooled, "backup", 1),
+        ], new ProviderUsageTracker());
+
+        var results = await CollectAsync(
+            client.StatsPipelinedAsync(["a", "b", "c"], 3, CancellationToken.None));
+        Assert.All(results, result => Assert.True(result.Exists));
+
+        Assert.Equal(["b", "c"], backupClient.Batches.Single());
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var failure =
+                await Assert.ThrowsAsync<NzbWebDAV.Exceptions.PipelinedResponseStalledException>(
+                    () => CollectAsync(stalledProvider.StatsPipelinedAsync(
+                        ["a", "b", "c"], 3, CancellationToken.None)));
+            Assert.Equal(1, failure.ReceivedResponses);
+        }
+
+        Assert.Equal(4, stalledClient.Batches.Count);
+        Assert.All(stalledClient.Batches, batch => Assert.Equal(["a", "b", "c"], batch));
+        Assert.False(stalledProvider.IsTripped);
     }
 
     [Fact]
@@ -894,7 +928,8 @@ public class PipelinedFallbackTests
         IReadOnlyList<bool> results,
         bool failAfterResults = false,
         int? failBodyAfterResults = null,
-        bool stallAfterResults = false) : NntpClient
+        bool stallAfterResults = false,
+        bool transportStallAfterResults = false) : NntpClient
     {
         public List<string[]> Batches { get; } = [];
         public List<string[]> BodyBatches { get; } = [];
@@ -934,6 +969,11 @@ public class PipelinedFallbackTests
 
             if (stallAfterResults)
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+            if (transportStallAfterResults)
+                throw new UsenetPipelinedStatStalledException(
+                    "Simulated transport stall.",
+                    results.Count);
 
             if (failAfterResults)
                 throw new IOException("Simulated batch failure.");

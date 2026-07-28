@@ -9,6 +9,9 @@ namespace UsenetSharp.Clients;
 
 public partial class UsenetClient
 {
+    private static readonly TimeSpan BulkStatResponseInactivityTimeout =
+        TimeSpan.FromSeconds(2);
+
     public IAsyncEnumerable<UsenetStatResponse> StatPipelinedAsync
     (
         IReadOnlyList<SegmentId> segmentIds,
@@ -32,7 +35,6 @@ public partial class UsenetClient
         await _commandLock.WaitAsync(cancellationToken);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
         var operationToken = linkedCts.Token;
-        var completed = false;
         try
         {
             ThrowIfUnhealthy();
@@ -42,47 +44,45 @@ public partial class UsenetClient
             {
                 operationToken.ThrowIfCancellationRequested();
                 var count = Math.Min(depth, segmentIds.Count - offset);
-                await using var responses = ExecuteBulkStatBatchAsync(
-                        segmentIds, offset, count, operationToken)
-                    .GetAsyncEnumerator(operationToken);
-                while (true)
+                BulkStatBatchResult batch;
+                try
                 {
-                    UsenetStatResponse response;
-                    try
-                    {
-                        if (!await responses.MoveNextAsync().ConfigureAwait(false)) break;
-                        response = responses.Current;
-                    }
-                    catch (Exception e)
-                    {
-                        MarkUnhealthy(e);
-                        throw;
-                    }
-
-                    // Yield each parsed response immediately. If enumeration is
-                    // interrupted, the finally block marks this connection
-                    // unhealthy so unread replies can never pollute a later command.
-                    yield return response;
+                    batch = await ExecuteBulkStatBatchAsync(
+                            segmentIds, offset, count, operationToken)
+                        .ConfigureAwait(false);
                 }
-            }
+                catch (Exception e)
+                {
+                    MarkUnhealthy(e);
+                    throw;
+                }
 
-            completed = true;
+                if (batch.Failure is not null)
+                    MarkUnhealthy(batch.Failure.SourceException);
+
+                // Buffer the complete batch before yielding. This removes an
+                // async-iterator hop per STAT response and means a caller can
+                // stop after any healthy result without leaving unread replies
+                // behind. On a stalled batch, expose the valid prefix before
+                // reporting the failure so fallback retries only the unread tail.
+                foreach (var response in batch.Responses)
+                    yield return response;
+
+                batch.Failure?.Throw();
+            }
         }
         finally
         {
-            if (!completed)
-                MarkUnhealthy(new IOException(
-                    "Pipelined STAT enumeration ended before every response was consumed."));
             _commandLock.Release();
         }
     }
 
-    private async IAsyncEnumerable<UsenetStatResponse> ExecuteBulkStatBatchAsync
+    private async Task<BulkStatBatchResult> ExecuteBulkStatBatchAsync
     (
         IReadOnlyList<SegmentId> segmentIds,
         int offset,
         int count,
-        [EnumeratorCancellation] CancellationToken cancellationToken
+        CancellationToken cancellationToken
     )
     {
         var payload = new StringBuilder(count * 48);
@@ -90,62 +90,69 @@ public partial class UsenetClient
             payload.Append("STAT <").Append((string)segmentIds[offset + i]).Append(">\r\n");
 
         using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        idleCts.CancelAfter(TimeSpan.FromSeconds(20));
+        idleCts.CancelAfter(BulkStatResponseInactivityTimeout);
         var token = idleCts.Token;
-        var commandText = payload.ToString();
-        var byteCount = Encoding.Latin1.GetByteCount(commandText);
-        var buffer = ArrayPool<byte>.Shared.Rent(byteCount);
+        var responses = new UsenetStatResponse[count];
+        var received = 0;
         try
         {
+            var commandText = payload.ToString();
+            var byteCount = Encoding.Latin1.GetByteCount(commandText);
+            var buffer = ArrayPool<byte>.Shared.Rent(byteCount);
             try
             {
                 var written = Encoding.Latin1.GetBytes(commandText.AsSpan(), buffer.AsSpan());
                 await _stream!.WriteAsync(buffer.AsMemory(0, written), token).ConfigureAwait(false);
                 await _stream.FlushAsync(token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException e) when (
-                idleCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            finally
             {
-                throw new TimeoutException("Timeout during pipelined STAT batch.", e);
+                ArrayPool<byte>.Shared.Return(buffer);
             }
+
+            for (; received < count; received++)
+            {
+                var response = await _reader!.ReadLineAsync(token).ConfigureAwait(false);
+                idleCts.CancelAfter(BulkStatResponseInactivityTimeout);
+                if (response is null)
+                    throw new UsenetProtocolException(
+                        "Connection closed while reading pipelined STAT responses.");
+
+                var responseCode = ParseResponseCode(response);
+                var articleExists = responseCode == (int)UsenetResponseType.ArticleExists;
+                if (articleExists && !ResponseEchoesSegmentId(
+                        response, segmentIds[offset + received]))
+                    throw new UsenetProtocolException(
+                        "Pipelined STAT responses are out of order; aborting batch.");
+
+                responses[received] = new UsenetStatResponse
+                {
+                    ResponseCode = responseCode,
+                    ResponseMessage = response,
+                    ArticleExists = articleExists,
+                };
+            }
+
+            return new BulkStatBatchResult(responses, null);
         }
-        finally
+        catch (OperationCanceledException e) when (
+            idleCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-
-        for (var i = 0; i < count; i++)
-        {
-            string? response;
-            try
-            {
-                response = await _reader!.ReadLineAsync(token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException e) when (
-                idleCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException("Timeout during pipelined STAT batch.", e);
-            }
-
-            idleCts.CancelAfter(TimeSpan.FromSeconds(20));
-            if (response is null)
-                throw new UsenetProtocolException(
-                    "Connection closed while reading pipelined STAT responses.");
-
-            var responseCode = ParseResponseCode(response);
-            var articleExists = responseCode == (int)UsenetResponseType.ArticleExists;
-            if (articleExists && !ResponseEchoesSegmentId(response, segmentIds[offset + i]))
-                throw new UsenetProtocolException(
-                    "Pipelined STAT responses are out of order; aborting batch.");
-
-            yield return new UsenetStatResponse
-            {
-                ResponseCode = responseCode,
-                ResponseMessage = response,
-                ArticleExists = articleExists,
-            };
+            var failure = new UsenetPipelinedStatStalledException(
+                $"Pipelined STAT batch stopped producing responses for " +
+                $"{BulkStatResponseInactivityTimeout.TotalSeconds:0.###} seconds " +
+                $"after {received} of {count} responses.",
+                received,
+                e);
+            return new BulkStatBatchResult(
+                responses.AsSpan(0, received).ToArray(),
+                ExceptionDispatchInfo.Capture(failure));
         }
     }
+
+    private sealed record BulkStatBatchResult(
+        UsenetStatResponse[] Responses,
+        ExceptionDispatchInfo? Failure);
 
     private void MarkUnhealthy(Exception exception)
     {

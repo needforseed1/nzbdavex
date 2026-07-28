@@ -81,7 +81,9 @@ public class QueueItemProcessor(
     {
         // initialize
         var startTime = DateTime.Now;
-        _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Downloading");
+        _ = websocketManager.SendMessage(
+            WebsocketTopic.QueueItemStatus,
+            BuildQueueItemStatusMessage(queueItem.Id, "Downloading"));
 
         using var providerScope = providerUsageTracker.BeginScope(queueItem.Id);
         using var recoveryNoticeCapture = providerUsageTracker.BeginRecoveryNoticeCapture(notice =>
@@ -128,7 +130,9 @@ public class QueueItemProcessor(
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
                 providerUsageTracker.ReportRecoveryNotice(null);
-                _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
+                _ = websocketManager.SendMessage(
+                    WebsocketTopic.QueueItemStatus,
+                    BuildQueueItemStatusMessage(queueItem.Id, "Queued"));
             }
             catch (Exception ex)
             {
@@ -158,7 +162,9 @@ public class QueueItemProcessor(
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);
                 providerUsageTracker.ReportRecoveryNotice(null);
-                _ = websocketManager.SendMessage(WebsocketTopic.QueueItemStatus, $"{queueItem.Id}|Queued");
+                _ = websocketManager.SendMessage(
+                    WebsocketTopic.QueueItemStatus,
+                    BuildQueueItemStatusMessage(queueItem.Id, "Queued"));
             }
             catch (Exception ex)
             {
@@ -598,6 +604,12 @@ public class QueueItemProcessor(
                exception.IsCancellationException();
     }
 
+    internal static string BuildQueueItemStatusMessage(
+        Guid queueItemId, string status, string? error = null) =>
+        error is null
+            ? $"{queueItemId}|{status}"
+            : $"{queueItemId}|{status}|{error}";
+
     internal static async Task CancelAndObserveWarmupAsync(
         Task warmupTask,
         CancellationTokenSource warmupCancellation,
@@ -1024,6 +1036,17 @@ public class QueueItemProcessor(
         Func<Task<DavItem?>>? databaseOperations = null
     )
     {
+        if (error is not null)
+        {
+            // A terminal failure is distinct from a retry backoff. Publish the
+            // failed state before moving the item into History so the queue does
+            // not briefly imply that a definitively bad NZB is waiting to retry.
+            await websocketManager.SendMessage(
+                    WebsocketTopic.QueueItemStatus,
+                    BuildQueueItemStatusMessage(queueItem.Id, "Failed", error))
+                .ConfigureAwait(false);
+        }
+
         dbClient.Ctx.ClearChangeTracker();
         var mountFolder = databaseOperations != null ? await databaseOperations.Invoke().ConfigureAwait(false) : null;
         var historyItem = CreateHistoryItem(mountFolder, startTime, error);

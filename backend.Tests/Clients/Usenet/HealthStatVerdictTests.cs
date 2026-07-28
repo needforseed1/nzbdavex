@@ -5,6 +5,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Services;
+using UsenetSharp.Exceptions;
 using UsenetSharp.Models;
 
 namespace NzbWebDAV.Tests.Clients.Usenet;
@@ -150,6 +151,143 @@ public class HealthStatVerdictTests
 
         Assert.Equal(1, backup.Calls);
         Assert.Equal(segments.Length, Assert.Single(backup.BatchSizes));
+    }
+
+    [Fact]
+    public async Task ColdBackupRecoveryRetriesZeroResponseStallOnFreshSocket()
+    {
+        // Reproduce the Better Call Saul failure: every primary answers
+        // "missing", then the cold BackupOnly recovery socket returns no STAT
+        // response at all. The pool rotates that socket, and recovery retries
+        // once immediately instead of making the whole health job wait a minute.
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var backup = new VerdictStatClient(
+            (_, call) => call == 1 ? StatAnswer.TransportStall : StatAnswer.Found);
+        var backupProvider = Provider(
+            backup, "backup", ProviderType.BackupOnly, maxConnections: 1);
+        using var scope = tracker.BeginScope(queueId);
+        using var client = CreateClient([
+                Provider(firstPrimary, "first-primary", maxConnections: 8),
+                Provider(secondPrimary, "second-primary", maxConnections: 8),
+                backupProvider,
+            ],
+            usageTracker: tracker);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        Assert.Equal(2, backup.Calls);
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
+            tracker.SnapshotHealthCheck(queueId));
+        var backupStats = Assert.Single(
+            snapshot.Providers, provider => provider.ProviderId == "backup");
+        Assert.Equal(2, backupStats.Batches);
+        Assert.Equal(1, backupStats.Failures);
+        Assert.Equal(segments.Length, backupStats.Found);
+        Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
+    }
+
+    [Fact]
+    public async Task TinyBackupRecoveryUsesSequentialStatAfterTwoSilentSockets()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        var firstPrimary = new VerdictStatClient(PrimaryAnswer);
+        var secondPrimary = new VerdictStatClient(PrimaryAnswer);
+        var backup = new VerdictStatClient(
+            (_, _) => StatAnswer.TransportStall,
+            sequentialScript: (_, _) => StatAnswer.Found);
+        using var scope = tracker.BeginScope(queueId);
+        using var client = CreateClient([
+                Provider(firstPrimary, "first-primary", maxConnections: 8),
+                Provider(secondPrimary, "second-primary", maxConnections: 8),
+                Provider(backup, "backup", ProviderType.BackupOnly, maxConnections: 1),
+            ],
+            usageTracker: tracker);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+        segments[1] = "recovery-1";
+        segments[2] = "recovery-2";
+
+        await client.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+            .WaitAsync(TestTimeout);
+
+        Assert.Equal(2, backup.Calls);
+        Assert.Equal(2, backup.SequentialCalls);
+        Assert.Equal([2, 2], backup.BatchSizes);
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
+            tracker.SnapshotHealthCheck(queueId));
+        var backupStats = Assert.Single(
+            snapshot.Providers, provider => provider.ProviderId == "backup");
+        Assert.Equal(3, backupStats.Batches);
+        Assert.Equal(2, backupStats.Failures);
+        Assert.Equal(2, backupStats.Found);
+        Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
+
+        static StatAnswer PrimaryAnswer(string segmentId, int _) =>
+            segmentId.StartsWith("recovery-", StringComparison.Ordinal)
+                ? StatAnswer.Missing
+                : StatAnswer.Found;
+    }
+
+    [Fact]
+    public async Task TinyBackupSequentialRecoveryFailureIsAttemptedOnlyOnce()
+    {
+        var firstPrimary = new VerdictStatClient(PrimaryAnswer);
+        var secondPrimary = new VerdictStatClient(PrimaryAnswer);
+        var backup = new VerdictStatClient(
+            (_, _) => StatAnswer.TransportStall,
+            sequentialScript: (_, _) => StatAnswer.Error);
+        using var client = CreateClient([
+            Provider(firstPrimary, "first-primary", maxConnections: 8),
+            Provider(secondPrimary, "second-primary", maxConnections: 8),
+            Provider(backup, "backup", ProviderType.BackupOnly, maxConnections: 1),
+        ]);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+        segments[1] = "recovery-1";
+        segments[2] = "recovery-2";
+
+        var exception = await Assert.ThrowsAsync<UsenetArticleUnverifiableException>(() =>
+            client.CheckAllSegmentsPipelinedAsync(
+                    segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+                .WaitAsync(TestTimeout));
+
+        Assert.Equal(2, backup.Calls);
+        Assert.Equal(1, backup.SequentialCalls);
+        Assert.Contains("backup", exception.UnavailableProviders);
+
+        static StatAnswer PrimaryAnswer(string segmentId, int _) =>
+            segmentId.StartsWith("recovery-", StringComparison.Ordinal)
+                ? StatAnswer.Missing
+                : StatAnswer.Found;
+    }
+
+    [Fact]
+    public async Task LargeBackupRecoveryStopsAfterFreshSocketRetry()
+    {
+        var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var backup = new VerdictStatClient((_, _) => StatAnswer.TransportStall);
+        using var client = CreateClient([
+            Provider(firstPrimary, "first-primary", maxConnections: 8),
+            Provider(secondPrimary, "second-primary", maxConnections: 8),
+            Provider(backup, "backup", ProviderType.BackupOnly, maxConnections: 1),
+        ]);
+        var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
+
+        var exception = await Assert.ThrowsAsync<UsenetArticleUnverifiableException>(() =>
+            client.CheckAllSegmentsPipelinedAsync(
+                    segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+                .WaitAsync(TestTimeout));
+
+        Assert.Equal(2, backup.Calls);
+        Assert.Equal(0, backup.SequentialCalls);
+        Assert.Contains("backup", exception.UnavailableProviders);
     }
 
     [Fact]
@@ -354,6 +492,7 @@ public class HealthStatVerdictTests
         Found,
         Missing,
         Stall,
+        TransportStall,
         Error,
     }
 
@@ -364,13 +503,16 @@ public class HealthStatVerdictTests
     /// </summary>
     private sealed class VerdictStatClient(
         Func<string, int, StatAnswer> script,
-        TimeSpan? resultDelay = null) : NntpClient
+        TimeSpan? resultDelay = null,
+        Func<string, int, StatAnswer>? sequentialScript = null) : NntpClient
     {
         private int _calls;
+        private int _sequentialCalls;
         private int _activeCalls;
         private int _maxConcurrentCalls;
         private readonly System.Collections.Concurrent.ConcurrentQueue<int> _batchSizes = new();
         public int Calls => Volatile.Read(ref _calls);
+        public int SequentialCalls => Volatile.Read(ref _sequentialCalls);
         public int MaxConcurrentCalls => Volatile.Read(ref _maxConcurrentCalls);
         public int[] BatchSizes => _batchSizes.ToArray();
 
@@ -395,6 +537,9 @@ public class HealthStatVerdictTests
                         case StatAnswer.Stall:
                             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                             break;
+                        case StatAnswer.TransportStall:
+                            throw new UsenetPipelinedStatStalledException(
+                                "Scripted zero-response transport stall.", 0);
                         case StatAnswer.Error:
                             throw new IOException("Scripted mid-batch failure.");
                         case StatAnswer.Found:
@@ -422,8 +567,38 @@ public class HealthStatVerdictTests
             => Task.CompletedTask;
         public override Task<UsenetResponse> AuthenticateAsync(string user, string pass, CancellationToken cancellationToken)
             => throw new NotSupportedException();
-        public override Task<UsenetStatResponse> StatAsync(SegmentId segmentId, CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        public override async Task<UsenetStatResponse> StatAsync(
+            SegmentId segmentId, CancellationToken cancellationToken)
+        {
+            var answer = sequentialScript?.Invoke(
+                segmentId, Interlocked.Increment(ref _sequentialCalls))
+                ?? throw new NotSupportedException();
+            switch (answer)
+            {
+                case StatAnswer.Stall:
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    throw new InvalidOperationException("Unreachable.");
+                case StatAnswer.TransportStall:
+                case StatAnswer.Error:
+                    throw new IOException("Scripted sequential STAT failure.");
+                case StatAnswer.Found:
+                    return new UsenetStatResponse
+                    {
+                        ResponseCode = (int)UsenetResponseType.ArticleExists,
+                        ResponseMessage = "223 article exists",
+                        ArticleExists = true,
+                    };
+                case StatAnswer.Missing:
+                    return new UsenetStatResponse
+                    {
+                        ResponseCode = (int)UsenetResponseType.NoArticleWithThatMessageId,
+                        ResponseMessage = "430 no such article",
+                        ArticleExists = false,
+                    };
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
         public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
             => throw new NotSupportedException();
         public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync(SegmentId segmentId, CancellationToken cancellationToken)

@@ -237,6 +237,22 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
+    public void TerminalQueueStatusCarriesTheFailureReason()
+    {
+        var queueItemId = Guid.Parse("4c076f1c-9f35-4e7c-8702-774e850c0f8d");
+
+        Assert.Equal(
+            $"{queueItemId}|Failed|Article with message-id missing-1 not found.",
+            QueueItemProcessor.BuildQueueItemStatusMessage(
+                queueItemId,
+                "Failed",
+                "Article with message-id missing-1 not found."));
+        Assert.Equal(
+            $"{queueItemId}|Queued",
+            QueueItemProcessor.BuildQueueItemStatusMessage(queueItemId, "Queued"));
+    }
+
+    [Fact]
     public async Task FailedAttemptCancelsAndObservesItsWarmup()
     {
         using var warmupCancellation = new CancellationTokenSource();
