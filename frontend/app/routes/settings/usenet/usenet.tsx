@@ -222,7 +222,7 @@ const PROVIDER_OVERVIEW_GROUPS: Array<{ key: ProviderOverviewGroupKey; label: st
     { key: "disabled", label: "Disabled" },
 ];
 
-const MAX_PIPELINING_DEPTH = 128;
+const MAX_PIPELINING_DEPTH = 64;
 
 function getProviderRole(provider: Pick<ConnectionDetails, "Type" | "PrepOnly">): ProviderRole {
     if (provider.Type === ProviderType.Disabled) return "disabled";
@@ -791,7 +791,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.depth": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        Requests kept in flight per connection (1–128). 8 is a good default. Each
+                        Requests kept in flight per connection (1–64). 8 is a good default. Each
                         provider can override this in its own settings.
                     </div>
                 </div>
@@ -808,7 +808,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                         onChange={(e) => setNewConfig({ ...config, "usenet.pipelining.health.depth": e.target.value })}
                     />
                     <div className={styles["form-hint"]}>
-                        STAT requests kept in flight per connection for article health checks (1–128). 32 is the default.
+                        STAT requests kept in flight per connection for article health checks (1–64). 32 is the default.
                     </div>
                 </div>
                 <div className={styles["form-group"]} style={{ marginTop: 12 }}>

@@ -5,7 +5,7 @@ namespace NzbWebDAV.Config;
 
 public class UsenetProviderConfig
 {
-    public const int MaximumPipeliningDepth = 128;
+    public const int MaximumPipeliningDepth = 64;
 
     public List<ConnectionDetails> Providers { get; set; } = [];
 

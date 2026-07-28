@@ -814,15 +814,15 @@ public class PipelinedFallbackTests
         var transport = new RecordingPipelineClient([true, true]);
         using var client = new MultiProviderNntpClient([
             CreateProvider(transport, ProviderType.Pooled, "provider", 0,
-                pipeliningDepth: 96, healthPipeliningDepth: 128),
+                pipeliningDepth: 48, healthPipeliningDepth: 64),
         ], new ProviderUsageTracker());
 
         _ = await CollectAsync(client.StatsPipelinedAsync(["a", "b"], 8, CancellationToken.None));
         await foreach (var body in client.DecodedBodiesPipelinedAsync(["a", "b"], 8, CancellationToken.None))
             if (body.Stream is not null) await body.Stream.DisposeAsync();
 
-        Assert.Equal(128, transport.StatDepths.Single());
-        Assert.Equal(96, transport.BodyDepths.Single());
+        Assert.Equal(64, transport.StatDepths.Single());
+        Assert.Equal(48, transport.BodyDepths.Single());
     }
 
     private static MultiProviderNntpClient CreateClient(params RecordingPipelineClient[] clients)

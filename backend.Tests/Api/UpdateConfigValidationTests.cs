@@ -106,27 +106,27 @@ public class UpdateConfigValidationTests
     [Theory]
     [InlineData("usenet.pipelining.depth")]
     [InlineData("usenet.pipelining.health.depth")]
-    public void PipelineDepthSettingsSupportUpTo128(string key)
+    public void PipelineDepthSettingsSupportUpTo64(string key)
     {
         ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = key, ConfigValue = "128" },
+            new ConfigItem { ConfigName = key, ConfigValue = "64" },
         ]);
 
         Assert.Throws<BadHttpRequestException>(() =>
             ConfigUpdateValidator.Validate([
-                new ConfigItem { ConfigName = key, ConfigValue = "129" },
+                new ConfigItem { ConfigName = key, ConfigValue = "65" },
             ]));
     }
 
     [Fact]
-    public void ProviderPipelineDepthOverridesSupportUpTo128()
+    public void ProviderPipelineDepthOverridesSupportUpTo64()
     {
         ConfigUpdateValidator.Validate([
             new ConfigItem
             {
                 ConfigName = "usenet.providers",
                 ConfigValue = """
-                    {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":128,"HealthPipeliningDepth":128}]}
+                    {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":64,"HealthPipeliningDepth":64}]}
                     """,
             },
         ]);
@@ -137,7 +137,7 @@ public class UpdateConfigValidationTests
                 {
                     ConfigName = "usenet.providers",
                     ConfigValue = """
-                        {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":129}]}
+                        {"Providers":[{"Id":"11111111-1111-1111-1111-111111111111","Type":0,"Host":"news.example","Port":563,"UseSsl":true,"User":"u","Pass":"p","MaxConnections":10,"PipeliningDepth":65}]}
                         """,
                 },
             ]));

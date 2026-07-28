@@ -39,8 +39,8 @@ public class ConfigManagerTests
         Assert.Equal(1, config.GetMaxDownloadConnections());
         Assert.Equal(1, config.GetArticleBufferSize());
         Assert.True(config.GetSegmentCacheMaxBytes() > 0);
-        Assert.Equal(96, config.GetPipeliningDepth());
-        Assert.Equal(128, config.GetHealthPipeliningDepth());
+        Assert.Equal(64, config.GetPipeliningDepth());
+        Assert.Equal(64, config.GetHealthPipeliningDepth());
         Assert.Equal(100, config.GetStreamingPriority().HighPriorityOdds);
     }
 

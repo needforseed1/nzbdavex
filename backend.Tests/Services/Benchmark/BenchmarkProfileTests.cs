@@ -11,7 +11,7 @@ public class BenchmarkProfileTests
     {
         var profile = BenchmarkProfile.For(intensity);
 
-        Assert.Equal([1, 4, 8, 16, 32, 64, 80, 96, 128], profile.HealthPipelineDepths);
+        Assert.Equal([1, 4, 8, 16, 32, 64], profile.HealthPipelineDepths);
         Assert.True(profile.HealthStatSegments >= profile.HealthPipelineDepths.Max());
     }
 }
