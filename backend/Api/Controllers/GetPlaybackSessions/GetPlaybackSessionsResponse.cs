@@ -27,9 +27,10 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
     public required int Limit { get; init; }
 
     /// <summary>
-    /// One continuous viewing of one file by one client. Players end and reopen
-    /// read sessions constantly — on seek, on pause, on codec switch — so the raw
-    /// session rows are grouped back into the thing a person would call a play.
+    /// One continuous access to one file by one client. Playback clients end and
+    /// reopen read sessions on seek, pause, or codec changes, while mount clients
+    /// do the same as their caller reads. Related raw sessions are grouped before
+    /// their purpose is classified.
     /// </summary>
     public class PlayDto
     {
@@ -63,9 +64,29 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("errorNote")] public string? ErrorNote { get; init; }
         [JsonPropertyName("hasDiagnostics")] public required bool HasDiagnostics { get; init; }
         /// <summary>
-        /// A media-scanner header read rather than someone watching something.
+        /// A tiny successful read, commonly a header or metadata probe. The
+        /// caller's exact intent is not observable from WebDAV.
         /// </summary>
         [JsonPropertyName("isProbe")] public required bool IsProbe { get; init; }
+        /// <summary>
+        /// The WebDAV request came from rclone. The process or container reading
+        /// the shared mount is not visible in the HTTP user agent.
+        /// </summary>
+        [JsonPropertyName("isRcloneActivity")] public required bool IsRcloneActivity { get; init; }
+        /// <summary>
+        /// A direct, substantial read whose transfer pattern looks like
+        /// playback. The user agent is deliberately not used as a requirement:
+        /// proxies and Android player stacks often reduce it to a generic name.
+        /// rclone remains excluded because its shared-mount caller is opaque.
+        /// </summary>
+        [JsonPropertyName("isReliablePlayback")] public required bool IsReliablePlayback { get; init; }
+        /// <summary>
+        /// A conservative access-pattern match for background mount activity:
+        /// either repeated short tail probes, or concurrent large bulk reads.
+        /// The row remains in history and in the mount-activity view.
+        /// </summary>
+        [JsonPropertyName("isLikelyBackgroundActivity")]
+        public required bool IsLikelyBackgroundActivity { get; set; }
         [JsonPropertyName("issues")] public required List<string> Issues { get; init; }
         [JsonPropertyName("counters")] public required CountersDto Counters { get; init; }
         [JsonPropertyName("providers")] public required List<ProviderDto> Providers { get; init; }

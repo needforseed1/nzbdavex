@@ -585,7 +585,7 @@ export type PlaybackHistoryPage = {
     limit: number,
 }
 
-/** One continuous viewing of one file by one client. */
+/** One grouped access to one file by one client, classified by observable evidence. */
 export type PlaybackPlay = {
     key: string,
     title: string,
@@ -612,8 +612,14 @@ export type PlaybackPlay = {
     endReason: PlaybackEndReason,
     errorNote?: string | null,
     hasDiagnostics: boolean,
-    /** A media-scanner header read rather than someone watching something. */
+    /** A tiny successful read, commonly a header or metadata probe; exact intent is unknown. */
     isProbe: boolean,
+    /** The WebDAV client was rclone; the process or container behind its shared mount is unknown. */
+    isRcloneActivity: boolean,
+    /** A substantial direct read whose transfer behavior looks like playback. */
+    isReliablePlayback: boolean,
+    /** Strong access-pattern evidence of background activity through the shared mount. */
+    isLikelyBackgroundActivity: boolean,
     issues: string[],
     counters: PlaybackCounters,
     providers: PlaybackProvider[],
@@ -1063,6 +1069,9 @@ export type ActiveRead = {
     id: string,
     fileName: string,
     path: string,
+    clientUserAgent?: string | null,
+    isLikelyPlayback: boolean,
+    isRcloneActivity: boolean,
     startedAt: number,
     lastActivityAt: number,
     bytesRead: number,

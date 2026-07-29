@@ -15,7 +15,10 @@ public class PlaybackHistoryTests
         var session = PlaybackHistory.BuildSession(
             CreateRow(providerStatsJson: SerializeProviders(
                 new PlaybackProviderStat("primary-1", 400, 800_000, 0, 0, 0, 0, 0, false),
-                new PlaybackProviderStat("backup-1", 12, 40_000, 20, 12, 6, 2, 0, true))),
+                // Provider usage can be recorded without going through the
+                // explicit fallback-attempt telemetry. Its configured role
+                // must still identify it as backup.
+                new PlaybackProviderStat("backup-1", 12, 40_000, 0, 0, 0, 0, 0, false))),
             Providers());
 
         Assert.Equal(2, session.Providers.Count);
@@ -26,8 +29,29 @@ public class PlaybackHistoryTests
 
         var backup = session.Providers[1];
         Assert.Equal("news.backup.test", backup.Host);
-        Assert.Equal(12, backup.Rescued);
+        Assert.Equal(12, backup.Segments);
         Assert.True(backup.IsBackup);
+        Assert.Contains(PlaybackHistory.Issue.BackupUsed, session.Issues);
+    }
+
+    [Fact]
+    public void BuildSession_TreatsBackupAndStatsAsBackupWhenItServesData()
+    {
+        var providers = Providers();
+        providers["backup-stats-1"] = Provider(
+            "backup-stats-1",
+            "news.backup-stats.test",
+            "Backup + stats",
+            ProviderType.BackupAndStats);
+
+        var session = PlaybackHistory.BuildSession(
+            CreateRow(providerStatsJson: SerializeProviders(
+                new PlaybackProviderStat(
+                    "backup-stats-1", 3, 20_000, 0, 0, 0, 0, 0, false))),
+            providers);
+
+        Assert.True(Assert.Single(session.Providers).IsBackup);
+        Assert.Contains(PlaybackHistory.Issue.BackupUsed, session.Issues);
     }
 
     [Fact]
@@ -50,7 +74,7 @@ public class PlaybackHistoryTests
     public void IsProbe_NeverHidesAPlayThatServedZeros()
     {
         // Small and unremarkable except that part of it was fabricated. Filed as
-        // a library scan it would never be looked at.
+        // a harmless probe it would never be looked at.
         var play = Assert.Single(PlaybackHistory.GroupIntoPlays([
             PlaybackHistory.BuildSession(
                 CreateRow(requestCount: 1, bytesServed: 200_000, zeroFilledSegments: 1),
@@ -366,6 +390,183 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
+    public void GroupIntoPlays_ClassifiesRepeatedRcloneTailReadsAsLikelyBackgroundActivity()
+    {
+        const long fileSize = 36_032_848_884;
+        var start = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeMilliseconds();
+        var sessions = Enumerable.Range(0, 5)
+            .Select(index => PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start + index * 90_000,
+                    endedAt: start + index * 90_000 + 6_000,
+                    path: "/movies/there-will-be-blood.mkv",
+                    clientUserAgent: "rclone/v1.74.3",
+                    requestCount: 3,
+                    upstreamStalls: index == 0 ? 4 : 0,
+                    maxUpstreamStallMs: index == 0 ? 5_000 : 0,
+                    bytesServed: 90_000_000,
+                    bytesFetched: 130_000_000,
+                    fileSize: fileSize,
+                    maxOffset: fileSize,
+                    endReason: ReadSession.EndReasonCode.Aborted),
+                Providers()))
+            .ToList();
+
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(sessions));
+
+        Assert.True(play.IsRcloneActivity);
+        Assert.False(play.IsReliablePlayback);
+        Assert.True(play.IsLikelyBackgroundActivity);
+        Assert.False(play.IsProbe);
+        Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+        Assert.False(PlaybackHistory.MatchesFilter(play, "probes"));
+        Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+        // Source problems remain queryable even when the activity is background work.
+        Assert.True(PlaybackHistory.MatchesFilter(play, "issues"));
+    }
+
+    [Fact]
+    public void GroupIntoPlays_ClassifiesConcurrentRcloneBulkReadsAndTheirContinuation()
+    {
+        var start = DateTimeOffset.UtcNow.AddHours(-3).ToUnixTimeMilliseconds();
+        const string rclone = "rclone/v1.74.3";
+        const long supergirlSize = 20_024_673_519;
+        const long trumanSize = 60_016_333_472;
+        var supergirlEnd = start + (long)TimeSpan.FromMinutes(27).TotalMilliseconds;
+        var trumanStart = start + 10_000;
+        var trumanEnd = trumanStart + (long)TimeSpan.FromMinutes(60).TotalMilliseconds;
+        var trumanResume = trumanEnd + (long)TimeSpan.FromMinutes(17).TotalMilliseconds;
+
+        var plays = PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start,
+                    endedAt: supergirlEnd,
+                    path: "/movies/supergirl.mkv",
+                    fileName: "Supergirl.mkv",
+                    clientUserAgent: rclone,
+                    requestCount: 84,
+                    bytesServed: 19_760_000_000,
+                    bytesFetched: 21_100_000_000,
+                    fileSize: supergirlSize,
+                    maxOffset: supergirlSize),
+                Providers()),
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: trumanStart,
+                    endedAt: trumanEnd,
+                    path: "/movies/truman-show.mkv",
+                    fileName: "The.Truman.Show.mkv",
+                    clientUserAgent: rclone,
+                    requestCount: 184,
+                    bytesServed: 48_360_000_000,
+                    bytesFetched: 51_400_000_000,
+                    fileSize: trumanSize,
+                    maxOffset: trumanSize,
+                    endReason: ReadSession.EndReasonCode.Aborted),
+                Providers()),
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: trumanResume,
+                    endedAt: trumanResume + (long)TimeSpan.FromMinutes(17).TotalMilliseconds,
+                    path: "/movies/truman-show.mkv",
+                    fileName: "The.Truman.Show.mkv",
+                    clientUserAgent: rclone,
+                    requestCount: 46,
+                    bytesServed: 11_670_000_000,
+                    bytesFetched: 12_500_000_000,
+                    fileSize: trumanSize,
+                    maxOffset: trumanSize),
+                Providers()),
+        ]);
+
+        Assert.Equal(3, plays.Count);
+        Assert.All(plays, play =>
+        {
+            Assert.True(play.IsRcloneActivity);
+            Assert.False(play.IsReliablePlayback);
+            Assert.True(play.IsLikelyBackgroundActivity);
+            Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+            Assert.False(PlaybackHistory.MatchesFilter(play, "probes"));
+            Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+        });
+        Assert.Equal(2, plays.Count(play => play.Title == "The.Truman.Show.mkv"));
+    }
+
+    [Fact]
+    public void GroupIntoPlays_LeavesBackToBackRcloneBulkReadsUnclassified()
+    {
+        const long fileSize = 10_000_000_000;
+        var start = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeMilliseconds();
+        var firstEnd = start + (long)TimeSpan.FromMinutes(45).TotalMilliseconds;
+        var plays = PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start,
+                    endedAt: firstEnd,
+                    path: "/shows/episode-one.mkv",
+                    clientUserAgent: "rclone/v1.74.3",
+                    bytesServed: 9_500_000_000,
+                    bytesFetched: 9_800_000_000,
+                    fileSize: fileSize,
+                    maxOffset: fileSize),
+                Providers()),
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: firstEnd + 10_000,
+                    endedAt: firstEnd + (long)TimeSpan.FromMinutes(46).TotalMilliseconds,
+                    path: "/shows/episode-two.mkv",
+                    clientUserAgent: "rclone/v1.74.3",
+                    bytesServed: 9_500_000_000,
+                    bytesFetched: 9_800_000_000,
+                    fileSize: fileSize,
+                    maxOffset: fileSize),
+                Providers()),
+        ]);
+
+        Assert.Equal(2, plays.Count);
+        Assert.All(plays, play =>
+        {
+            Assert.True(play.IsRcloneActivity);
+            Assert.False(play.IsReliablePlayback);
+            Assert.False(play.IsLikelyBackgroundActivity);
+            Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+            Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+            Assert.False(PlaybackHistory.MatchesFilter(play, "probes"));
+        });
+    }
+
+    [Fact]
+    public void GroupIntoPlays_LeavesAnIsolatedLargeRcloneReadUnclassified()
+    {
+        const long fileSize = 40_000_000_000;
+        var start = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeMilliseconds();
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start,
+                    endedAt: start + (long)TimeSpan.FromMinutes(90).TotalMilliseconds,
+                    path: "/movies/one-view.mkv",
+                    clientUserAgent: "rclone/v1.74.3",
+                    bytesServed: 38_000_000_000,
+                    bytesFetched: 39_000_000_000,
+                    fileSize: fileSize,
+                    maxOffset: fileSize),
+                Providers()),
+        ]));
+
+        Assert.True(play.IsRcloneActivity);
+        Assert.False(play.IsReliablePlayback);
+        Assert.False(play.IsLikelyBackgroundActivity);
+        Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+        Assert.False(PlaybackHistory.MatchesFilter(play, "probes"));
+    }
+
+    [Fact]
     public void MatchesFilter_IssuesExcludesPlainClientAborts()
     {
         var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -419,15 +620,15 @@ public class PlaybackHistoryTests
         Assert.Contains("budget-exhausted", play.Issues);
         Assert.True(play.IsProbe);
         Assert.False(PlaybackHistory.MatchesFilter(play, "issues"));
-        Assert.True(PlaybackHistory.MatchesFilter(play, "scans"));
+        Assert.True(PlaybackHistory.MatchesFilter(play, "probes"));
     }
 
     [Fact]
-    public void MatchesFilter_SeparatesLibraryScansFromViewing()
+    public void MatchesFilter_SeparatesTinyDirectProbesFromViewing()
     {
         var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        // A scanner reading a header: kilobytes, and it can be slow about it.
-        var scan = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        // A tiny read: kilobytes, and it can be slow without revealing why.
+        var probe = Assert.Single(PlaybackHistory.GroupIntoPlays(
         [
             PlaybackHistory.BuildSession(
                 CreateRow(startedAt: start, endedAt: start + 14_400, bytesServed: 330_000),
@@ -440,12 +641,102 @@ public class PlaybackHistoryTests
                 Providers()),
         ]));
 
-        Assert.True(scan.IsProbe);
+        Assert.True(probe.IsProbe);
+        Assert.False(probe.IsReliablePlayback);
         Assert.False(watched.IsProbe);
-        Assert.True(PlaybackHistory.MatchesFilter(scan, "scans"));
-        Assert.False(PlaybackHistory.MatchesFilter(scan, "plays"));
+        Assert.True(watched.IsReliablePlayback);
+        Assert.True(PlaybackHistory.MatchesFilter(probe, "probes"));
+        // Keep the old query value working for API callers.
+        Assert.True(PlaybackHistory.MatchesFilter(probe, "scans"));
+        Assert.False(PlaybackHistory.MatchesFilter(probe, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(watched, "playback"));
         Assert.True(PlaybackHistory.MatchesFilter(watched, "plays"));
-        Assert.True(PlaybackHistory.MatchesFilter(scan, "all"));
+        Assert.True(PlaybackHistory.MatchesFilter(probe, "all"));
+    }
+
+    [Theory]
+    [InlineData("Dalvik/2.1.0 (Linux; U; Android 16)")]
+    [InlineData("stagefright/1.2 (Linux;Android 16)")]
+    [InlineData("Mozilla/5.0 Chrome/138")]
+    [InlineData("SomeAutomation/1.0")]
+    public void MatchesFilter_SubstantialDirectReadIsPlaybackRegardlessOfUserAgent(
+        string userAgent)
+    {
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    clientUserAgent: userAgent,
+                    bytesServed: 54_000_000),
+                Providers()),
+        ]));
+
+        Assert.False(play.IsProbe);
+        Assert.False(play.IsRcloneActivity);
+        Assert.True(play.IsReliablePlayback);
+        Assert.True(PlaybackHistory.MatchesFilter(play, "playback"));
+    }
+
+    [Fact]
+    public void GroupIntoPlays_MergesChangingDirectUserAgentsIntoOnePlayback()
+    {
+        var start = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds();
+        var plays = PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start,
+                    endedAt: start + 7_000,
+                    clientUserAgent: "stagefright/1.2 (Linux;Android 16)",
+                    bytesServed: 47_500_000),
+                Providers()),
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start + 2_000,
+                    endedAt: start + 35_000,
+                    clientUserAgent: "Dalvik/2.1.0 (Linux; U; Android 16)",
+                    bytesServed: 113_000_000),
+                Providers()),
+        ]);
+
+        var play = Assert.Single(plays);
+        Assert.True(play.IsReliablePlayback);
+        Assert.Equal(160_500_000, play.BytesServed);
+        Assert.Equal(2, play.Sessions.Count);
+        // The agent that carried most of the bytes is the useful display value,
+        // while both raw agents remain visible in the session details.
+        Assert.StartsWith("Dalvik/", play.ClientUserAgent);
+    }
+
+    [Fact]
+    public void PrimaryFiltersAssignEveryReadToExactlyOneCategory()
+    {
+        static GetPlaybackSessionsResponse.PlayDto Activity(
+            string userAgent,
+            long bytesServed) =>
+            Assert.Single(PlaybackHistory.GroupIntoPlays(
+            [
+                PlaybackHistory.BuildSession(
+                    CreateRow(
+                        clientUserAgent: userAgent,
+                        bytesServed: bytesServed),
+                    Providers()),
+            ]));
+
+        var activities = new[]
+        {
+            Activity("VLC/3.0.21", 54_000_000),
+            Activity("VLC/3.0.21", 330_000),
+            Activity("rclone/v1.74.3", 54_000_000),
+            Activity("SomeAutomation/1.0", 54_000_000),
+        };
+        string[] primaryFilters = ["playback", "probes", "mount"];
+
+        Assert.All(activities, activity =>
+            Assert.Equal(
+                1,
+                primaryFilters.Count(filter =>
+                    PlaybackHistory.MatchesFilter(activity, filter))));
     }
 
     [Fact]
@@ -453,7 +744,7 @@ public class PlaybackHistoryTests
     {
         var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         // A stream that died after 20 KB is the most interesting row on the
-        // page — it must never be filed away as a scan.
+        // page — it must never be filed away as a harmless probe.
         var died = Assert.Single(PlaybackHistory.GroupIntoPlays(
         [
             PlaybackHistory.BuildSession(
@@ -478,8 +769,8 @@ public class PlaybackHistoryTests
 
         Assert.False(died.IsProbe);
         Assert.False(stalled.IsProbe);
-        Assert.True(PlaybackHistory.MatchesFilter(died, "plays"));
-        Assert.True(PlaybackHistory.MatchesFilter(stalled, "plays"));
+        Assert.True(PlaybackHistory.MatchesFilter(died, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(stalled, "playback"));
     }
 
     [Fact]

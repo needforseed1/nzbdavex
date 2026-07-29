@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NzbWebDAV.Api.Controllers.GetPlaybackSessions;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Services;
@@ -42,6 +43,9 @@ public class ActiveReadsSnapshotBuilderTests
         Assert.Equal(id, read.GetProperty("id").GetGuid());
         Assert.Equal("movie.mkv", read.GetProperty("fileName").GetString());
         Assert.Equal("/content/movie", read.GetProperty("path").GetString());
+        Assert.Equal("vlc", read.GetProperty("clientUserAgent").GetString());
+        Assert.True(read.GetProperty("isLikelyPlayback").GetBoolean());
+        Assert.False(read.GetProperty("isRcloneActivity").GetBoolean());
         Assert.Equal(100, read.GetProperty("bytesRead").GetInt64());
         Assert.Equal(250, read.GetProperty("currentOffset").GetInt64());
         Assert.Equal(0, read.GetProperty("bytesPerSecond").GetInt64());
@@ -74,6 +78,29 @@ public class ActiveReadsSnapshotBuilderTests
             Assert.Single(afterForget.RootElement.GetProperty("reads").EnumerateArray())
                 .GetProperty("bytesPerSecond")
                 .GetInt64());
+
+        var rcloneEntry = entry with
+        {
+            Id = Guid.NewGuid(),
+            ClientUserAgent = "rclone/v1.74.3",
+        };
+        using var mountPayload = JsonDocument.Parse(builder.BuildPayload([rcloneEntry], now));
+        var mountRead = Assert.Single(
+            mountPayload.RootElement.GetProperty("reads").EnumerateArray());
+        Assert.False(mountRead.GetProperty("isLikelyPlayback").GetBoolean());
+        Assert.True(mountRead.GetProperty("isRcloneActivity").GetBoolean());
+
+        var genericEntry = entry with
+        {
+            Id = Guid.NewGuid(),
+            ClientUserAgent = "Mozilla/5.0 Chrome/138",
+            BytesRead = PlaybackHistory.ProbeMaxBytesServed,
+        };
+        using var genericPayload = JsonDocument.Parse(
+            builder.BuildPayload([genericEntry], now));
+        var genericRead = Assert.Single(
+            genericPayload.RootElement.GetProperty("reads").EnumerateArray());
+        Assert.True(genericRead.GetProperty("isLikelyPlayback").GetBoolean());
     }
 
     private static ActiveReadSessionSnapshot Session(

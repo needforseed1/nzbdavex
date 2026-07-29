@@ -1,6 +1,7 @@
 using System.Text.Json;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models.Metrics;
+using NzbWebDAV.Models;
 using NzbWebDAV.Services;
 using static NzbWebDAV.Api.Controllers.GetPlaybackSessions.GetPlaybackSessionsResponse;
 
@@ -20,14 +21,40 @@ public static class PlaybackHistory
     public static readonly TimeSpan DefaultPlayGap = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// Media scanners (Plex, ffprobe, Jellyfin) open every file in the library
-    /// and read a few kilobytes of header. Those reads are indistinguishable
-    /// from playback at the protocol level, and there are thousands of them, so
-    /// they are classified by how little they took: real viewing pulls tens of
-    /// megabytes within seconds. Duration is useless here — a slow scan can hold
-    /// a file open for fifteen seconds and still read 300 KB.
+    /// Tiny successful reads are observable, but their caller's intent is not.
+    /// They commonly come from header or metadata inspection and are separated
+    /// from viewing by how little they took: real viewing pulls tens of megabytes
+    /// within seconds. Duration is not useful here because a probe can hold a
+    /// file open while transferring very little.
     /// </summary>
-    private const long ProbeMaxBytesServed = 8_000_000;
+    internal const long ProbeMaxBytesServed = 8_000_000;
+
+    // rclone hides the process reading its shared filesystem mount. These
+    // thresholds only classify patterns with strong evidence and leave
+    // ambiguous reads unclassified inside the mount-activity view.
+    // Classification never deletes a row.
+    private const double BackgroundTailProbeMaxFileFraction = 0.03;
+    private const double BackgroundTailProbeMinReachedFraction = 0.95;
+    private const int BackgroundTailProbeMinSessions = 3;
+    private static readonly TimeSpan BackgroundTailProbeMaxActiveTime = TimeSpan.FromMinutes(2);
+    private const double BackgroundBulkReadMinFileFraction = 0.75;
+    private const double BackgroundBulkReadMinSourceUtilization = 0.80;
+    private static readonly TimeSpan BackgroundBulkReadMinActiveTime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan BackgroundBulkReadMaxStartSkew = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan BackgroundBulkReadMinOverlap = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan BackgroundBulkReadContinuationGap = TimeSpan.FromMinutes(30);
+    private static readonly string[] RecognizedPlaybackUserAgentMarkers =
+    [
+        "infuse",
+        "vlc",
+        "kodi",
+        "xbmc",
+        "stremio",
+        "mpv",
+        "exoplayer",
+        "applecoremedia",
+        "avplayer",
+    ];
 
     private static readonly JsonSerializerOptions ProviderStatsJsonOptions = new()
     {
@@ -174,7 +201,15 @@ public static class PlaybackHistory
                     Missing = x.Missing,
                     Timeouts = x.Timeouts,
                     Errors = x.Errors,
-                    IsBackup = x.IsBackup,
+                    // The recorded flag covers providers observed by the
+                    // explicit fallback path. Provider usage can also be
+                    // attributed without that path (for example, a backup
+                    // taking over a prefetched pipeline), so honor the current
+                    // configured role as well. Resolving this at render time
+                    // also corrects existing history rows.
+                    IsBackup = x.IsBackup ||
+                        configured?.Type is ProviderType.BackupAndStats
+                            or ProviderType.BackupOnly,
                 };
             })
             .OrderByDescending(x => x.Segments)
@@ -256,27 +291,32 @@ public static class PlaybackHistory
 
         completed.AddRange(openPlays.Values);
 
-        return completed
+        var plays = completed
             .Select(group => BuildPlay(group, resolveContent))
             .OrderByDescending(x => x.StartedAtUnix)
             .ThenByDescending(x => x.EndedAtUnix)
             .ToList();
+        ClassifyLikelyBackgroundActivity(plays);
+        return plays;
     }
 
     public static bool MatchesFilter(PlayDto play, string? filter) => filter?.ToLowerInvariant() switch
     {
         null or "" or "all" => true,
-        "plays" => !play.IsProbe,
-        "probes" or "scans" => play.IsProbe,
+        "playback" or "plays" => play.IsReliablePlayback,
+        "probes" or "scans" => !play.IsRcloneActivity && play.IsProbe,
+        "mount" or "rclone" or "plex" => play.IsRcloneActivity,
+        "other" or "other-direct" =>
+            !play.IsRcloneActivity && !play.IsProbe && !play.IsReliablePlayback,
         "issues" => play.Issues.Any(x => PlaybackImpactIssues.Contains(x)),
         "failed" => play.EndReason is "timeout" or "error",
         _ => true,
     };
 
     /// <summary>
-    /// A library scan rather than someone watching something. Anything with a
-    /// viewer-impact signal stays a play no matter how little it served — a
-    /// stream that died after 20 KB is the most interesting row on the page.
+    /// A tiny successful read whose intent cannot be observed. Anything with a
+    /// viewer-impact signal stays out of this bucket no matter how little it
+    /// served — a stream that died after 20 KB is the most interesting row.
     /// </summary>
     private static bool IsProbe(long bytesServed, string endReason, IReadOnlyList<string> issues) =>
         bytesServed < ProbeMaxBytesServed
@@ -287,7 +327,22 @@ public static class PlaybackHistory
         '\n',
         session.DavItemId ?? session.Path,
         session.ClientIp ?? "",
-        session.ClientUserAgent ?? "");
+        ClientIdentityKey(session.ClientUserAgent));
+
+    private static string ClientIdentityKey(string? userAgent)
+    {
+        // One Android playback can switch between the platform HTTP stack and
+        // media stack. Treat that observed pair as one identity, but do not
+        // merge arbitrary agents: two real players on the same address must
+        // still produce two plays.
+        if (userAgent?.Contains("dalvik", StringComparison.OrdinalIgnoreCase) == true ||
+            userAgent?.Contains("stagefright", StringComparison.OrdinalIgnoreCase) == true)
+            return "direct:android-framework";
+
+        return IsRcloneUserAgent(userAgent)
+            ? $"rclone:{userAgent}"
+            : $"direct:{userAgent}";
+    }
 
     private static PlayDto BuildPlay(
         List<SessionDto> group,
@@ -305,6 +360,22 @@ public static class PlaybackHistory
         var counters = MergeCounters(group.Select(x => x.Counters));
         var providers = MergeProviders(group.SelectMany(x => x.Providers));
         var issues = DescribeIssues(counters, last.EndReason, providers);
+        var isProbe = IsProbe(bytesServed, last.EndReason, issues);
+        var isRcloneActivity = IsRcloneUserAgent(first.ClientUserAgent);
+        var representativeClient = group
+            .GroupBy(x => x.ClientUserAgent ?? "", StringComparer.OrdinalIgnoreCase)
+            .Select(sessionsForAgent => new
+            {
+                Session = sessionsForAgent
+                    .OrderByDescending(x => x.BytesServed)
+                    .ThenBy(x => x.StartedAtMs)
+                    .First(),
+                BytesServed = sessionsForAgent.Sum(x => x.BytesServed),
+            })
+            .OrderByDescending(x => x.BytesServed)
+            .ThenBy(x => x.Session.StartedAtMs)
+            .First()
+            .Session;
 
         return new PlayDto
         {
@@ -319,8 +390,8 @@ public static class PlaybackHistory
             Path = first.Path,
             DavItemId = first.DavItemId,
             HistoryItemId = group.Select(x => x.HistoryItemId).FirstOrDefault(x => x is not null),
-            ClientIp = first.ClientIp,
-            ClientUserAgent = first.ClientUserAgent,
+            ClientIp = representativeClient.ClientIp ?? first.ClientIp,
+            ClientUserAgent = representativeClient.ClientUserAgent,
             StartedAtUnix = startedMs / 1000,
             EndedAtUnix = endedMs / 1000,
             WatchedMs = watchedMs,
@@ -347,13 +418,198 @@ public static class PlaybackHistory
             EndReason = last.EndReason,
             ErrorNote = group.Select(x => x.ErrorNote).LastOrDefault(x => !string.IsNullOrWhiteSpace(x)),
             HasDiagnostics = group.Any(x => x.HasDiagnostics),
-            IsProbe = IsProbe(bytesServed, last.EndReason, issues),
+            IsProbe = isProbe,
+            IsRcloneActivity = isRcloneActivity,
+            // Finished direct reads are classified by what they did, not what
+            // they called themselves. The user agent is frequently just
+            // Dalvik, stagefright, or a browser after proxies and player stacks.
+            IsReliablePlayback = !isProbe && !isRcloneActivity,
+            IsLikelyBackgroundActivity = false,
             Issues = issues,
             Counters = counters,
             Providers = providers,
             Sessions = group.OrderByDescending(x => x.StartedAtMs).ToList(),
         };
     }
+
+    /// <summary>
+    /// Identifies strong background-access patterns without pretending rclone can
+    /// identify the process or container behind its shared mount.
+    ///
+    /// Two shapes are recognized:
+    ///  1. repeated, short reads that touch the end while transferring very
+    ///     little of the file; and
+    ///  2. large reads of different files that start together and
+    ///     overlap, followed by resumptions of the same background job.
+    ///
+    /// A single large rclone read is deliberately left alone. It may be a real
+    /// playback request whose VFS cache is reading ahead.
+    /// </summary>
+    private static void ClassifyLikelyBackgroundActivity(IReadOnlyList<PlayDto> plays)
+    {
+        foreach (var play in plays.Where(IsRepeatedTailProbe))
+            play.IsLikelyBackgroundActivity = true;
+
+        var bulkCandidates = plays
+            .Where(IsBulkBackgroundCandidate)
+            .OrderBy(x => x.StartedAtUnix)
+            .ToList();
+        for (var i = 0; i < bulkCandidates.Count; i++)
+        {
+            for (var j = i + 1; j < bulkCandidates.Count; j++)
+            {
+                var first = bulkCandidates[i];
+                var second = bulkCandidates[j];
+                if (!SameRcloneClient(first, second)) continue;
+                if (SameContent(first, second)) continue;
+                if (!StartsWithin(first, second, BackgroundBulkReadMaxStartSkew)) continue;
+                if (!IntervalsOverlapBy(first, second, BackgroundBulkReadMinOverlap)) continue;
+
+                first.IsLikelyBackgroundActivity = true;
+                second.IsLikelyBackgroundActivity = true;
+            }
+        }
+
+        // A maintenance read can be interrupted and resume after the normal
+        // ten-minute play-grouping gap. Once one fragment has strong batch
+        // evidence, carry that classification across nearby fragments of the
+        // same file. Repeat so a chain of resumptions is handled transitively.
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var candidate in plays.Where(x =>
+                         !x.IsLikelyBackgroundActivity &&
+                         IsBulkBackgroundContinuationCandidate(x)))
+            {
+                if (!plays.Any(known =>
+                        known.IsLikelyBackgroundActivity &&
+                        SameRcloneClient(candidate, known) &&
+                        SameContent(candidate, known) &&
+                        IntervalsWithin(
+                            candidate,
+                            known,
+                            BackgroundBulkReadContinuationGap)))
+                    continue;
+
+                candidate.IsLikelyBackgroundActivity = true;
+                changed = true;
+            }
+        } while (changed);
+    }
+
+    private static bool IsRepeatedTailProbe(PlayDto play)
+    {
+        if (!play.IsRcloneActivity ||
+            play.FileSize is not (> 0) ||
+            play.Sessions.Count < BackgroundTailProbeMinSessions ||
+            play.WatchedMs > BackgroundTailProbeMaxActiveTime.TotalMilliseconds)
+            return false;
+
+        var transferredFraction = play.BytesServed / (double)play.FileSize.Value;
+        var reachedFraction = play.MaxOffset / (double)play.FileSize.Value;
+        return transferredFraction <= BackgroundTailProbeMaxFileFraction &&
+               reachedFraction >= BackgroundTailProbeMinReachedFraction;
+    }
+
+    private static bool IsBulkBackgroundCandidate(PlayDto play)
+    {
+        if (!play.IsRcloneActivity ||
+            play.FileSize is not (> 0) ||
+            play.BytesFetched <= 0 ||
+            play.WatchedMs < BackgroundBulkReadMinActiveTime.TotalMilliseconds)
+            return false;
+
+        var transferredFraction = play.BytesServed / (double)play.FileSize.Value;
+        var sourceUtilization = play.BytesServed / (double)play.BytesFetched;
+        return transferredFraction >= BackgroundBulkReadMinFileFraction &&
+               sourceUtilization >= BackgroundBulkReadMinSourceUtilization;
+    }
+
+    private static bool IsBulkBackgroundContinuationCandidate(PlayDto play)
+    {
+        if (!play.IsRcloneActivity ||
+            play.FileSize is not (> 0) ||
+            play.BytesFetched <= 0 ||
+            play.WatchedMs < BackgroundBulkReadMinActiveTime.TotalMilliseconds)
+            return false;
+
+        // A continuation does not need to cover most of the file — it is often
+        // precisely the remainder of an interrupted job — but it should still be
+        // a substantial source-backed read, not a viewer briefly reopening the
+        // same title after maintenance happened to touch it.
+        var transferredFraction = play.BytesServed / (double)play.FileSize.Value;
+        var sourceUtilization = play.BytesServed / (double)play.BytesFetched;
+        return transferredFraction >= 0.10 &&
+               sourceUtilization >= BackgroundBulkReadMinSourceUtilization;
+    }
+
+    private static bool SameRcloneClient(PlayDto first, PlayDto second) =>
+        first.IsRcloneActivity &&
+        second.IsRcloneActivity &&
+        string.Equals(first.ClientIp, second.ClientIp, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            first.ClientUserAgent,
+            second.ClientUserAgent,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameContent(PlayDto first, PlayDto second) =>
+        string.Equals(ContentKey(first), ContentKey(second), StringComparison.Ordinal);
+
+    private static string ContentKey(PlayDto play) =>
+        play.DavItemId ??
+        play.HistoryItemId ??
+        play.Path;
+
+    private static bool StartsWithin(PlayDto first, PlayDto second, TimeSpan skew) =>
+        Math.Abs(first.StartedAtUnix - second.StartedAtUnix) <= skew.TotalSeconds;
+
+    private static bool IntervalsOverlapBy(PlayDto first, PlayDto second, TimeSpan overlap)
+    {
+        var overlapSeconds = Math.Min(first.EndedAtUnix, second.EndedAtUnix) -
+                             Math.Max(first.StartedAtUnix, second.StartedAtUnix);
+        return overlapSeconds >= overlap.TotalSeconds;
+    }
+
+    private static bool IntervalsWithin(PlayDto first, PlayDto second, TimeSpan gap)
+    {
+        var firstStart = first.StartedAtUnix;
+        var firstEnd = first.EndedAtUnix;
+        var secondStart = second.StartedAtUnix;
+        var secondEnd = second.EndedAtUnix;
+        var seconds = secondStart > firstEnd
+            ? secondStart - firstEnd
+            : firstStart > secondEnd
+                ? firstStart - secondEnd
+                : 0;
+        return seconds <= gap.TotalSeconds;
+    }
+
+    internal static bool IsRcloneUserAgent(string? userAgent) =>
+        userAgent?.Contains("rclone", StringComparison.OrdinalIgnoreCase) == true;
+
+    internal static bool IsRecognizedPlaybackUserAgent(string? userAgent)
+    {
+        if (string.IsNullOrWhiteSpace(userAgent)) return false;
+        return RecognizedPlaybackUserAgentMarkers.Any(marker =>
+            userAgent.Contains(marker, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Live reads do not yet have the completed-session probe classification.
+    /// Known players can be shown immediately; otherwise wait until the direct
+    /// client has transferred enough data to look like playback. A request
+    /// currently suffering viewer-impacting trouble is shown even if it failed
+    /// before reaching the byte threshold.
+    /// </summary>
+    internal static bool IsLikelyActivePlayback(
+        string? userAgent,
+        long bytesRead,
+        bool hasViewerImpact) =>
+        !IsRcloneUserAgent(userAgent) &&
+        (IsRecognizedPlaybackUserAgent(userAgent) ||
+         bytesRead >= ProbeMaxBytesServed ||
+         hasViewerImpact);
 
     private static CountersDto MergeCounters(IEnumerable<CountersDto> counters)
     {

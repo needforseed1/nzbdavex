@@ -62,6 +62,9 @@ function play(overrides: Partial<PlaybackPlay> = {}): PlaybackPlay {
         endReason: "completed",
         hasDiagnostics: true,
         isProbe: false,
+        isRcloneActivity: false,
+        isReliablePlayback: true,
+        isLikelyBackgroundActivity: false,
         issues: [],
         counters: emptyCounters,
         providers: [],
@@ -73,7 +76,7 @@ function play(overrides: Partial<PlaybackPlay> = {}): PlaybackPlay {
 test("issue badges are ordered by what matters and unknown keys are dropped", () => {
     const badges = describeIssues(["backup-used", "error", "stalled", "invented-issue"]);
     assert.deepEqual(badges.map(b => b.key), ["error", "stalled", "backup-used"]);
-    assert.deepEqual(badges.map(b => b.tone), ["bad", "warn", "info"]);
+    assert.deepEqual(badges.map(b => b.tone), ["bad", "warn", "warn"]);
     assert.equal(badges[0].label, "Failed");
 });
 
@@ -125,7 +128,7 @@ test("a play that served zeros says so instead of reading as clean", () => {
     const damaged = play({ issues: ["corrupted"] });
     assert.equal(playVerdictLabel(damaged), "Damaged");
     assert.equal(playVerdictLabel(play()), "No source issue");
-    assert.equal(playVerdictLabel(play({ issues: ["stalled"] })), "Source delays");
+    assert.equal(playVerdictLabel(play({ issues: ["stalled"] })), "Usenet wait");
     assert.equal(
         playVerdictLabel(play({ endReason: "aborted", issues: ["aborted"] })),
         "No source issue");
@@ -147,23 +150,62 @@ test("filters mirror the backend rules", () => {
     const slow = play({ issues: ["stalled"] });
     const failed = play({ issues: ["error"], endReason: "error" });
     const recovered = play({ issues: ["body-stalled", "backup-used", "rotated"] });
-    const scan = play({ isProbe: true });
+    const probe = play({ isProbe: true, isReliablePlayback: false });
+    const mountRead = play({
+        isRcloneActivity: true,
+        isReliablePlayback: false,
+        bytesServed: 20,
+        bytesFetched: 30,
+    });
+    const mountBackground = play({
+        isRcloneActivity: true,
+        isReliablePlayback: false,
+        isLikelyBackgroundActivity: true,
+        isProbe: true,
+        bytesServed: 40,
+        bytesFetched: 50,
+    });
+    const browserPlayback = play({
+        clientUserAgent: "Mozilla/5.0 Chrome/138",
+        isReliablePlayback: true,
+    });
 
-    assert.equal(matchesFilter(stopped, "plays"), true);
+    assert.equal(matchesFilter(stopped, "playback"), true);
     assert.equal(matchesFilter(stopped, "issues"), false);
     assert.equal(matchesFilter(slow, "issues"), true);
     assert.equal(matchesFilter(slow, "failed"), false);
     assert.equal(matchesFilter(failed, "failed"), true);
     assert.equal(matchesFilter(recovered, "issues"), false);
 
-    // A library scan is not something anybody watched.
-    assert.equal(matchesFilter(scan, "plays"), false);
-    assert.equal(matchesFilter(scan, "scans"), true);
-    assert.equal(matchesFilter(stopped, "scans"), false);
+    // A tiny direct probe is observable even though its exact intent is not.
+    assert.equal(matchesFilter(probe, "playback"), false);
+    assert.equal(matchesFilter(probe, "probes"), true);
+    assert.equal(matchesFilter(stopped, "probes"), false);
+    assert.equal(matchesFilter(mountRead, "playback"), false);
+    assert.equal(matchesFilter(mountRead, "mount"), true);
+    assert.equal(matchesFilter(mountRead, "probes"), false);
+    assert.equal(matchesFilter(mountBackground, "playback"), false);
+    assert.equal(matchesFilter(mountBackground, "probes"), false);
+    assert.equal(matchesFilter(mountBackground, "mount"), true);
+    assert.equal(matchesFilter(browserPlayback, "playback"), true);
 
+    const stats = computeStats(
+        [stopped, slow, failed, probe, mountRead, mountBackground, browserPlayback]);
     assert.deepEqual(
-        computeStats([stopped, slow, failed, scan]),
-        { all: 4, watched: 3, scans: 1, issues: 2, failed: 1 });
+        stats,
+        {
+            all: 7,
+            playback: 4,
+            probes: 1,
+            mount: 2,
+            mountBytesServed: 60,
+            mountBytesFetched: 80,
+            issues: 2,
+            failed: 1,
+        });
+    assert.equal(
+        stats.playback + stats.probes + stats.mount,
+        stats.all);
 });
 
 test("clients are named from the user agent, then the ip", () => {
@@ -181,7 +223,10 @@ test("expanded diagnostics keep successful recovery neutral", () => {
         "pool-starved", "permit-starved", "budget-exhausted", "aborted",
     ]);
     assert.equal(badges.length, 8);
-    assert.ok(badges.every(badge => badge.tone === "info"));
+    assert.equal(badges.find(badge => badge.key === "backup-used")?.tone, "warn");
+    assert.ok(badges
+        .filter(badge => badge.key !== "backup-used")
+        .every(badge => badge.tone === "info"));
     assert.equal(badges.find(badge => badge.key === "body-stalled")?.label, "Connection recovered");
 });
 
@@ -206,9 +251,8 @@ test("upstream waits are split by cause so the fix is obvious", () => {
         totalHeadOfLineStallMs: 10_000,
     });
     assert.deepEqual(blocked.map(r => r.key), ["upstream", "head-of-line"]);
-    // No "longest" here: that measurement belongs to the parent row.
-    assert.equal(blocked[1].value, "10s total · 3 waits");
-    assert.match(blocked[1].label, /blocked behind one article/);
+    assert.equal(blocked[1].label, "Cause");
+    assert.equal(blocked[1].value, "A slow article blocked prefetched data in 3 of 4 waits");
 });
 
 test("delays are listed worst first and omitted when nothing waited", () => {
@@ -244,27 +288,29 @@ test("delays are listed worst first and omitted when nothing waited", () => {
     });
     assert.equal(single[0].value, "1 wait · longest 1.4s");
 
-    // Client pacing counts pauses, not waits — it is not waiting on anything.
+    // Client pacing is downstream backpressure, not an observed playback pause.
+    // Its cumulative total is omitted because grouped requests can overlap.
     const paced = summarizeDelays({
         ...emptyCounters,
         downstreamStalls: 7,
         maxDownstreamStallMs: 1_836,
         totalDownstreamStallMs: 8_646,
     });
-    assert.equal(paced[0].value, "8.6s total · 7 pauses · longest 1.8s");
+    assert.equal(paced[0].value, "7 waits · longest 1.8s");
     assert.equal(rows[0].value, "1 wait · longest 9s");
     assert.equal(rows[1].value, "2 waits · longest 1.5s");
-    assert.equal(rows[2].label, "Player buffer full (normal)");
-    assert.equal(rows[2].value, "8 pauses · longest 3.1s");
+    assert.equal(rows[2].label, "Client pacing (normal)");
+    assert.equal(rows[2].value, "8 waits · longest 3.1s");
 });
 
-test("a full player buffer is never labelled as buffering", () => {
+test("client pacing is never labelled as buffering", () => {
     // The counter exists for diagnostics, but a healthy stream that raced ahead
     // and got throttled by the client must not be badged as a problem.
     assert.equal(hasPlaybackImpact([]), false);
     const badge = describeIssues(["stalled"])[0];
-    assert.equal(badge.label, "Source delays");
-    assert.match(badge.title, /three source waits/);
+    assert.equal(badge.label, "Usenet wait");
+    assert.match(badge.title, /three waits/);
+    assert.match(badge.title, /preparation and health-check time are not included/i);
     assert.match(playVerdictTitle(play({ issues: ["stalled"] })), /does not prove/);
 });
 
@@ -325,6 +371,9 @@ test("polling skips re-render when nothing changed", () => {
     const b = [play()];
     assert.equal(playsEqual(a, b), true);
     assert.equal(playsEqual(a, [play({ bytesServed: 10 })]), false);
+    assert.equal(playsEqual(a, [play({ bytesFetched: 10 })]), false);
+    assert.equal(playsEqual(a, [play({ isReliablePlayback: false })]), false);
+    assert.equal(playsEqual(a, [play({ isLikelyBackgroundActivity: true })]), false);
     assert.equal(playsEqual(a, [play({ issues: ["stalled"] })]), false);
     assert.equal(playsEqual(a, []), false);
 });

@@ -5,6 +5,7 @@ import styles from "./playback-layout.module.css";
 import { PlaybackCard } from "./playback-card";
 import {
     computeStats,
+    formatBytes,
     formatCount,
     matchesFilter,
     type FilterKey,
@@ -33,7 +34,7 @@ export function PlaybackHistory({
     onRefresh: () => void,
     onClear: () => void,
 }) {
-    const [filter, setFilter] = useState<FilterKey>("plays");
+    const [filter, setFilter] = useState<FilterKey>("playback");
     const stats = useMemo(() => computeStats(plays), [plays]);
     const visible = useMemo(
         () => plays.filter(play => matchesFilter(play, filter)),
@@ -43,9 +44,9 @@ export function PlaybackHistory({
         <div className={styles.group}>
             <div className={styles.groupHeader}>
                 <div className={styles.groupHeading}>
-                    <h2 className={styles.title}>Playback history</h2>
+                    <h2 className={styles.title}>Playback &amp; file activity</h2>
                     <div className={styles.subtitle}>
-                        Source health at a glance. Expand a play for provider and recovery details.
+                        Playback is identified by direct read behavior, independent of the client name.
                     </div>
                 </div>
                 <div className={styles.controls}>
@@ -82,22 +83,33 @@ export function PlaybackHistory({
                         className={`${styles.toolbarBtn} ${styles.toolbarBtnDanger}`}
                         onClick={onClear}
                         disabled={plays.length === 0 || clearing}
-                        title="Permanently delete playback history.">
+                        title="Permanently delete playback and file-activity history.">
                         {clearing ? "Clearing…" : "Clear history"}
                     </button>
                 </div>
             </div>
 
             <div className={styles.filterBar}>
-                <FilterChip active={filter === "plays"} onClick={() => setFilter("plays")} count={stats.watched}>
-                    Watched
+                <FilterChip
+                    active={filter === "playback"}
+                    onClick={() => setFilter("playback")}
+                    count={stats.playback}
+                    title="Substantial direct reads that look like playback. Client names are not required; shared-mount traffic and tiny probes are excluded.">
+                    Playback
                 </FilterChip>
                 <FilterChip
-                    active={filter === "scans"}
-                    onClick={() => setFilter("scans")}
-                    count={stats.scans}
-                    title="Library scans — a media server reading file headers, not playback.">
-                    Scans
+                    active={filter === "mount"}
+                    onClick={() => setFilter("mount")}
+                    count={stats.mount}
+                    title="Everything requested through rclone. The originating application or container is not visible.">
+                    Mount activity
+                </FilterChip>
+                <FilterChip
+                    active={filter === "probes"}
+                    onClick={() => setFilter("probes")}
+                    count={stats.probes}
+                    title="Tiny successful reads from clients connecting directly to WebDAV. Their exact purpose is unknown; rclone requests remain under Mount activity.">
+                    Direct probes
                 </FilterChip>
                 <FilterChip active={filter === "issues"} onClick={() => setFilter("issues")} count={stats.issues}>
                     Source issues
@@ -106,6 +118,18 @@ export function PlaybackHistory({
                     Failed
                 </FilterChip>
             </div>
+
+            {filter === "mount" && stats.mount > 0 && (
+                <div className={styles.filterSummary}>
+                    Originating app unknown
+                    <span aria-hidden="true">·</span>
+                    <strong>{formatBytes(stats.mountBytesFetched)}</strong> fetched from Usenet
+                    <span aria-hidden="true">·</span>
+                    {formatBytes(stats.mountBytesServed)} served through rclone
+                    <span aria-hidden="true">·</span>
+                    {formatCount(stats.mount)} activit{stats.mount === 1 ? "y" : "ies"}
+                </div>
+            )}
 
             {/* Plays are grouped after the sample is taken, so these counts
                 are counts over the sample. Saying so is the difference
@@ -123,9 +147,10 @@ export function PlaybackHistory({
             {visible.length === 0 ? (
                 <div className={styles.emptyState}>
                     {plays.length === 0
-                        ? "Nothing streamed yet. Play something from your media client and it will show up here."
-                        : filter === "plays" && stats.scans > 0
-                            ? `Nothing watched recently — the last ${stats.scans} reads were library scans.`
+                        ? "No file activity recorded yet."
+                        : filter === "playback" &&
+                          stats.probes + stats.mount > 0
+                            ? "No direct playback in this sample. Mount activity and small probes remain available in their filters."
                             : "Nothing matches this filter."}
                 </div>
             ) : (

@@ -1,8 +1,11 @@
 /* ---------- Play cards and details ---------- */
 
+/* A hairline border on a near-black card left the rows reading as one slab;
+   the border a step up plus the wider list gap is enough to tell cards apart
+   without turning the list into a stack of boxes. */
 .playCard {
     background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
     overflow: hidden;
 }
@@ -16,7 +19,7 @@
     align-items: center;
     gap: 14px;
     flex-wrap: wrap;
-    padding: 10px 14px;
+    padding: 12px 14px;
 }
 
 .playRowClickable {
@@ -36,16 +39,44 @@
     flex-direction: column;
     gap: 3px;
     min-width: 0;
-    flex: 1 1 240px;
+    flex: 1 1 280px;
 }
 
+@media not (min-width: 720px) {
+    .playRow {
+        gap: 10px 12px;
+        padding: 12px 12px;
+    }
+
+    /* Small enough a basis that the verdict pill keeps the name company on the
+       first line instead of sitting alone on one of its own. */
+    .playIdent {
+        flex: 1 1 140px;
+    }
+
+    /* The stat track owns a full row of its own down here, so the toggle lands
+       on the line below it; keep it flush right rather than adrift mid-row. */
+    .rowTail {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
+/* The release name is the identity of a play: clipped to one line, the part
+   that tells two encodes of the same title apart is exactly what goes missing.
+   Two lines, then clip. Breaking is allowed mid-word because dotted scene names
+   offer no spaces to wrap at. */
 .playTitle {
     color: var(--text-primary);
     font-size: 13px;
     font-weight: 500;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
 }
 
 .playMeta {
@@ -115,21 +146,23 @@
 
 /* ---------- Stats ---------- */
 
-/* A fixed six-column track, shared by live and finished plays. Flex-wrapped
-   stats put every card's numbers at a different x-position; a column that never
-   lines up reads as noise rather than as a table of the same six facts. */
+/* A fixed six-column track shared by live and finished plays, so a live play
+   and the finished play it becomes read as the same object. Six columns need
+   ~540px to hold a rate like "12.4 MB/s"; below that the track folds to two
+   rows of three rather than clipping every value. */
 .statGrid {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 2px 12px;
+    gap: 2px 20px;
     flex: 0 0 auto;
-    width: min(100%, 470px);
+    width: min(100%, 540px);
 }
 
-@media not (min-width: 1100px) {
+@media not (min-width: 720px) {
     .statGrid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        width: min(100%, 300px);
+        gap: 10px 14px;
+        width: 100%;
     }
 }
 
@@ -174,6 +207,16 @@
     flex-wrap: wrap;
 }
 
+/* Backup use is worth noticing, not a fault. As a filled pill it shouted over
+   the verdict pill next to it, so it keeps the warning colour and drops the
+   chrome. Deliberately not .issueBadge: session rows still want real pills. */
+.backupFlag {
+    color: var(--warning);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
 .issueBadge {
     padding: 2px 7px;
     border-radius: 999px;
@@ -200,24 +243,50 @@
     border-color: var(--danger-muted);
 }
 
-.detailsToggle {
+.detailsHint {
     all: unset;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.detailsHintLabel {
+    line-height: 1;
+}
+
+.detailsToggle {
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 6px;
-    color: var(--text-faint);
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
 }
 
-.detailsToggle:hover {
-    color: var(--text-primary);
-    background: var(--bg-surface-2);
+.detailsHint:hover,
+.playRowOpen .detailsHint {
+    color: var(--text-secondary);
 }
 
-.detailsToggle:focus-visible {
+.detailsHint:hover .detailsToggle,
+.playRowOpen .detailsToggle {
+    color: var(--accent);
+    background: var(--bg-base);
+    border-color: var(--accent);
+}
+
+.detailsHint:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
 }
@@ -231,8 +300,8 @@
 }
 
 .detailsChevron {
-    width: 14px;
-    height: 14px;
+    width: 15px;
+    height: 15px;
     transition: transform 140ms ease;
 }
 

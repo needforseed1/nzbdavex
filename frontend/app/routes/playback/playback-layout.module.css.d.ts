@@ -6,6 +6,7 @@ declare const styles: {
   readonly "filterChip": string;
   readonly "filterChipActive": string;
   readonly "filterChipCount": string;
+  readonly "filterSummary": string;
   readonly "group": string;
   readonly "groupHeader": string;
   readonly "groupHeading": string;

@@ -22,8 +22,8 @@ public class GetPlaybackSessionsController(
     private const int MaxLimit = 2000;
 
     /// <summary>
-    /// One raw session is not one play: a play is many sessions, and library
-    /// scans outnumber real viewing several to one. Grouping runs after the
+    /// One raw session is not one play: a play is many sessions, and tiny probes
+    /// outnumber real viewing several to one. Grouping runs after the
     /// sample is taken, so the sample has to be deep enough that the plays a
     /// person is looking for survive being outnumbered.
     /// </summary>

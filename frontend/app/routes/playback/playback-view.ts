@@ -9,7 +9,8 @@ export type IssueBadge = {
     title: string,
 };
 
-export type FilterKey = "plays" | "scans" | "issues" | "failed";
+export type FilterKey =
+    "playback" | "mount" | "probes" | "issues" | "failed";
 
 /**
  * Every issue the backend can report, in the order they are worth reading:
@@ -19,26 +20,26 @@ const ISSUE_META: Record<string, { label: string, tone: IssueTone, title: string
     "corrupted": {
         label: "Damaged data",
         tone: "bad",
-        title: "Articles could not be fetched and were served to the player as " +
-            "zeros. Those parts of the file are damaged — expect glitches, " +
-            "audio dropouts or a stuck picture at those points.",
+        title: "Articles could not be fetched and were served to the requesting " +
+            "client as zeros. Those parts of the file are damaged.",
     },
     "error": {
         label: "Failed",
         tone: "bad",
-        title: "The stream ended with an error.",
+        title: "The request ended with an error.",
     },
     "timeout": {
         label: "Timed out",
         tone: "bad",
-        title: "The stream timed out waiting for data.",
+        title: "The request timed out waiting for data.",
     },
     "stalled": {
-        label: "Source delays",
+        label: "Usenet wait",
         tone: "warn",
-        title: "Usenet caused at least three source waits or one wait of 3 seconds " +
-            "or longer. This can cause buffering if the player's buffer runs out, " +
-            "but does not prove that the viewer saw a pause.",
+        title: "During media delivery, Usenet caused at least three waits or one " +
+            "wait of 3 seconds or longer. This can cause buffering if the client " +
+            "runs out of buffered data, but does not prove playback paused. NZB " +
+            "preparation and health-check time are not included.",
     },
     "body-stalled": {
         label: "Connection recovered",
@@ -73,8 +74,8 @@ const ISSUE_META: Record<string, { label: string, tone: IssueTone, title: string
         title: "Another provider supplied articles the first one could not.",
     },
     "backup-used": {
-        label: "Backup served data",
-        tone: "info",
+        label: "Backup used",
+        tone: "warn",
         title: "A backup provider served part of this stream.",
     },
     "aborted": {
@@ -123,14 +124,14 @@ export function playVerdictLabel(play: Pick<PlaybackPlay, "issues" | "endReason"
     if (play.endReason === "error") return "Failed";
     if (play.endReason === "timeout") return "Timed out";
     if (play.issues.includes("corrupted")) return "Damaged";
-    if (play.issues.includes("stalled")) return "Source delays";
+    if (play.issues.includes("stalled")) return "Usenet wait";
     return "No source issue";
 }
 
 /** Explains what the headline does — and deliberately does not — claim. */
 export function playVerdictTitle(play: Pick<PlaybackPlay, "issues" | "endReason">): string {
-    if (play.endReason === "error") return "Playback ended with a server error.";
-    if (play.endReason === "timeout") return "Playback timed out waiting for data.";
+    if (play.endReason === "error") return "The request ended with a server error.";
+    if (play.endReason === "timeout") return "The request timed out waiting for data.";
     if (play.issues.includes("corrupted")) {
         return "Some articles could not be fetched and were delivered as zeros.";
     }
@@ -139,14 +140,18 @@ export function playVerdictTitle(play: Pick<PlaybackPlay, "issues" | "endReason"
         "Expand the play to see provider and recovery details.";
 }
 
-type FilterablePlay = Pick<PlaybackPlay, "issues" | "endReason" | "isProbe">;
+type FilterablePlay = Pick<
+    PlaybackPlay,
+    "issues" | "endReason" | "isProbe" | "isRcloneActivity" | "isReliablePlayback"
+>;
 
 export function matchesFilter(play: FilterablePlay, filter: FilterKey): boolean {
     switch (filter) {
-        // Library scans outnumber real viewing several to one, so the default
-        // view is what a person actually watched.
-        case "plays": return !play.isProbe;
-        case "scans": return play.isProbe;
+        // Playback is identified from direct read behavior rather than the
+        // user-agent string, which is frequently generic after a proxy.
+        case "playback": return play.isReliablePlayback;
+        case "probes": return !play.isRcloneActivity && play.isProbe;
+        case "mount": return play.isRcloneActivity;
         case "issues":
             return play.endReason === "error"
                 || play.endReason === "timeout"
@@ -156,17 +161,34 @@ export function matchesFilter(play: FilterablePlay, filter: FilterKey): boolean 
 }
 
 export function computeStats(plays: readonly PlaybackPlay[]) {
-    let watched = 0;
-    let scans = 0;
+    let playback = 0;
+    let probes = 0;
+    let mount = 0;
+    let mountBytesServed = 0;
+    let mountBytesFetched = 0;
     let issues = 0;
     let failed = 0;
     for (const play of plays) {
-        if (matchesFilter(play, "plays")) watched++;
-        if (matchesFilter(play, "scans")) scans++;
+        if (matchesFilter(play, "playback")) playback++;
+        if (matchesFilter(play, "probes")) probes++;
+        if (matchesFilter(play, "mount")) {
+            mount++;
+            mountBytesServed += play.bytesServed;
+            mountBytesFetched += play.bytesFetched;
+        }
         if (matchesFilter(play, "issues")) issues++;
         if (matchesFilter(play, "failed")) failed++;
     }
-    return { all: plays.length, watched, scans, issues, failed };
+    return {
+        all: plays.length,
+        playback,
+        probes,
+        mount,
+        mountBytesServed,
+        mountBytesFetched,
+        issues,
+        failed,
+    };
 }
 
 const KNOWN_CLIENTS: [RegExp, string][] = [
@@ -206,7 +228,7 @@ export function summarizeDelays(counters: PlaybackCounters): { key: string, labe
     const rows: { key: string, label: string, value: string, weight: number }[] = [];
     if (counters.upstreamStalls > 0) rows.push({
         key: "upstream",
-        label: "Waited on usenet",
+        label: "Usenet wait",
         value: describeWaits(
             counters.upstreamStalls, counters.totalUpstreamStallMs, counters.maxUpstreamStallMs),
         weight: counters.maxUpstreamStallMs,
@@ -216,25 +238,24 @@ export function summarizeDelays(counters: PlaybackCounters): { key: string, labe
     // number — and they call for opposite fixes.
     if (counters.headOfLineStalls > 0) rows.push({
         key: "head-of-line",
-        label: "…of those, blocked behind one article",
-        value: describeWaits(
-            counters.headOfLineStalls,
-            counters.totalHeadOfLineStallMs,
-            counters.maxUpstreamStallMs,
-            "wait",
-            { withLongest: false }),
+        label: "Cause",
+        value: counters.headOfLineStalls === counters.upstreamStalls
+            ? counters.headOfLineStalls === 1
+                ? "A slow article blocked prefetched data"
+                : `A slow article blocked prefetched data in all ${counters.headOfLineStalls} waits`
+            : `A slow article blocked prefetched data in ${counters.headOfLineStalls} of `
+              + `${counters.upstreamStalls} waits`,
         // Sorts immediately under the upstream row it qualifies.
         weight: counters.maxUpstreamStallMs - 1,
     });
-    // Not a delay in any harmful sense: the client stopped reading because it
-    // had buffered enough. Shown because it explains the timeline, and ranked
-    // last so it never looks like the problem.
+    // Downstream backpressure is usually ordinary player/proxy pacing, not an
+    // observed playback pause. Its cumulative duration is deliberately hidden:
+    // grouped, overlapping range sessions can make that total exceed wall time.
     if (counters.downstreamStalls > 0) rows.push({
         key: "downstream",
-        label: "Player buffer full (normal)",
+        label: "Client pacing (normal)",
         value: describeWaits(
-            counters.downstreamStalls, counters.totalDownstreamStallMs, counters.maxDownstreamStallMs,
-            "pause"),
+            counters.downstreamStalls, 0, counters.maxDownstreamStallMs),
         weight: -1,
     });
     if (counters.providerPoolWaits > 0) rows.push({
@@ -399,8 +420,12 @@ export function playsEqual(a: readonly PlaybackPlay[], b: readonly PlaybackPlay[
         if (x.key !== y.key) return false;
         if (x.endedAtUnix !== y.endedAtUnix) return false;
         if (x.bytesServed !== y.bytesServed) return false;
+        if (x.bytesFetched !== y.bytesFetched) return false;
         if (x.sessions.length !== y.sessions.length) return false;
         if (x.endReason !== y.endReason) return false;
+        if (x.isRcloneActivity !== y.isRcloneActivity) return false;
+        if (x.isReliablePlayback !== y.isReliablePlayback) return false;
+        if (x.isLikelyBackgroundActivity !== y.isLikelyBackgroundActivity) return false;
         if (x.issues.join(",") !== y.issues.join(",")) return false;
     }
     return true;

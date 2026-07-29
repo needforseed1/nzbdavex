@@ -16,6 +16,9 @@ export type ActiveRead = {
     id: string,
     fileName: string,
     path: string,
+    clientUserAgent?: string | null,
+    isLikelyPlayback: boolean,
+    isRcloneActivity: boolean,
     startedAt: number,
     lastActivityAt: number,
     bytesRead: number,
@@ -67,7 +70,8 @@ export function useActiveReads(): ActiveRead[] {
 }
 
 export function ActivePlays({ reads }: { reads: ActiveRead[] }) {
-    if (reads.length === 0) return null;
+    const playback = reads.filter(read => read.isLikelyPlayback);
+    if (playback.length === 0) return null;
 
     return (
         <div className={layoutStyles.group}>
@@ -80,11 +84,11 @@ export function ActivePlays({ reads }: { reads: ActiveRead[] }) {
                 </div>
                 <span className={layoutStyles.liveTag}>
                     <span className={`${layoutStyles.liveDot} ${layoutStyles.liveDotOn}`} />
-                    {reads.length} active
+                    {playback.length} active
                 </span>
             </div>
             <div className={layoutStyles.playList}>
-                {reads.map(read => <ActiveReadCard key={read.id} read={read} />)}
+                {playback.map(read => <ActiveReadCard key={read.id} read={read} />)}
             </div>
         </div>
     );

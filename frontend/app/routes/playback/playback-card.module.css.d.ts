@@ -1,4 +1,5 @@
 declare const styles: {
+  readonly "backupFlag": string;
   readonly "backupTag": string;
   readonly "badgeRow": string;
   readonly "chevronHolder": string;
@@ -14,6 +15,8 @@ declare const styles: {
   readonly "detailValue": string;
   readonly "detailsChevron": string;
   readonly "detailsChevronOpen": string;
+  readonly "detailsHint": string;
+  readonly "detailsHintLabel": string;
   readonly "detailsToggle": string;
   readonly "errorNote": string;
   readonly "issue-bad": string;

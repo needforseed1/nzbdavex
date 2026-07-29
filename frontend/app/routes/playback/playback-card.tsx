@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
 import type { PlaybackPlay } from "~/clients/backend-client.server";
-import { ProviderSummary } from "~/components/provider-summary/provider-summary";
 import styles from "./playback-card.module.css";
 import { PlaybackSessionRow } from "./playback-session-row";
 import { PlaybackStat } from "./playback-stat";
@@ -16,7 +15,6 @@ import {
     playVerdict,
     playVerdictLabel,
     playVerdictTitle,
-    providerShares,
     summarizeDelays,
     summarizeRetrieval,
     usedBackupProvider,
@@ -26,7 +24,6 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
     const [open, setOpen] = useState(false);
     const verdict = playVerdict(play);
     const verdictLabel = playVerdictLabel(play);
-    const providers = providerShares(play.providers);
     const client = describeClient(play.clientUserAgent, play.clientIp);
     const backupUsed = usedBackupProvider(play);
 
@@ -48,11 +45,34 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
                 <div className={styles.playIdent}>
                     <div className={styles.playTitle} title={play.nzbName ?? play.title}>{play.title}</div>
                     <div className={styles.playMeta}>
-                        {play.isProbe && (
+                        {play.isLikelyBackgroundActivity && (
                             <span
                                 className={styles.metaBadge}
-                                title="Only a few kilobytes were read — a media server scanning the file, not playback.">
-                                scan
+                                title="The rclone access pattern strongly suggests background work: repeated tail probes or concurrent large reads. The originating application is unknown.">
+                                Likely background
+                            </span>
+                        )}
+                        {!play.isLikelyBackgroundActivity && play.isProbe && (
+                            <span
+                                className={styles.metaBadge}
+                                title={play.isRcloneActivity
+                                    ? "Only a tiny part of the file was requested through rclone. The originating application and exact purpose are unknown."
+                                    : "Only a tiny part of the file was read by a direct WebDAV client. Its exact purpose is unknown, but it does not look like playback."}>
+                                {play.isRcloneActivity ? "rclone probe" : "probe"}
+                            </span>
+                        )}
+                        {play.isRcloneActivity && !play.isLikelyBackgroundActivity && !play.isProbe && (
+                            <span
+                                className={styles.metaBadge}
+                                title="The WebDAV request came through rclone, which does not identify the process or container reading its shared mount.">
+                                rclone
+                            </span>
+                        )}
+                        {backupUsed && (
+                            <span
+                                className={styles.backupFlag}
+                                title="A configured backup provider served part of this playback.">
+                                Backup used
                             </span>
                         )}
                         {play.category && <span className={styles.metaBadge}>{play.category}</span>}
@@ -66,56 +86,63 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
                     </div>
                 </div>
                 <span className={styles.statGrid}>
-                    <PlaybackStat label="Watched" value={formatWatchTime(play.watchedMs)} />
-                    <PlaybackStat label="Reached" value={formatPct(play.reachedPct)} />
-                    <PlaybackStat label="Served" value={formatBytes(play.bytesServed)} />
                     <PlaybackStat
-                        label="To client"
-                        value={formatRate(play.avgBytesPerSecond)}
-                        title="Average rate the player actually consumed." />
+                        label={play.isReliablePlayback ? "Watched" : "Active"}
+                        value={formatWatchTime(play.watchedMs)}
+                        title={!play.isReliablePlayback
+                            ? "Combined time spent serving requests; this does not imply somebody watched the file."
+                            : undefined} />
+                    {play.isRcloneActivity ? (
+                        <PlaybackStat
+                            label="Fetched"
+                            value={formatBytes(play.bytesFetched)}
+                            title="Bytes downloaded from Usenet providers for this activity. Cache hits can make this lower than the bytes served." />
+                    ) : (
+                        <PlaybackStat label="Reached" value={formatPct(play.reachedPct)} />
+                    )}
+                    <PlaybackStat label="Served" value={formatBytes(play.bytesServed)} />
                     <PlaybackStat
                         label="Fetch avg"
                         value={formatRate(play.sourceBytesPerSecond)}
                         // Deliberately not called a provider speed: it is
-                        // everything fetched divided by how long the play
+                        // everything fetched divided by how long the activity
                         // lasted, so pauses and prefetch are both in it. It
                         // compares against the client rate, nothing more.
                         title={"Everything fetched from usenet divided by the length of the "
-                            + "play — including time spent paused, and bytes read ahead but "
+                            + "activity — including time spent paused, and bytes read ahead but "
                             + "never sent. Well above the client rate means prefetch ran "
                             + "ahead. It is not a measurement of provider speed."} />
+                    <PlaybackStat
+                        label="To client"
+                        value={formatRate(play.avgBytesPerSecond)}
+                        title="Average rate the requesting client consumed." />
                     <PlaybackStat
                         label="Startup"
                         value={formatMs(play.firstByteMs)}
                         title="How long the first request took to deliver its first byte." />
                 </span>
                 <span className={styles.rowTail}>
-                    {providers.length > 0 && (
-                        <ProviderSummary
-                            items={providers}
-                            heading="Articles served"
-                            meta={`${providers.length} provider${providers.length === 1 ? "" : "s"}`}
-                        />
-                    )}
                     <button
                         type="button"
-                        className={styles.detailsToggle}
+                        className={styles.detailsHint}
                         onClick={event => { event.stopPropagation(); toggle(); }}
                         aria-expanded={open}
                         aria-controls={`playback-detail-${play.key}`}
-                        aria-label={open ? "Hide play details" : "Show play details"}>
-                        <svg
-                            className={`${styles.detailsChevron} ${open ? styles.detailsChevronOpen : ""}`}
-                            viewBox="0 0 16 16"
-                            aria-hidden="true">
-                            <path
-                                d="m4 6 4 4 4-4"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round" />
-                        </svg>
+                        aria-label={open ? "Hide activity details" : "Show activity details"}>
+                        <span className={styles.detailsHintLabel}>Stats</span>
+                        <span className={styles.detailsToggle} aria-hidden="true">
+                            <svg
+                                className={`${styles.detailsChevron} ${open ? styles.detailsChevronOpen : ""}`}
+                                viewBox="0 0 16 16">
+                                <path
+                                    d="m4 6 4 4 4-4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round" />
+                            </svg>
+                        </span>
                     </button>
                 </span>
             </div>
@@ -142,7 +169,6 @@ function PlaybackDetail({
 }) {
     const delays = summarizeDelays(play.counters);
     const retrieval = summarizeRetrieval(play.counters);
-    const sourceDelayed = play.issues.includes("stalled");
     const quiet = delays.length === 0 && retrieval.length === 0;
 
     return (
@@ -174,16 +200,6 @@ function PlaybackDetail({
                                 <span className={styles.detailValue}>{row.value}</span>
                             </div>
                         ))}
-                        {play.counters.upstreamStalls > 0 && (
-                            <div className={styles.detailNote}>
-                                {sourceDelayed
-                                    ? "Source issue threshold: at least 3 source waits, or one lasting "
-                                      + "3 seconds. This indicates a buffering risk, not proof that "
-                                      + "the player paused."
-                                    : "These source waits stayed below the source-issue threshold and "
-                                      + "may have been absorbed by the player's buffer."}
-                            </div>
-                        )}
                     </DetailBlock>
                 )}
 

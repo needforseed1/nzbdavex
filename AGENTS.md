@@ -3,10 +3,9 @@
 ## Change delivery
 
 - Never stage, commit, or push changes unless the user explicitly requests it. An implementation, test run, local build, or local deployment does not imply permission to commit or push.
-- After implementing and validating changes, when delivery was not already specified, ask whether the user wants:
-  1. a local image build/redeployment; or
-  2. a release with a version bump, changelog entry, commit/push, and an updated GitHub release page.
-- Do not start either delivery path until the user chooses it explicitly.
+- Never ask whether the user wants changes committed or pushed, and do not suggest a release. The user will explicitly request those actions when wanted.
+- After implementing and validating application changes, rebuild and redeploy the local application when that is the logical next step—for example, when the user is actively testing the running instance or the change affects runtime/UI behavior. Do not pause to ask first. Skip deployment for documentation-only, test-only, or clearly source-only work, or when the user says not to deploy.
+- A request to build or rebuild locally normally includes recreating the local application service unless the user explicitly asks for an image-only build.
 
 ## Release workflow
 
@@ -36,7 +35,7 @@ Treat a release as complete only after the code, GitHub release, and requested d
 - Compose project: `/opt/docker/compose/nzbdavex/docker-compose.yml`
 - Application image: `nzbdavex:main-local`
 - Application service: `nzbdavex`
-- When the user explicitly asks for a local rebuild or redeployment, keep it simple and build directly from the current checkout, including its uncommitted changes. Do not create a temporary worktree, isolated source copy, change digest, prerelease version, or Docker rollback tag.
+- When a local rebuild or redeployment is requested or is the logical next step under the change-delivery guidance, keep it simple and build directly from the current checkout, including its uncommitted changes. Do not create a temporary worktree, isolated source copy, change digest, prerelease version, or Docker rollback tag.
 - A local deployment must not stage, commit, push, bump versions, tag, or publish anything. Git is sufficient for source rollback.
 - Build the local image from the repository root:
 
@@ -57,4 +56,4 @@ Treat a release as complete only after the code, GitHub release, and requested d
 
 - Do not display or commit Compose `.env` contents, credentials, or `/config` data.
 - Preserve user changes in a dirty worktree and call them out in the handoff.
-- Do not create a tag, GitHub release, or production deployment unless the user requested that stage.
+- Do not create a tag, GitHub release, or non-local deployment unless the user explicitly requests that stage. Local application deployments follow the change-delivery guidance above.

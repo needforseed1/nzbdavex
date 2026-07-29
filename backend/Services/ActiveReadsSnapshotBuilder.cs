@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NzbWebDAV.Api.Controllers.GetPlaybackSessions;
 using NzbWebDAV.Config;
 
 namespace NzbWebDAV.Services;
@@ -60,6 +61,13 @@ public sealed class ActiveReadsSnapshotBuilder(
             entry.Id,
             entry.FileName,
             entry.Path,
+            entry.ClientUserAgent,
+            PlaybackHistory.IsLikelyActivePlayback(
+                entry.ClientUserAgent,
+                entry.BytesRead,
+                (live?.ActiveUpstreamWaits ?? 0) > 0 ||
+                (live?.ZeroFilledSegments ?? 0) > 0),
+            PlaybackHistory.IsRcloneUserAgent(entry.ClientUserAgent),
             entry.StartedAt.ToUnixTimeMilliseconds(),
             entry.LastActivityAt.ToUnixTimeMilliseconds(),
             entry.BytesRead,
@@ -101,6 +109,9 @@ public sealed class ActiveReadsSnapshotBuilder(
         Guid Id,
         string FileName,
         string Path,
+        string? ClientUserAgent,
+        bool IsLikelyPlayback,
+        bool IsRcloneActivity,
         long StartedAt,
         long LastActivityAt,
         long BytesRead,

@@ -199,6 +199,22 @@
     color: var(--text-secondary);
 }
 
+.filterSummary {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-wrap: wrap;
+    margin: -2px 0 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.filterSummary strong {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
 .errorBox {
     margin-bottom: 12px;
     padding: 9px 12px;
@@ -222,5 +238,5 @@
 .playList {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
 }
