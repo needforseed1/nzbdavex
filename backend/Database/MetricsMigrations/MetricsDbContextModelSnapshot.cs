@@ -288,6 +288,37 @@ namespace NzbWebDAV.Database.MetricsMigrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PlexConfidence")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlexDetail")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool?>("PlexIsTranscode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PlexPlatform")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlexPlayer")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlexProduct")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlexPurpose")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlexRatingKey")
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("ProviderPoolWaits")
                         .HasColumnType("INTEGER");
 

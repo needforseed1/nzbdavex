@@ -18,6 +18,7 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
         "usenet.max-queue-connections", "usenet.playback-reserved-connections",
         "usenet.warm-validation-concurrency",
         "rclone.host", "rclone.user", "rclone.pass",
+        "plex.base-url", "plex.token", "plex.path-prefix", "plex.local-path-prefix",
         "media.library-dir", "search.exclude-patterns", "watchtower.profile-token",
     ];
 
@@ -41,7 +42,7 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
 
     internal static string ResolveEffectiveValue(string key, string? storedValue, ConfigManager config)
     {
-        if (key is "webdav.pass" or "rclone.pass") return "";
+        if (key is "webdav.pass" or "rclone.pass" or "plex.token") return "";
         if (storedValue is not null
             && (!string.IsNullOrWhiteSpace(storedValue) || MeaningfulBlankValues.Contains(key)))
             return storedValue;

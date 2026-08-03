@@ -4,6 +4,7 @@ import styles from "./playback-layout.module.css";
 import {
     backendClient,
     type PlaybackPlay,
+    type PlexStatus,
 } from "~/clients/backend-client.server";
 import { ActivePlays, useActiveReads } from "./active-plays";
 import {
@@ -23,6 +24,7 @@ export async function loader() {
 
 export default function Playback({ loaderData }: Route.ComponentProps) {
     const [plays, setPlays] = useState<PlaybackPlay[]>(loaderData.page.plays);
+    const [plexStatus, setPlexStatus] = useState<PlexStatus>(loaderData.page.plexStatus);
     const [sample, setSample] = useState({
         sampledSessions: loaderData.page.sampledSessions,
         truncated: loaderData.page.truncated,
@@ -44,6 +46,7 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
             // the whole page down with "e is not iterable".
             const next: PlaybackPlay[] = Array.isArray(data?.plays) ? data.plays : [];
             setPlays(previous => playsEqual(previous, next) ? previous : next);
+            setPlexStatus(data?.plexStatus ?? { enabled: false, connected: false });
             setSample({
                 sampledSessions: data.sampledSessions ?? 0,
                 truncated: data.truncated ?? false,
@@ -99,6 +102,7 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
             <ActivePlays reads={activeReads} />
             <PlaybackHistory
                 plays={plays}
+                plexStatus={plexStatus}
                 sampledSessions={sample.sampledSessions}
                 truncated={sample.truncated}
                 autoRefresh={autoRefresh}

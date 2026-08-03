@@ -192,6 +192,17 @@
     max-width: 180px;
 }
 
+.progressBadges {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.liveHealthProgress {
+    display: inline-flex;
+}
+
 .recoveryNotice {
     color: var(--text-muted);
     font-size: 9px;

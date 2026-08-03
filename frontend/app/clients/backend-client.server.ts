@@ -311,6 +311,10 @@ class BackendClient {
         const data = await response.json();
         return {
             plays: Array.isArray(data?.plays) ? data.plays : [],
+            plexStatus: data?.plexStatus ?? {
+                enabled: false,
+                connected: false,
+            },
             sampledSessions: data?.sampledSessions ?? 0,
             truncated: data?.truncated ?? false,
             limit: data?.limit ?? limit,
@@ -447,6 +451,7 @@ export type QueueSlot = {
     cat: string,
     percentage: string,
     true_percentage: string,
+    health_percentage?: string | null,
     status: string,
     mb: string,
     mbleft: string,
@@ -580,6 +585,7 @@ export type WatchdogHealthProvider = {
  */
 export type PlaybackHistoryPage = {
     plays: PlaybackPlay[],
+    plexStatus: PlexStatus,
     sampledSessions: number,
     truncated: boolean,
     limit: number,
@@ -591,6 +597,8 @@ export type PlaybackPlay = {
     title: string,
     nzbName?: string | null,
     category?: string | null,
+    /** Application that originally submitted the NZB; not necessarily the current reader. */
+    submissionSource?: "sonarr" | "radarr" | "streaming" | string | null,
     path: string,
     davItemId?: string | null,
     historyItemId?: string | null,
@@ -620,10 +628,37 @@ export type PlaybackPlay = {
     isReliablePlayback: boolean,
     /** Strong access-pattern evidence of background activity through the shared mount. */
     isLikelyBackgroundActivity: boolean,
+    /** Specific mount-side purpose inferred without knowing the process behind rclone. */
+    mountPurpose?: "symlink-resolution" | "import-inspection" | "analysis-probe" | string | null,
+    mountRelatedFileCount?: number | null,
+    mountCompletedAtUnix?: number | null,
+    /** Plex purpose observed for this existing NzbDAVex read. */
+    plexPurpose?: string | null,
+    /** Exact media path or explicitly weaker time-only evidence. */
+    plexConfidence?: "exact-path" | "time-only" | string | null,
+    plexProduct?: string | null,
+    plexPlayer?: string | null,
+    plexPlatform?: string | null,
+    plexRatingKey?: string | null,
+    plexDetail?: string | null,
+    plexIsTranscode?: boolean | null,
+    /** Exact or uniquely correlated time-only Plex playing read; not watch progress. */
+    isPlexPlayback?: boolean,
     issues: string[],
     counters: PlaybackCounters,
     providers: PlaybackProvider[],
     sessions: PlaybackSession[],
+}
+
+export type PlexStatus = {
+    enabled: boolean,
+    connected: boolean,
+    lastSuccessfulPollAtUnix?: number | null,
+    lastError?: string | null,
+    activitiesConnected?: boolean | null,
+    activitiesError?: string | null,
+    serverName?: string | null,
+    serverVersion?: string | null,
 }
 
 export type PlaybackEndReason = "completed" | "aborted" | "timeout" | "error";
@@ -650,6 +685,14 @@ export type PlaybackSession = {
     endReason: PlaybackEndReason,
     errorNote?: string | null,
     hasDiagnostics: boolean,
+    plexPurpose?: string | null,
+    plexConfidence?: "exact-path" | "time-only" | string | null,
+    plexProduct?: string | null,
+    plexPlayer?: string | null,
+    plexPlatform?: string | null,
+    plexRatingKey?: string | null,
+    plexDetail?: string | null,
+    plexIsTranscode?: boolean | null,
     issues: string[],
     counters: PlaybackCounters,
     providers: PlaybackProvider[],

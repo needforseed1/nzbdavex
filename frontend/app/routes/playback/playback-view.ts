@@ -12,6 +12,154 @@ export type IssueBadge = {
 export type FilterKey =
     "playback" | "mount" | "probes" | "issues" | "failed";
 
+const PLEX_PURPOSE_LABELS: Record<string, string> = {
+    playback: "Playback",
+    paused: "Paused or prebuffering",
+    prebuffering: "Prebuffering",
+    stopped: "Stopped session",
+    transcode: "Transcode only",
+    "plex-session": "Player session",
+    "library-scan": "Library scan",
+    "intro-detection": "Intro detection",
+    "credits-detection": "Credits or outro detection",
+    "thumbnail-generation": "Thumbnail generation",
+    "chapter-generation": "Chapter generation",
+    "loudness-analysis": "Loudness analysis",
+    "sonic-analysis": "Sonic analysis",
+    fingerprinting: "Fingerprinting",
+    "deep-media-analysis": "Deep media analysis",
+    "media-analysis": "Analysis",
+};
+
+export function plexPurposeLabel(purpose?: string | null): string {
+    if (!purpose) return "Unknown Plex activity";
+    return PLEX_PURPOSE_LABELS[purpose]
+        ?? purpose.replaceAll("-", " ").replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+export function plexAttributionBadge(
+    purpose?: string | null,
+    _confidence?: string | null,
+): string {
+    return "Plex " + plexPurposeLabel(purpose).toLowerCase();
+}
+
+export function plexAttributionTitle(
+    purpose?: string | null,
+    confidence?: string | null,
+): string {
+    const label = plexPurposeLabel(purpose).toLowerCase();
+    return confidence === "exact-path"
+        ? `Plex reported ${label} for this exact media item during the NzbDAVex read.`
+        : purpose === "playback"
+            ? "A single Plex session reported playing at the same time as this rclone read. " +
+              "Plex is the probable source, but the media path was not proven."
+            : `Plex reported ${label} at the same time as this rclone read, but did not expose a matching media path. Plex is possible, not proven.`;
+}
+
+const USEFUL_TIME_ONLY_PLEX_PURPOSES = new Set([
+    "playback",
+    "library-scan",
+    "intro-detection",
+    "credits-detection",
+    "thumbnail-generation",
+    "chapter-generation",
+    "loudness-analysis",
+    "sonic-analysis",
+    "fingerprinting",
+    "deep-media-analysis",
+    "media-analysis",
+]);
+
+export function shouldShowPlexAttribution(
+    purpose?: string | null,
+    confidence?: string | null,
+    mountPurpose?: string | null,
+): boolean {
+    if (!purpose) return false;
+    if (confidence === "exact-path") return true;
+    if (confidence !== "time-only" || !USEFUL_TIME_ONLY_PLEX_PURPOSES.has(purpose))
+        return false;
+
+    // A proven symlink request or newly completed import batch is stronger
+    // evidence than a Plex session that merely happened at the same time.
+    return !mountPurpose || mountPurpose === "analysis-probe";
+}
+
+export function submissionSourceLabel(source?: string | null): string | null {
+    switch (source?.toLowerCase()) {
+        case "sonarr": return "Sonarr";
+        case "radarr": return "Radarr";
+        default: return null;
+    }
+}
+
+export function mountPurposeLabel(
+    purpose?: string | null,
+    submissionSource?: string | null,
+): string | null {
+    switch (purpose) {
+        case "symlink-resolution": return "Symlink resolution";
+        case "import-inspection": {
+            const source = submissionSourceLabel(submissionSource);
+            return source ? `${source} import` : "Import inspection";
+        }
+        case "analysis-probe": return "Analysis probe";
+        default: return null;
+    }
+}
+
+export function mountPurposeTitle(
+    play: Pick<
+        PlaybackPlay,
+        "mountPurpose" | "mountRelatedFileCount" | "mountCompletedAtUnix"
+        | "startedAtUnix" | "bytesServed" | "bytesFetched" | "submissionSource"
+    >,
+): string | null {
+    if (play.mountPurpose === "symlink-resolution") {
+        return "rclone read NzbDAVex's small .rclonelink descriptor to create a filesystem symlink. " +
+            "This is mount metadata, not media playback.";
+    }
+    if (play.mountPurpose === "analysis-probe") {
+        return "rclone made a burst of requests reaching the end of the file without " +
+            "NzbDAVex serving or fetching media bytes. This strongly matches a scanner " +
+            "or media analyzer working from cached data. rclone alone cannot identify " +
+            "the originating application; a separate Plex badge is shown when Plex " +
+            "reports a matching activity.";
+    }
+    if (play.mountPurpose !== "import-inspection") return null;
+
+    const source = submissionSourceLabel(play.submissionSource);
+    const attribution = source
+        ? ` The NZB was submitted to NzbDAVex by ${source}, so this is attributed to ${source} import inspection.`
+        : " The submitting application was not recorded, so rclone cannot reveal whether the caller was Sonarr, Radarr, or another application.";
+    const count = play.mountRelatedFileCount ?? 0;
+    const delta = play.mountCompletedAtUnix == null
+        ? null
+        : Math.max(0, play.startedAtUnix - play.mountCompletedAtUnix);
+    const timing = delta == null
+        ? ""
+        : delta < 60
+            ? ` Activity began ${delta}s after NzbDAVex completed the NZB.`
+            : ` Activity began ${Math.floor(delta / 60)}m after NzbDAVex completed the NZB.`;
+    if (count === 1) {
+        return "The matching .rclonelink descriptor was resolved immediately before this newly " +
+            `completed file was opened, and rclone only inspected small ranges at the beginning ` +
+            `and end.${timing} This strongly matches media-manager import inspection.${attribution}`;
+    }
+    return `${count || "Multiple"} files from the same newly completed NZB were read through ` +
+        `rclone as one batch.${timing} This strongly matches media-manager import inspection.` +
+        attribution;
+}
+
+export function plexClientLabel(
+    product?: string | null,
+    platform?: string | null,
+    player?: string | null,
+): string {
+    return [product, platform, player].filter(Boolean).join(" · ");
+}
+
 /**
  * Every issue the backend can report, in the order they are worth reading:
  * how it ended first, then what retrieval had to do about it.
@@ -125,7 +273,7 @@ export function playVerdictLabel(play: Pick<PlaybackPlay, "issues" | "endReason"
     if (play.endReason === "timeout") return "Timed out";
     if (play.issues.includes("corrupted")) return "Damaged";
     if (play.issues.includes("stalled")) return "Usenet wait";
-    return "No source issue";
+    return "Source OK";
 }
 
 /** Explains what the headline does — and deliberately does not — claim. */
@@ -142,15 +290,16 @@ export function playVerdictTitle(play: Pick<PlaybackPlay, "issues" | "endReason"
 
 type FilterablePlay = Pick<
     PlaybackPlay,
-    "issues" | "endReason" | "isProbe" | "isRcloneActivity" | "isReliablePlayback"
+    "issues" | "endReason" | "isProbe" | "isRcloneActivity"
+    | "isReliablePlayback" | "isPlexPlayback"
 >;
 
 export function matchesFilter(play: FilterablePlay, filter: FilterKey): boolean {
     switch (filter) {
         // Playback is identified from direct read behavior rather than the
         // user-agent string, which is frequently generic after a proxy.
-        case "playback": return play.isReliablePlayback;
-        case "probes": return !play.isRcloneActivity && play.isProbe;
+        case "playback": return play.isReliablePlayback || play.isPlexPlayback === true;
+        case "probes": return play.isProbe;
         case "mount": return play.isRcloneActivity;
         case "issues":
             return play.endReason === "error"
@@ -426,6 +575,13 @@ export function playsEqual(a: readonly PlaybackPlay[], b: readonly PlaybackPlay[
         if (x.isRcloneActivity !== y.isRcloneActivity) return false;
         if (x.isReliablePlayback !== y.isReliablePlayback) return false;
         if (x.isLikelyBackgroundActivity !== y.isLikelyBackgroundActivity) return false;
+        if (x.mountPurpose !== y.mountPurpose) return false;
+        if (x.mountRelatedFileCount !== y.mountRelatedFileCount) return false;
+        if (x.mountCompletedAtUnix !== y.mountCompletedAtUnix) return false;
+        if (x.submissionSource !== y.submissionSource) return false;
+        if (x.isPlexPlayback !== y.isPlexPlayback) return false;
+        if (x.plexPurpose !== y.plexPurpose) return false;
+        if (x.plexConfidence !== y.plexConfidence) return false;
         if (x.issues.join(",") !== y.issues.join(",")) return false;
     }
     return true;

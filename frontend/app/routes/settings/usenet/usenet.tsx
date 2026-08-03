@@ -28,6 +28,7 @@ import {
 const usenetConnectionsTopic = {'cxs': 'state'};
 const benchmarkTopic = {'bench': 'state'};
 const USAGE_POLL_INTERVAL_MS = 10_000;
+const MAX_INT32 = 2_147_483_647;
 
 // Mirrors the camelCase JSON the backend benchmark endpoint + websocket emit.
 type BenchmarkLatency = { minMs: number; avgMs: number; samples: number };
@@ -829,6 +830,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     </div>
                 </div>
             </div>
+
                 </div>
             </details>
 
@@ -869,7 +871,7 @@ function ConcurrencyAndSchedulingSettings({
             ? Math.max(0, requestedPlaybackReservation)
             : 0,
         playbackReservableConnections);
-    const automaticWarmValidationConnections = Math.min(warmValidationCapacity.total, 384);
+    const automaticWarmValidationConnections = warmValidationCapacity.total;
     const warmValidationConcurrency = config["usenet.warm-validation-concurrency"] ?? "";
     const configuredWarmValidationConnections = Number.parseInt(warmValidationConcurrency, 10);
     const effectiveWarmValidationConnections = warmValidationConcurrency.trim() === ""
@@ -883,10 +885,10 @@ function ConcurrencyAndSchedulingSettings({
     const healthReadyConnections = config["usenet.ready-connections.health"] ?? "10";
     const readyConnectionImpact = getReadyConnectionImpact(
         providers,
-        isIntegerInRange(primaryReadyConnections, 0, 512)
+        isIntegerInRange(primaryReadyConnections, 0, MAX_INT32)
             ? Number(primaryReadyConnections)
             : 0,
-        isIntegerInRange(healthReadyConnections, 0, 512)
+        isIntegerInRange(healthReadyConnections, 0, MAX_INT32)
             ? Number(healthReadyConnections)
             : 0);
     return (
@@ -918,7 +920,7 @@ function ConcurrencyAndSchedulingSettings({
                     type="text"
                     inputMode="numeric"
                     id="playback-reserved-connections-input"
-                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(playbackReservedConnections, 0, 512) ? styles.error : ""}`}
+                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(playbackReservedConnections, 0, MAX_INT32) ? styles.error : ""}`}
                     placeholder="Automatic (20)"
                     value={playbackReservedConnections}
                     onChange={e => setNewConfig({
@@ -969,7 +971,7 @@ function ConcurrencyAndSchedulingSettings({
                     type="text"
                     inputMode="numeric"
                     id="warm-validation-concurrency-input"
-                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(warmValidationConcurrency, 1, 512) ? styles.error : ""}`}
+                    className={`${styles["form-input"]} ${!isOptionalIntegerInRange(warmValidationConcurrency, 1, MAX_INT32) ? styles.error : ""}`}
                     placeholder={`Automatic (${automaticWarmValidationConnections})`}
                     value={warmValidationConcurrency}
                     onChange={e => setNewConfig({
@@ -977,7 +979,7 @@ function ConcurrencyAndSchedulingSettings({
                         "usenet.warm-validation-concurrency": e.target.value,
                     })} />
                 <div className={styles["form-hint"]}>
-                    {warmValidationCapacity.total} health-check connections are currently available across {warmValidationCapacity.providers} eligible {warmValidationCapacity.providers === 1 ? "provider" : "providers"}; this setting will use {effectiveWarmValidationConnections}. Leave blank for Automatic ({automaticWarmValidationConnections}). This is one global budget distributed proportionally between providers (1–512). It validates already-connected sockets and does not change connection creation, playback, or health-check lane limits.
+                    {warmValidationCapacity.total} health-check connections are currently available across {warmValidationCapacity.providers} eligible {warmValidationCapacity.providers === 1 ? "provider" : "providers"}; this setting will use {effectiveWarmValidationConnections}. Leave blank for Automatic ({automaticWarmValidationConnections}). This is one global budget distributed proportionally between providers. It validates already-connected sockets and does not change connection creation, playback, or health-check lane limits.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -988,7 +990,7 @@ function ConcurrencyAndSchedulingSettings({
                     type="text"
                     inputMode="numeric"
                     id="primary-ready-connections-input"
-                    className={`${styles["form-input"]} ${!isIntegerInRange(primaryReadyConnections, 0, 512) ? styles.error : ""}`}
+                    className={`${styles["form-input"]} ${!isIntegerInRange(primaryReadyConnections, 0, MAX_INT32) ? styles.error : ""}`}
                     placeholder="5"
                     value={primaryReadyConnections}
                     onChange={e => setNewConfig({
@@ -1009,7 +1011,7 @@ function ConcurrencyAndSchedulingSettings({
                     type="text"
                     inputMode="numeric"
                     id="health-ready-connections-input"
-                    className={`${styles["form-input"]} ${!isIntegerInRange(healthReadyConnections, 0, 512) ? styles.error : ""}`}
+                    className={`${styles["form-input"]} ${!isIntegerInRange(healthReadyConnections, 0, MAX_INT32) ? styles.error : ""}`}
                     placeholder="10"
                     value={healthReadyConnections}
                     onChange={e => setNewConfig({
@@ -2310,15 +2312,15 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
         && isOptionalIntegerInRange(
             config["usenet.playback-reserved-connections"] ?? "",
             0,
-            512)
+            MAX_INT32)
         && isValidMaxQueueConnections(
             config["usenet.max-queue-connections"], getTotalPooledConnections(config))
         && isOptionalIntegerInRange(
-            config["usenet.warm-validation-concurrency"] ?? "", 1, 512)
+            config["usenet.warm-validation-concurrency"] ?? "", 1, MAX_INT32)
         && isIntegerInRange(
-            config["usenet.ready-connections.primary"] ?? "", 0, 512)
+            config["usenet.ready-connections.primary"] ?? "", 0, MAX_INT32)
         && isIntegerInRange(
-            config["usenet.ready-connections.health"] ?? "", 0, 512)
+            config["usenet.ready-connections.health"] ?? "", 0, MAX_INT32)
         && isValidStreamingPriority(config["usenet.streaming-priority"])
         && isValidArticleBufferSize(config["usenet.article-buffer-size"])
         && segmentCacheValid
@@ -2368,7 +2370,7 @@ function getPlaybackReservableConnections(providers: ConnectionDetails[]): numbe
             && provider.Type !== ProviderType.Disabled
             && provider.Type !== ProviderType.HealthChecksOnly)
         .reduce((sum, provider) => sum + Math.max(0, provider.MaxConnections - 1), 0);
-    return Math.min(512, reservable);
+    return reservable;
 }
 
 function getWarmValidationCapacity(providers: ConnectionDetails[]): { total: number; providers: number } {
@@ -2380,7 +2382,7 @@ function getWarmValidationCapacity(providers: ConnectionDetails[]): { total: num
     const totalHealthWarmTarget = eligible.reduce((sum, provider) =>
         sum + provider.MaxConnections - Math.floor(provider.MaxConnections / 10), 0);
     return {
-        total: Math.min(totalHealthWarmTarget, 512),
+        total: totalHealthWarmTarget,
         providers: eligible.length,
     };
 }
@@ -2401,7 +2403,7 @@ function getReadyConnectionImpact(
             : healthTarget;
         return sum + Math.min(target, provider.MaxConnections);
     }, 0);
-    return { connections: Math.min(connections, 512), providers: eligible.length };
+    return { connections, providers: eligible.length };
 }
 
 function isValidStreamingPriority(value: string): boolean {

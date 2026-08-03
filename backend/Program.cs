@@ -6,6 +6,7 @@ using NWebDav.Server;
 using NWebDav.Server.Stores;
 using NzbWebDAV.Api.SabControllers;
 using NzbWebDAV.Auth;
+using NzbWebDAV.Clients.Plex;
 using NzbWebDAV.Clients.Rclone;
 using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
@@ -16,6 +17,7 @@ using NzbWebDAV.Middlewares;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
 using NzbWebDAV.Services.Metrics;
+using NzbWebDAV.Services.Plex;
 using NzbWebDAV.Utils;
 using NzbWebDAV.WebDav;
 using NzbWebDAV.WebDav.Base;
@@ -155,6 +157,10 @@ class Program
             .AddSingleton<VariantResolver>()
             .AddSingleton<MetricsWriter>()
             .AddHostedService(sp => sp.GetRequiredService<MetricsWriter>())
+            .AddSingleton<PlexClient>()
+            .AddSingleton<PlexPathResolver>()
+            .AddSingleton<PlexReadAttributionMonitor>()
+            .AddHostedService(sp => sp.GetRequiredService<PlexReadAttributionMonitor>())
             .AddSingleton<ProviderBytesTracker>()
             .AddHostedService<MetricsRollupService>()
             .AddHostedService<MetricsRetentionService>()

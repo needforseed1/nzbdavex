@@ -2,7 +2,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
-using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
@@ -246,7 +245,7 @@ public class ConfigManager
             "usenet.playback-reserved-connections",
             20,
             0,
-            UsenetStreamingClient.ApplicationConnectionLimit);
+            int.MaxValue);
         return Math.Min(requested, GetUsenetProviderConfig().PlaybackReservableConnections);
     }
 
@@ -265,20 +264,20 @@ public class ConfigManager
             GetConfigValue("usenet.warm-validation-concurrency"));
         if (configured != null
             && int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-            return Math.Clamp(value, 1, UsenetStreamingClient.ApplicationConnectionLimit);
+            return Math.Max(value, 1);
         return CalculateAutomaticWarmValidationConnectionBudget(GetUsenetProviderConfig());
     }
 
     public int GetPrimaryReadyConnections()
     {
         return GetInteger("usenet.ready-connections.primary", 5, 0,
-            UsenetStreamingClient.ApplicationConnectionLimit);
+            int.MaxValue);
     }
 
     public int GetHealthReadyConnections()
     {
         return GetInteger("usenet.ready-connections.health", 10, 0,
-            UsenetStreamingClient.ApplicationConnectionLimit);
+            int.MaxValue);
     }
 
     internal static int CalculateAvailableHealthWarmConnections(UsenetProviderConfig config)
@@ -289,11 +288,11 @@ public class ConfigManager
                 or ProviderType.HealthChecksOnly)
             .Where(provider => provider.MaxConnections > 0)
             .Sum(provider => (long)provider.MaxConnections - provider.MaxConnections / 10);
-        return (int)Math.Min(total, UsenetStreamingClient.ApplicationConnectionLimit);
+        return (int)Math.Min(total, int.MaxValue);
     }
 
     internal static int CalculateAutomaticWarmValidationConnectionBudget(UsenetProviderConfig config) =>
-        Math.Min(CalculateAvailableHealthWarmConnections(config), 384);
+        CalculateAvailableHealthWarmConnections(config);
 
     public bool IsPlaybackPipeliningEnabled()
     {
@@ -855,6 +854,31 @@ public class ConfigManager
     public string? GetRclonePass()
     {
         return StringUtil.EmptyToNull(GetConfigValue("rclone.pass"));
+    }
+
+    public bool IsPlexEnabled()
+    {
+        return GetBoolean("plex.enabled", false);
+    }
+
+    public string? GetPlexBaseUrl()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("plex.base-url"))?.Trim().TrimEnd('/');
+    }
+
+    public string? GetPlexToken()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("plex.token"));
+    }
+
+    public string? GetPlexPathPrefix()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("plex.path-prefix"))?.Trim();
+    }
+
+    public string? GetPlexLocalPathPrefix()
+    {
+        return StringUtil.EmptyToNull(GetConfigValue("plex.local-path-prefix"))?.Trim();
     }
 
     public string GetUserAgent()

@@ -557,6 +557,49 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthZeroCoverageFailsAfterQualificationWithoutFullSweep()
+    {
+        var firstMissing = new CoveragePipelineClient(_ => false);
+        var secondMissing = new CoveragePipelineClient(_ => false);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstMissing, ProviderType.Pooled, "missing-1", 0, maxConnections: 8),
+            CreateProvider(secondMissing, ProviderType.Pooled, "missing-2", 1, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleNotFoundException>(() =>
+            multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None));
+
+        Assert.Single(firstMissing.Batches);
+        Assert.Single(secondMissing.Batches);
+        Assert.Equal(32, firstMissing.Batches.Single().Length);
+        Assert.Equal(32, secondMissing.Batches.Single().Length);
+    }
+
+    [Fact]
+    public async Task BulkHealthZeroPrimaryCoverageStillChecksBackupOnlyCoverage()
+    {
+        var firstMissing = new CoveragePipelineClient(_ => false);
+        var secondMissing = new CoveragePipelineClient(_ => false);
+        var rescue = new CoveragePipelineClient(_ => true);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstMissing, ProviderType.Pooled, "missing-1", 0, maxConnections: 8),
+            CreateProvider(secondMissing, ProviderType.Pooled, "missing-2", 1, maxConnections: 8),
+            CreateProvider(rescue, ProviderType.BackupOnly, "rescue", 2, maxConnections: 1),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Contains(rescue.Batches, batch => batch.Length == 32);
+    }
+
+    [Fact]
     public async Task BulkPlanDoesNotAssignPrimaryLanesToPreferredProviderThatWentCold()
     {
         static bool PartialCoverage(string segmentId) =>
@@ -840,6 +883,49 @@ public class PipelinedFallbackTests
         var firstFarmBulkSegments = firstFarm.Batches.Skip(1).SelectMany(x => x).ToHashSet();
         var secondFarmBulkSegments = secondFarm.Batches.Skip(1).SelectMany(x => x).ToHashSet();
         Assert.Empty(firstFarmBulkSegments.Intersect(secondFarmBulkSegments));
+    }
+
+    [Fact]
+    public async Task BulkHealthSpreadsPartialMissesAcrossCompleteFallbackProviders()
+    {
+        static bool PartialCoverage(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length)) % 2 != 0;
+
+        var partial = new CoveragePipelineClient(PartialCoverage);
+        static Task HoldCompleteBatch(int batch, CancellationToken cancellationToken) =>
+            batch > 1
+                ? Task.Delay(20, cancellationToken)
+                : Task.CompletedTask;
+        var completeClients = Enumerable.Range(0, 3)
+            .Select(_ => new CoveragePipelineClient(_ => true, HoldCompleteBatch))
+            .ToArray();
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(partial, ProviderType.HealthChecksOnly, "partial", 0,
+                maxConnections: 8),
+            .. completeClients.Select((client, index) =>
+                CreateProvider(client, ProviderType.Pooled, $"complete-{index}", index + 1,
+                    maxConnections: 4)),
+        ], new ProviderUsageTracker(), applicationConnectionLimit: 20);
+        var segments = Enumerable.Range(0, 640).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 20,
+            progress: null, CancellationToken.None);
+
+        var partialMisses = partial.Batches
+            .Skip(1) // qualification probe
+            .SelectMany(batch => batch)
+            .Where(segment => !PartialCoverage(segment))
+            .ToHashSet();
+        Assert.NotEmpty(partialMisses);
+
+        var fallbackCounts = completeClients
+            .Select(client => client.Batches
+                .Skip(1) // qualification probe
+                .SelectMany(batch => batch)
+                .Count(partialMisses.Contains))
+            .ToArray();
+        Assert.All(fallbackCounts, count => Assert.True(count > 0));
     }
 
     [Fact]

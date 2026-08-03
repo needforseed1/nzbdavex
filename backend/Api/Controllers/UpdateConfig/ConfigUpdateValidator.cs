@@ -36,6 +36,10 @@ internal static class ConfigUpdateValidator
         foreach (var key in new[] { "api.user-agent", "api.search-user-agent" })
             if (changed.TryGetValue(key, out raw) && ContainsNewline(raw))
                 Invalid($"{key} cannot contain line breaks.");
+        if (changed.TryGetValue("plex.base-url", out raw)
+            && raw.Length > 0
+            && !HttpUrl(raw))
+            Invalid("plex.base-url must be an absolute HTTP(S) URL.");
     }
 
     private static void ValidateScalar(string key, string value)

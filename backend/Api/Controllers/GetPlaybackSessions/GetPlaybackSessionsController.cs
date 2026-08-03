@@ -2,20 +2,21 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
+using NzbWebDAV.Services.Plex;
 
 namespace NzbWebDAV.Api.Controllers.GetPlaybackSessions;
 
 /// <summary>
-/// Playback history: what was streamed, from which providers, and what went
-/// wrong on the way. Reads the metrics database for the sessions and the
-/// operational database for display names — they are separate SQLite files, so
-/// the join happens in memory.
+/// Playback history: what NzbDAVex served, from which providers, and what went
+/// wrong on the way. Optional Plex metadata only annotates these existing read
+/// rows; Plex sessions are not a second history source.
 /// </summary>
 [ApiController]
 [Route("api/get-playback-sessions")]
 public class GetPlaybackSessionsController(
     DavDatabaseClient dbClient,
-    ConfigManager configManager
+    ConfigManager configManager,
+    PlexReadAttributionMonitor plexMonitor
 ) : BaseApiController
 {
     private const int DefaultLimit = 500;
@@ -23,9 +24,8 @@ public class GetPlaybackSessionsController(
 
     /// <summary>
     /// One raw session is not one play: a play is many sessions, and tiny probes
-    /// outnumber real viewing several to one. Grouping runs after the
-    /// sample is taken, so the sample has to be deep enough that the plays a
-    /// person is looking for survive being outnumbered.
+    /// outnumber real viewing several to one. Grouping runs after the sample is
+    /// taken, so the sample must be deep enough for useful reads to survive.
     /// </summary>
     private const int MinSampleForGrouping = 200;
 
@@ -42,16 +42,18 @@ public class GetPlaybackSessionsController(
         var filter = query["filter"].ToString();
 
         var providersById = configManager.GetUsenetProviderConfig().Providers
-            .Where(p => !string.IsNullOrWhiteSpace(p.Id))
-            .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            .Where(provider => !string.IsNullOrWhiteSpace(provider.Id))
+            .GroupBy(provider => provider.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(),
+                StringComparer.OrdinalIgnoreCase);
 
         await using var metrics = new MetricsDbContext();
         var rowQuery = metrics.ReadSessions.AsNoTracking();
-        if (sinceMs is { } cutoff) rowQuery = rowQuery.Where(x => x.EndedAt >= cutoff);
+        if (sinceMs is { } cutoff)
+            rowQuery = rowQuery.Where(row => row.EndedAt >= cutoff);
         var rows = await rowQuery
-            .OrderByDescending(x => x.StartedAt)
-            .ThenByDescending(x => x.EndedAt)
+            .OrderByDescending(row => row.StartedAt)
+            .ThenByDescending(row => row.EndedAt)
             .Take(limit)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -60,16 +62,29 @@ public class GetPlaybackSessionsController(
             .Select(row => PlaybackHistory.BuildSession(row, providersById))
             .ToList();
         var content = await ResolveContentAsync(rows, ct).ConfigureAwait(false);
-
         var plays = PlaybackHistory
             .GroupIntoPlays(sessions, session => LookupContent(session, content))
             .Where(play => PlaybackHistory.MatchesFilter(play, filter))
             .ToList();
+        var plexStatus = plexMonitor.GetStatus();
 
         return Ok(new GetPlaybackSessionsResponse
         {
             Status = true,
             Plays = plays,
+            PlexStatus = new GetPlaybackSessionsResponse.PlexStatusDto
+            {
+                Enabled = plexStatus.Enabled,
+                Connected = plexStatus.Connected,
+                LastSuccessfulPollAtUnix = plexStatus.LastSuccessfulPollAt is { } lastPoll
+                    ? lastPoll / 1000
+                    : null,
+                LastError = plexStatus.LastError,
+                ServerName = plexStatus.ServerName,
+                ServerVersion = plexStatus.ServerVersion,
+                ActivitiesConnected = plexStatus.ActivitiesConnected,
+                ActivitiesError = plexStatus.ActivitiesError,
+            },
             SampledSessions = rows.Count,
             Truncated = rows.Count >= limit,
             Limit = limit,
@@ -80,34 +95,33 @@ public class GetPlaybackSessionsController(
         GetPlaybackSessionsResponse.SessionDto session,
         ContentLookup content)
     {
-        if (session.DavItemId is not null &&
-            Guid.TryParse(session.DavItemId, out var davItemId) &&
-            content.ByDavItem.TryGetValue(davItemId, out var byDavItem))
+        if (session.DavItemId is not null
+            && Guid.TryParse(session.DavItemId, out var davItemId)
+            && content.ByDavItem.TryGetValue(davItemId, out var byDavItem))
             return byDavItem;
-        if (session.HistoryItemId is not null &&
-            Guid.TryParse(session.HistoryItemId, out var historyItemId) &&
-            content.ByHistoryItem.TryGetValue(historyItemId, out var byHistoryItem))
+        if (session.HistoryItemId is not null
+            && Guid.TryParse(session.HistoryItemId, out var historyItemId)
+            && content.ByHistoryItem.TryGetValue(historyItemId, out var byHistoryItem))
             return byHistoryItem;
         return null;
     }
 
     /// <summary>
     /// Looks up the human-readable names behind the ids stored on each session.
-    /// Rows whose content has since been deleted simply keep their stored file
-    /// name, so history survives cleanup.
+    /// Rows whose content has since been deleted keep their stored file name.
     /// </summary>
     private async Task<ContentLookup> ResolveContentAsync(
         IReadOnlyList<Database.Models.Metrics.ReadSession> rows,
         CancellationToken ct)
     {
         var davItemIds = rows
-            .Where(x => x.DavItemId.HasValue)
-            .Select(x => x.DavItemId!.Value)
+            .Where(row => row.DavItemId.HasValue)
+            .Select(row => row.DavItemId!.Value)
             .Distinct()
             .ToList();
         var historyItemIds = rows
-            .Where(x => x.HistoryItemId.HasValue)
-            .Select(x => x.HistoryItemId!.Value)
+            .Where(row => row.HistoryItemId.HasValue)
+            .Select(row => row.HistoryItemId!.Value)
             .Distinct()
             .ToList();
 
@@ -115,34 +129,66 @@ public class GetPlaybackSessionsController(
         if (historyItemIds.Count > 0)
         {
             var historyItems = await dbClient.Ctx.HistoryItems.AsNoTracking()
-                .Where(x => historyItemIds.Contains(x.Id))
-                .Select(x => new { x.Id, x.FileName, x.JobName, x.Category })
+                .Where(item => historyItemIds.Contains(item.Id))
+                .Select(item => new
+                {
+                    item.Id,
+                    item.FileName,
+                    item.JobName,
+                    item.Category,
+                    item.CreatedAt,
+                    item.SubmissionSource,
+                })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
             foreach (var item in historyItems)
                 byHistoryItem[item.Id] = new PlaybackContentInfo(
-                    item.FileName, item.JobName, item.Category);
+                    item.FileName,
+                    item.JobName,
+                    item.Category,
+                    ToUnixSeconds(item.CreatedAt),
+                    item.SubmissionSource);
         }
 
         var byDavItem = new Dictionary<Guid, PlaybackContentInfo>();
         if (davItemIds.Count > 0)
         {
             var davItems = await dbClient.Ctx.Items.AsNoTracking()
-                .Where(x => davItemIds.Contains(x.Id))
-                .Select(x => new { x.Id, x.Name, x.HistoryItemId })
+                .Where(item => davItemIds.Contains(item.Id))
+                .Select(item => new
+                {
+                    item.Id,
+                    item.Name,
+                    item.HistoryItemId,
+                    item.CreatedAt,
+                })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
             foreach (var item in davItems)
             {
-                var history = item.HistoryItemId is { } hid
-                    ? byHistoryItem.GetValueOrDefault(hid)
+                var history = item.HistoryItemId is { } historyId
+                    ? byHistoryItem.GetValueOrDefault(historyId)
                     : null;
                 byDavItem[item.Id] = new PlaybackContentInfo(
-                    item.Name, history?.NzbName, history?.Category);
+                    item.Name,
+                    history?.NzbName,
+                    history?.Category,
+                    history?.CompletedAtUnix ?? ToUnixSeconds(item.CreatedAt),
+                    history?.SubmissionSource);
             }
         }
 
         return new ContentLookup(byDavItem, byHistoryItem);
+    }
+
+    private static long ToUnixSeconds(DateTime value)
+    {
+        // History/DAV rows are intentionally written with DateTime.Now. SQLite
+        // returns them as Unspecified, so restore local-time semantics before
+        // comparing them with the UTC Unix timestamps in the metrics database.
+        if (value.Kind == DateTimeKind.Unspecified)
+            value = DateTime.SpecifyKind(value, DateTimeKind.Local);
+        return new DateTimeOffset(value).ToUnixTimeSeconds();
     }
 
     private sealed record ContentLookup(

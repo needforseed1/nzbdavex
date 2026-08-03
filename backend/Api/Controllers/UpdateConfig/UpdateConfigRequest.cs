@@ -16,9 +16,9 @@ public class UpdateConfigRequest
                 ConfigName = x.Key,
                 ConfigValue = x.Value.FirstOrDefault() ?? ""
             })
-            // The settings API never returns the stored WebDAV password hash. An empty
-            // password field therefore means "leave the existing credential alone".
-            .Where(x => x.ConfigName is not ("webdav.pass" or "rclone.pass")
+            // The settings API never returns stored passwords or tokens. An
+            // empty secret field therefore means "leave it unchanged".
+            .Where(x => x.ConfigName is not ("webdav.pass" or "rclone.pass" or "plex.token")
                 || !string.IsNullOrWhiteSpace(x.ConfigValue))
             .Select(x => x.ConfigName != "webdav.pass" ? x : new ConfigItem()
             {

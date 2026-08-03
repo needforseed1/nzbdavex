@@ -129,12 +129,11 @@ public class HealthStatVerdictTests
     }
 
     [Fact]
-    public async Task ColdBackupOnlySkipsLaneWaitAndUsesOneCoordinatedRecoveryPass()
+    public async Task ZeroCoverageQualificationChecksColdBackupBeforeBulkRecovery()
     {
-        // Two responsive zero-coverage primaries create a bulk plan. The cold
-        // BackupOnly provider has no authenticated idle socket, so ordinary
-        // lanes must defer it instead of each waiting for connection creation.
-        // The operation-wide recovery pass opens it once and finds everything.
+        // Two responsive zero-coverage primaries trigger the bounded BackupOnly
+        // rescue sample. Once that sample finds coverage, only the unsampled
+        // articles continue into the normal bulk path.
         var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var backup = new VerdictStatClient((_, _) => StatAnswer.Found);
@@ -149,17 +148,16 @@ public class HealthStatVerdictTests
                 segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
             .WaitAsync(TestTimeout);
 
-        Assert.Equal(1, backup.Calls);
-        Assert.Equal(segments.Length, Assert.Single(backup.BatchSizes));
+        Assert.Equal(2, backup.Calls);
+        Assert.Equal([32, segments.Length - 32], backup.BatchSizes);
     }
 
     [Fact]
     public async Task ColdBackupRecoveryRetriesZeroResponseStallOnFreshSocket()
     {
-        // Reproduce the Better Call Saul failure: every primary answers
-        // "missing", then the cold BackupOnly recovery socket returns no STAT
-        // response at all. The pool rotates that socket, and recovery retries
-        // once immediately instead of making the whole health job wait a minute.
+        // Every primary answers "missing", then the cold BackupOnly sample
+        // socket returns no STAT response. The pool rotates that socket and the
+        // bounded sample retry finds coverage before bulk health proceeds.
         var tracker = new ProviderUsageTracker();
         var queueId = Guid.NewGuid();
         var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -181,14 +179,15 @@ public class HealthStatVerdictTests
                 segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
             .WaitAsync(TestTimeout);
 
-        Assert.Equal(2, backup.Calls);
+        Assert.Equal(3, backup.Calls);
         var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
             tracker.SnapshotHealthCheck(queueId));
         var backupStats = Assert.Single(
             snapshot.Providers, provider => provider.ProviderId == "backup");
-        Assert.Equal(2, backupStats.Batches);
-        Assert.Equal(1, backupStats.Failures);
-        Assert.Equal(segments.Length, backupStats.Found);
+        Assert.Equal(32, backupStats.ProbeFound);
+        Assert.Equal(1, backupStats.Batches);
+        Assert.Equal(0, backupStats.Failures);
+        Assert.Equal(segments.Length - 32, backupStats.Found);
         Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
     }
 
@@ -268,7 +267,7 @@ public class HealthStatVerdictTests
     }
 
     [Fact]
-    public async Task LargeBackupRecoveryStopsAfterFreshSocketRetry()
+    public async Task ZeroCoverageFastFailStopsAfterBackupFreshSocketRetry()
     {
         var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var secondPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -280,23 +279,21 @@ public class HealthStatVerdictTests
         ]);
         var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
 
-        var exception = await Assert.ThrowsAsync<UsenetArticleUnverifiableException>(() =>
+        await Assert.ThrowsAsync<UsenetArticleNotFoundException>(() =>
             client.CheckAllSegmentsPipelinedAsync(
                     segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
                 .WaitAsync(TestTimeout));
 
         Assert.Equal(2, backup.Calls);
         Assert.Equal(0, backup.SequentialCalls);
-        Assert.Contains("backup", exception.UnavailableProviders);
     }
 
     [Fact]
-    public async Task CoordinatedRecoveryFoundArticlesAppearInProviderStatistics()
+    public async Task BackupSampleAndBulkFindsAppearInProviderStatistics()
     {
-        // Reproduce the Doctor Who diagnostic: a warm BackupOnly socket stalls
-        // during the ordinary fallback lane, then its fresh coordinated
-        // recovery succeeds. The provider row must show both the failed batch
-        // and the articles it ultimately found.
+        // A warm BackupOnly socket stalls during the zero-coverage rescue
+        // sample, then its fresh-socket retry succeeds. Probe and bulk findings
+        // remain distinct in the provider statistics and cover the whole job.
         var tracker = new ProviderUsageTracker();
         var queueId = Guid.NewGuid();
         var firstPrimary = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -322,11 +319,12 @@ public class HealthStatVerdictTests
         var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
             tracker.SnapshotHealthCheck(queueId));
         var backupStats = Assert.Single(snapshot.Providers, provider => provider.ProviderId == "backup");
-        Assert.Equal(segments.Length, backupStats.Found);
+        Assert.Equal(32, backupStats.ProbeFound);
+        Assert.Equal(segments.Length - 32, backupStats.Found);
         Assert.Equal(0, backupStats.Missing);
-        Assert.Equal(1, backupStats.Failures);
-        Assert.Equal(2, backupStats.Batches);
-        Assert.Equal(2, backup.Calls);
+        Assert.Equal(0, backupStats.Failures);
+        Assert.Equal(1, backupStats.Batches);
+        Assert.Equal(3, backup.Calls);
         Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
     }
 
@@ -353,14 +351,11 @@ public class HealthStatVerdictTests
     }
 
     [Fact]
-    public async Task ProbeTimeoutProviderGetsNoLaneTrafficAndZeroCoverageProvidersCarryTheWorkload()
+    public async Task TwoZeroCoverageProbesFastFailDespiteAnotherProbeTimingOut()
     {
-        // The captured-run pathology: responsive providers probe 0/32 (release
-        // absent on their backbones) while another provider's probe times out.
-        // The responsive providers must carry every batch; the timed-out
-        // provider must see no lane traffic (one cold qualification probe plus one
-        // coordinated recovery attempt) and the run must end unverifiable with
-        // that provider named — not as thousands of failed batches.
+        // The captured-run pathology: independent responsive providers probe
+        // 0/32 while another provider's probe times out. This is enough evidence
+        // to fail before the full-release sweep and recovery pass.
         var firstResponsive = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var secondResponsive = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var unresponsive = new VerdictStatClient((_, _) => StatAnswer.Stall);
@@ -371,13 +366,12 @@ public class HealthStatVerdictTests
         ]);
         var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
 
-        var exception = await Assert.ThrowsAsync<UsenetArticleUnverifiableException>(() =>
+        await Assert.ThrowsAsync<UsenetArticleNotFoundException>(() =>
             client.CheckAllSegmentsPipelinedAsync(
                     segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
                 .WaitAsync(TestTimeout));
 
-        Assert.Contains("unresponsive", exception.UnavailableProviders);
-        Assert.Equal(2, unresponsive.Calls);
+        Assert.Equal(1, unresponsive.Calls);
     }
 
     [Fact]

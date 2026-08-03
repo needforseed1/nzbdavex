@@ -1,5 +1,4 @@
-﻿using NzbWebDAV.Clients.Usenet;
-using NzbWebDAV.Models;
+﻿using NzbWebDAV.Models;
 
 namespace NzbWebDAV.Config;
 
@@ -22,7 +21,7 @@ public class UsenetProviderConfig
         .Sum());
 
     public int PlaybackReservableConnections => (int)Math.Min(
-        UsenetStreamingClient.ApplicationConnectionLimit,
+        int.MaxValue,
         Providers
             .Where(CanServePlayback)
             .Sum(provider => Math.Max(0L, (long)provider.MaxConnections - 1)));

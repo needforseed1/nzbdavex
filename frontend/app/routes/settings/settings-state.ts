@@ -1,6 +1,6 @@
 export type SettingsSection =
     "usenet" | "indexers" | "profiles" | "watchdog" | "preflight" | "watchtower" | "warden"
-    | "webdav" | "sabnzbd" | "arrs" | "repairs" | "rclone" | "maintenance";
+    | "webdav" | "sabnzbd" | "arrs" | "repairs" | "rclone" | "plex" | "maintenance";
 
 export function getSettingsSection(key: string): SettingsSection | null {
     if (key.startsWith("usenet.")) return "usenet";
@@ -16,6 +16,7 @@ export function getSettingsSection(key: string): SettingsSection | null {
     if (key === "arr.instances") return "arrs";
     if (key.startsWith("repair.") || key === "media.library-dir") return "repairs";
     if (key.startsWith("rclone.")) return "rclone";
+    if (key.startsWith("plex.")) return "plex";
     if (key.startsWith("db.") || key.startsWith("maintenance.")) return "maintenance";
     return null;
 }

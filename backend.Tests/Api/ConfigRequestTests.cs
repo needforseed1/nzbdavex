@@ -16,6 +16,7 @@ public class ConfigRequestTests
         {
             new() { ConfigName = "webdav.pass", ConfigValue = "stored-hash" },
             new() { ConfigName = "rclone.pass", ConfigValue = "stored-plaintext" },
+            new() { ConfigName = "plex.token", ConfigValue = "stored-token" },
             new() { ConfigName = "webdav.user", ConfigValue = "admin" },
         };
 
@@ -23,9 +24,11 @@ public class ConfigRequestTests
 
         Assert.Equal("", responseItems.Single(x => x.ConfigName == "webdav.pass").ConfigValue);
         Assert.Equal("", responseItems.Single(x => x.ConfigName == "rclone.pass").ConfigValue);
+        Assert.Equal("", responseItems.Single(x => x.ConfigName == "plex.token").ConfigValue);
         Assert.Equal("admin", responseItems.Single(x => x.ConfigName == "webdav.user").ConfigValue);
         Assert.Equal("stored-hash", stored[0].ConfigValue);
         Assert.Equal("stored-plaintext", stored[1].ConfigValue);
+        Assert.Equal("stored-token", stored[2].ConfigValue);
     }
 
     [Fact]
@@ -34,12 +37,14 @@ public class ConfigRequestTests
         var context = FormContext(
             ("webdav.pass", "   "),
             ("rclone.pass", ""),
+            ("plex.token", " "),
             ("webdav.user", "new-user"));
 
         var request = new UpdateConfigRequest(context);
 
         Assert.DoesNotContain(request.ConfigItems, x => x.ConfigName == "webdav.pass");
         Assert.DoesNotContain(request.ConfigItems, x => x.ConfigName == "rclone.pass");
+        Assert.DoesNotContain(request.ConfigItems, x => x.ConfigName == "plex.token");
         Assert.Contains(request.ConfigItems,
             x => x.ConfigName == "webdav.user" && x.ConfigValue == "new-user");
     }

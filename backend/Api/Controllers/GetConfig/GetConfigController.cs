@@ -25,7 +25,9 @@ public class GetConfigController(DavDatabaseClient dbClient) : BaseApiController
         return configItems.Select(item => new ConfigItem
         {
             ConfigName = item.ConfigName,
-            ConfigValue = item.ConfigName is "webdav.pass" or "rclone.pass" ? "" : item.ConfigValue,
+            ConfigValue = item.ConfigName is "webdav.pass" or "rclone.pass" or "plex.token"
+                ? ""
+                : item.ConfigValue,
         }).ToList();
     }
 

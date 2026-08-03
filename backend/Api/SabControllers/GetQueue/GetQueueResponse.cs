@@ -45,6 +45,9 @@ public class GetQueueResponse : SabBaseResponse
         [JsonPropertyName("true_percentage")]
         public string TruePercentage { get; init; }
 
+        [JsonPropertyName("health_percentage")]
+        public string? HealthPercentage { get; init; }
+
         [JsonPropertyName("status")]
         public string Status { get; init; }
 
@@ -75,7 +78,8 @@ public class GetQueueResponse : SabBaseResponse
             string status = "Queued",
             IReadOnlyDictionary<string, long>? providerUsage = null,
             IReadOnlyDictionary<string, string?>? nicknamesByHost = null,
-            QueueRecoveryNotice? recoveryNotice = null
+            QueueRecoveryNotice? recoveryNotice = null,
+            int? healthProgressPercentage = null
         )
         {
             var visibleProgress = Math.Clamp(progressPercentage, 0, 100);
@@ -89,6 +93,9 @@ public class GetQueueResponse : SabBaseResponse
                 Category = queueItem.Category,
                 Percentage = visibleProgress.ToString(),
                 TruePercentage = visibleProgress.ToString(),
+                HealthPercentage = healthProgressPercentage is null
+                    ? null
+                    : Math.Clamp(healthProgressPercentage.Value, 0, 100).ToString(),
                 Status = status,
                 TimeLeft = TimeSpan.Zero,
                 SizeInMB = FormatSizeMB(queueItem.TotalSegmentBytes),

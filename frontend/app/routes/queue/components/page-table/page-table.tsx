@@ -55,6 +55,7 @@ export type PageRowProps = {
     category: string,
     status: string,
     percentage?: string,
+    healthPercentage?: string | null,
     error?: string,
     fileSizeBytes: number,
     actions: ReactNode,
@@ -119,13 +120,23 @@ export function PageRow(props: PageRowProps) {
 }
 
 function QueueStatus(props: Pick<PageRowProps,
-    "status" | "percentage" | "error" | "recoveryNotice">) {
+    "status" | "percentage" | "healthPercentage" | "error" | "recoveryNotice">) {
     const notice = props.recoveryNotice
         ? presentQueueRecoveryNotice(props.recoveryNotice)
         : null;
     return (
         <div className={styles.statusWithNotice}>
-            <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
+            <div className={styles.progressBadges}>
+                <StatusBadge status={props.status} percentage={props.percentage} error={props.error} />
+                {props.status?.toLowerCase() === "downloading" && props.healthPercentage != null && (
+                    <div
+                        className={styles.liveHealthProgress}
+                        title="Health check"
+                        aria-label={`Health check ${props.healthPercentage}%`}>
+                        <StatusBadge status="health-checking" percentage={props.healthPercentage} />
+                    </div>
+                )}
+            </div>
             {notice && (
                 <span className={styles.recoveryNotice} title={notice.title}>
                     {notice.text}

@@ -35,7 +35,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         "usenet.ready-connections.health",
     ];
     internal const bool HealthProviderPrewarmEnabled = true;
-    internal const int ApplicationConnectionLimit = 512;
+    internal const int UnboundedConnectionLimit = int.MaxValue;
     internal const int ConcurrentConnectionAttemptLimit = 32;
     internal static readonly TimeSpan ConnectionSetupTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConnectionIdleTimeout = TimeSpan.FromMinutes(1);
@@ -43,7 +43,7 @@ public class UsenetStreamingClient : WrappingNntpClient
     private static readonly WarmConnectionTimings DefaultWarmConnectionTimings =
         new(TimeSpan.FromSeconds(45), TimeSpan.FromSeconds(30));
     private static readonly ConnectionLifetimeBudget ConnectionBudget = new(
-        ApplicationConnectionLimit, ConcurrentConnectionAttemptLimit);
+        UnboundedConnectionLimit, ConcurrentConnectionAttemptLimit);
     private readonly DrainingNntpClient _drainingClient;
     private readonly object _reloadLock = new();
     private readonly ConfigManager _configManager;

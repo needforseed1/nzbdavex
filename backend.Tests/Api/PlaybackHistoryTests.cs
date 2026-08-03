@@ -601,6 +601,257 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
+    public void PlexAttributionEnrichesExistingMountRowsWithoutCreatingHistory()
+    {
+        var exactRow = CreateRow(
+            clientUserAgent: "rclone/v1.74.3",
+            bytesServed: 50_000_000);
+        exactRow.PlexPurpose = "playback";
+        exactRow.PlexConfidence = "exact-path";
+        exactRow.PlexProduct = "Plex Web 4.160.0";
+        exactRow.PlexPlatform = "Chrome";
+        exactRow.PlexPlayer = "Chrome";
+        exactRow.PlexRatingKey = "42";
+        exactRow.PlexIsTranscode = true;
+
+        var exact = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(exactRow, Providers()),
+        ]));
+
+        Assert.Equal("playback", exact.PlexPurpose);
+        Assert.Equal("exact-path", exact.PlexConfidence);
+        Assert.Equal("Plex Web 4.160.0", exact.PlexProduct);
+        Assert.True(exact.PlexIsTranscode);
+        Assert.True(exact.IsPlexPlayback);
+        Assert.True(PlaybackHistory.MatchesFilter(exact, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(exact, "mount"));
+
+        var timeOnlyRow = CreateRow(
+            clientUserAgent: "rclone/v1.74.3",
+            bytesServed: 2_000_000);
+        timeOnlyRow.PlexPurpose = "intro-detection";
+        timeOnlyRow.PlexConfidence = "time-only";
+        var timeOnly = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(timeOnlyRow, Providers()),
+        ]));
+
+        Assert.False(timeOnly.IsPlexPlayback);
+        Assert.False(PlaybackHistory.MatchesFilter(timeOnly, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(timeOnly, "mount"));
+
+        timeOnlyRow.PlexPurpose = "playback";
+        var probablePlayback = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(timeOnlyRow, Providers()),
+        ]));
+
+        Assert.True(probablePlayback.IsPlexPlayback);
+        Assert.True(PlaybackHistory.MatchesFilter(probablePlayback, "playback"));
+        Assert.True(PlaybackHistory.MatchesFilter(probablePlayback, "mount"));
+    }
+
+    [Fact]
+    public void MountPurpose_IdentifiesSymlinkResolutionAndDropsCoincidentalPausedPlex()
+    {
+        var row = CreateRow(
+            fileName: "Farscape.S01E01.mkv.rclonelink",
+            clientUserAgent: "rclone/v1.74.3",
+            bytesServed: 76,
+            bytesFetched: 0);
+        row.PlexPurpose = "paused";
+        row.PlexConfidence = "time-only";
+        row.PlexDetail = "Unrelated title";
+
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(row, Providers()),
+        ]));
+
+        Assert.Equal("symlink-resolution", play.MountPurpose);
+        Assert.True(play.IsProbe);
+        Assert.True(play.IsLikelyBackgroundActivity);
+        Assert.Null(play.PlexPurpose);
+        Assert.False(play.IsPlexPlayback);
+        Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+        Assert.True(PlaybackHistory.MatchesFilter(play, "probes"));
+        Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+    }
+
+    [Fact]
+    public void MountPurpose_IdentifiesNewMultiFileImportBatchAndBeatsTimeOnlyPlex()
+    {
+        var completedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var historyItemId = Guid.NewGuid();
+        var sessions = Enumerable.Range(1, 3).Select(index =>
+        {
+            var row = CreateRow(
+                startedAt: (completedAt + index) * 1_000,
+                endedAt: (completedAt + index + 5) * 1_000,
+                fileName: $"Farscape.S01E{index:00}.mkv",
+                clientUserAgent: "rclone/v1.74.3",
+                requestCount: 2,
+                bytesServed: 40_000_000,
+                bytesFetched: 50_000_000,
+                fileSize: 3_000_000_000,
+                davItemId: Guid.NewGuid(),
+                historyItemId: historyItemId);
+            row.PlexPurpose = "playback";
+            row.PlexConfidence = "time-only";
+            row.PlexDetail = "Unrelated playing title";
+            return PlaybackHistory.BuildSession(row, Providers());
+        }).ToList();
+        sessions.Add(PlaybackHistory.BuildSession(
+            CreateRow(
+                startedAt: (completedAt + 5 * 60) * 1_000,
+                endedAt: (completedAt + 5 * 60 + 5) * 1_000,
+                fileName: "Farscape.S01E04.mkv",
+                clientUserAgent: "rclone/v1.74.3",
+                bytesServed: 40_000_000,
+                davItemId: Guid.NewGuid(),
+                historyItemId: historyItemId),
+            Providers()));
+
+        var plays = PlaybackHistory.GroupIntoPlays(
+            sessions,
+            session => new PlaybackContentInfo(
+                session.FileName,
+                "Farscape.S01.Release",
+                "tv",
+                completedAt,
+                "sonarr"));
+
+        Assert.Equal(4, plays.Count);
+        var imports = plays.Where(play => play.MountPurpose == "import-inspection").ToList();
+        Assert.Equal(3, imports.Count);
+        Assert.All(imports, play =>
+        {
+            Assert.Equal("import-inspection", play.MountPurpose);
+            Assert.Equal(3, play.MountRelatedFileCount);
+            Assert.Equal(completedAt, play.MountCompletedAtUnix);
+            Assert.Equal("sonarr", play.SubmissionSource);
+            Assert.True(play.IsLikelyBackgroundActivity);
+            Assert.False(play.IsPlexPlayback);
+            Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+            Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+        });
+        Assert.Null(Assert.Single(
+            plays,
+            play => play.Title == "Farscape.S01E04.mkv").MountPurpose);
+    }
+
+    [Fact]
+    public void MountPurpose_IdentifiesSingleFileImportFromMatchingSymlinkAndTailInspection()
+    {
+        var completedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var historyItemId = Guid.NewGuid();
+        const long fileSize = 17_299_146_534;
+        const string fileName =
+            "Remarkably.Bright.Creatures.2026.2160p.NF.WEB-DL.mkv";
+        var link = CreateRow(
+            startedAt: (completedAt + 82) * 1_000,
+            endedAt: (completedAt + 82) * 1_000 + 4,
+            fileName: $"{fileName}.rclonelink",
+            clientUserAgent: "rclone/v1.74.3",
+            requestCount: 1,
+            bytesServed: 76,
+            fileSize: 76,
+            maxOffset: 76);
+        var media = CreateRow(
+            startedAt: (completedAt + 82) * 1_000 + 60,
+            endedAt: (completedAt + 88) * 1_000,
+            fileName: fileName,
+            clientUserAgent: "rclone/v1.74.3",
+            requestCount: 3,
+            bytesServed: 74_561_161,
+            bytesFetched: 127_583_628,
+            fileSize: fileSize,
+            maxOffset: fileSize,
+            endReason: ReadSession.EndReasonCode.Aborted,
+            davItemId: Guid.NewGuid(),
+            historyItemId: historyItemId);
+
+        var plays = PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(link, Providers()),
+            PlaybackHistory.BuildSession(media, Providers()),
+        ], session => session.HistoryItemId is null
+            ? null
+            : new PlaybackContentInfo(
+                fileName,
+                "Remarkably.Bright.Creatures.Release",
+                "movies",
+                completedAt));
+
+        var import = Assert.Single(
+            plays,
+            play => play.Title == fileName);
+        Assert.Equal("import-inspection", import.MountPurpose);
+        Assert.Equal(1, import.MountRelatedFileCount);
+        Assert.Equal(completedAt, import.MountCompletedAtUnix);
+        Assert.True(import.IsLikelyBackgroundActivity);
+        Assert.False(PlaybackHistory.MatchesFilter(import, "playback"));
+        Assert.Equal(
+            "symlink-resolution",
+            Assert.Single(plays, play => play.Title.EndsWith(".rclonelink")).MountPurpose);
+    }
+
+    [Fact]
+    public void MountPurpose_LeavesSingleNewMediaReadUnclassified()
+    {
+        var completedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var row = CreateRow(
+            startedAt: (completedAt + 2) * 1_000,
+            endedAt: (completedAt + 8) * 1_000,
+            fileName: "New.Movie.mkv",
+            clientUserAgent: "rclone/v1.74.3",
+            bytesServed: 40_000_000,
+            davItemId: Guid.NewGuid(),
+            historyItemId: Guid.NewGuid());
+
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(row, Providers()),
+        ], _ => new PlaybackContentInfo(
+            "New.Movie.mkv",
+            "New.Movie.Release",
+            "movies",
+            completedAt)));
+
+        Assert.Null(play.MountPurpose);
+        Assert.False(play.IsLikelyBackgroundActivity);
+    }
+
+    [Fact]
+    public void MountPurpose_IdentifiesZeroTransferTailBurstAsAnalysisProbe()
+    {
+        const long fileSize = 29_241_474_013;
+        var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var row = CreateRow(
+            startedAt: startedAt,
+            endedAt: startedAt + 306,
+            clientUserAgent: "rclone/v1.74.3",
+            requestCount: 15,
+            bytesServed: 0,
+            bytesFetched: 0,
+            fileSize: fileSize,
+            maxOffset: 29_241_470_976);
+
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
+        [
+            PlaybackHistory.BuildSession(row, Providers()),
+        ]));
+
+        Assert.Equal("analysis-probe", play.MountPurpose);
+        Assert.True(play.IsProbe);
+        Assert.True(play.IsLikelyBackgroundActivity);
+        Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
+        Assert.True(PlaybackHistory.MatchesFilter(play, "probes"));
+        Assert.False(PlaybackHistory.MatchesFilter(play, "playback"));
+    }
+
+    [Fact]
     public void MatchesFilter_IssuesExcludesSuccessfulRecoveryDiagnostics()
     {
         var play = Assert.Single(PlaybackHistory.GroupIntoPlays(
@@ -709,7 +960,7 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
-    public void PrimaryFiltersAssignEveryReadToExactlyOneCategory()
+    public void MountProbesRemainVisibleInBothUsefulFilters()
     {
         static GetPlaybackSessionsResponse.PlayDto Activity(
             string userAgent,
@@ -728,15 +979,13 @@ public class PlaybackHistoryTests
             Activity("VLC/3.0.21", 54_000_000),
             Activity("VLC/3.0.21", 330_000),
             Activity("rclone/v1.74.3", 54_000_000),
+            Activity("rclone/v1.74.3", 330_000),
             Activity("SomeAutomation/1.0", 54_000_000),
         };
-        string[] primaryFilters = ["playback", "probes", "mount"];
 
-        Assert.All(activities, activity =>
-            Assert.Equal(
-                1,
-                primaryFilters.Count(filter =>
-                    PlaybackHistory.MatchesFilter(activity, filter))));
+        Assert.True(PlaybackHistory.MatchesFilter(activities[3], "probes"));
+        Assert.True(PlaybackHistory.MatchesFilter(activities[3], "mount"));
+        Assert.False(PlaybackHistory.MatchesFilter(activities[3], "playback"));
     }
 
     [Fact]
@@ -836,7 +1085,9 @@ public class PlaybackHistoryTests
         long maxOffset = 0,
         ReadSession.EndReasonCode endReason = ReadSession.EndReasonCode.Completed,
         string? errorNote = null,
-        string? providerStatsJson = null)
+        string? providerStatsJson = null,
+        Guid? davItemId = null,
+        Guid? historyItemId = null)
     {
         var started = startedAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var ended = endedAt ?? started + 1_000;
@@ -848,6 +1099,8 @@ public class PlaybackHistoryTests
             DurationMs = (int)(ended - started),
             Path = path,
             FileName = fileName,
+            DavItemId = davItemId,
+            HistoryItemId = historyItemId,
             ClientIp = clientIp,
             ClientUserAgent = clientUserAgent,
             BytesServed = bytesServed,

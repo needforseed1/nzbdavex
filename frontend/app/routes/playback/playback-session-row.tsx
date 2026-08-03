@@ -11,9 +11,18 @@ import {
     formatCount,
     formatMs,
     formatWatchTime,
+    plexAttributionBadge,
+    plexAttributionTitle,
+    shouldShowPlexAttribution,
 } from "./playback-view";
 
-export function PlaybackSessionRow({ session }: { session: PlaybackSession }) {
+export function PlaybackSessionRow({
+    session,
+    mountPurpose,
+}: {
+    session: PlaybackSession,
+    mountPurpose?: string | null,
+}) {
     const [open, setOpen] = useState(false);
     const [detail, setDetail] = useState<PlaybackSessionDetail | null>(null);
     const [loading, setLoading] = useState(false);
@@ -39,6 +48,10 @@ export function PlaybackSessionRow({ session }: { session: PlaybackSession }) {
     }, [open, detail, loading, session.id]);
 
     const badges = describeIssues(session.issues);
+    const showPlexAttribution = shouldShowPlexAttribution(
+        session.plexPurpose,
+        session.plexConfidence,
+        mountPurpose);
 
     return (
         <div className={styles.sessionCard}>
@@ -53,6 +66,17 @@ export function PlaybackSessionRow({ session }: { session: PlaybackSession }) {
                     <span className={styles.sessionReason}>{session.endReason}</span>
                 </span>
                 <span className={styles.badgeRow}>
+                    {showPlexAttribution && session.plexPurpose && (
+                        <span
+                            className={`${styles.issueBadge} ${styles["issue-info"]}`}
+                            title={plexAttributionTitle(
+                                session.plexPurpose,
+                                session.plexConfidence)}>
+                            {plexAttributionBadge(
+                                session.plexPurpose,
+                                session.plexConfidence)}
+                        </span>
+                    )}
                     {badges.map(badge => (
                         <span
                             key={badge.key}

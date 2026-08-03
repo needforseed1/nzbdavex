@@ -61,6 +61,9 @@ public class QueueManager : IDisposable
         return (_inProgressQueueItem?.QueueItem, _inProgressQueueItem?.ProgressPercentage);
     }
 
+    public int? GetInProgressQueueHealthProgress() =>
+        _inProgressQueueItem?.HealthProgressPercentage;
+
     public void AwakenQueue(DateTime? dateTime = null)
     {
         _sleepingQueueSignal.Awaken(dateTime);
@@ -237,10 +240,15 @@ public class QueueManager : IDisposable
             CancellationTokenSource = cts
         };
         var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
+        var healthProgressDebounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
         var providersDebounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(500));
         var progressLock = new object();
         var latestProgress = 0;
         var lastSentProgress = -1;
+        var healthProgressLock = new object();
+        int? latestHealthProgress = null;
+        int? lastSentHealthProgress = null;
+        var hasSentHealthProgress = false;
 
         void SendLatestProgress()
         {
@@ -268,10 +276,41 @@ public class QueueManager : IDisposable
             providersDebounce(() => _websocketManager.SendMessage(
                 WebsocketTopic.QueueItemProviders, BuildProvidersMessage(queueItem.Id)));
         });
+        void SendLatestHealthProgress()
+        {
+            int? value;
+            lock (healthProgressLock)
+            {
+                if (!hasSentHealthProgress && latestHealthProgress is null) return;
+                if (hasSentHealthProgress && latestHealthProgress == lastSentHealthProgress) return;
+                value = latestHealthProgress;
+                lastSentHealthProgress = value;
+                hasSentHealthProgress = true;
+            }
+
+            _websocketManager.SendMessage(
+                WebsocketTopic.QueueItemHealthProgress,
+                $"{queueItem.Id}|{value?.ToString() ?? string.Empty}");
+        }
+
+        var healthProgressHook = new InlineProgress<int?>(progress =>
+        {
+            lock (healthProgressLock)
+            {
+                latestHealthProgress = progress is null
+                    ? null
+                    : Math.Clamp(progress.Value, 0, 100);
+                inProgressQueueItem.HealthProgressPercentage = latestHealthProgress;
+            }
+
+            if (progress is null or 0 or 100) SendLatestHealthProgress();
+            else healthProgressDebounce(SendLatestHealthProgress);
+        });
         inProgressQueueItem.ProcessingTask = new QueueItemProcessor(
             queueItem, queueNzbStream, dbClient, usenetClient,
             _configManager, _websocketManager, _providerUsageTracker,
-            _watchdogLog, _sourceTracker, progressHook, _retryAttempts, _unverifiableAttempts,
+            _watchdogLog, _sourceTracker, progressHook, healthProgressHook,
+            _retryAttempts, _unverifiableAttempts,
             EndQueuePrewarm, cts.Token
         ).ProcessAsync();
         return inProgressQueueItem;
@@ -337,6 +376,7 @@ public class QueueManager : IDisposable
     {
         public QueueItem QueueItem { get; init; }
         public int ProgressPercentage { get; set; }
+        public int? HealthProgressPercentage { get; set; }
         public Task ProcessingTask { get; set; }
         public CancellationTokenSource CancellationTokenSource { get; init; }
     }

@@ -89,6 +89,13 @@ public sealed class MetricsDbContext() : DbContext(Options.Value)
             e.Property(x => x.ZeroFilledSegments).IsRequired();
             e.Property(x => x.ZeroFilledBytes).IsRequired();
             e.Property(x => x.BodyStallRecoveries).IsRequired();
+            e.Property(x => x.PlexPurpose).HasMaxLength(64);
+            e.Property(x => x.PlexConfidence).HasMaxLength(32);
+            e.Property(x => x.PlexProduct).HasMaxLength(255);
+            e.Property(x => x.PlexPlayer).HasMaxLength(255);
+            e.Property(x => x.PlexPlatform).HasMaxLength(255);
+            e.Property(x => x.PlexRatingKey).HasMaxLength(255);
+            e.Property(x => x.PlexDetail).HasMaxLength(512);
 
             e.HasIndex(x => x.StartedAt);
             e.HasIndex(x => x.Path);

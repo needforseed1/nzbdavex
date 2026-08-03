@@ -1189,7 +1189,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         if (count == 0) return;
 
         var remaining = count;
-        var workerCount = Math.Min(count, Math.Clamp(maxConcurrency, 1, 512));
+        var workerCount = Math.Min(count, Math.Max(1, maxConcurrency));
         var workers = Enumerable.Range(0, workerCount).Select(async _ =>
         {
             while (Interlocked.Decrement(ref remaining) >= 0)

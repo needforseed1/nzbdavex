@@ -36,6 +36,7 @@ public class QueueItemProcessor(
     WatchdogLog watchdogLog,
     QueueItemSourceTracker sourceTracker,
     IProgress<int> progress,
+    IProgress<int?> healthProgress,
     ConcurrentDictionary<Guid, int> retryAttempts,
     ConcurrentDictionary<Guid, int> unverifiableAttempts,
     Action firstSegmentsCompleted,
@@ -53,7 +54,7 @@ public class QueueItemProcessor(
     private const int MaxUnverifiableAttempts = 2;
     private static readonly TimeSpan UnverifiableRetryBackoff = TimeSpan.FromSeconds(60);
     private const int HealthPrimeSegmentCount = 16;
-    private static readonly TimeSpan HealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DefaultHealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
     private int? _prepDurationMs;
     private int? _healthDurationMs;
@@ -186,6 +187,10 @@ public class QueueItemProcessor(
                 Log.Error(e, ex.Message);
             }
         }
+        finally
+        {
+            healthProgress.Report(null);
+        }
     }
 
     private async Task ProcessQueueItemAsync(DateTime startTime)
@@ -212,6 +217,11 @@ public class QueueItemProcessor(
 
         var healthCheckCategories = configManager.GetEnsureArticleExistenceCategories();
         var shouldCheckHealth = healthCheckCategories.Contains(queueItem.Category.ToLower());
+        if (shouldCheckHealth)
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health-scheduling mode={Mode} graceMs={GraceMs}",
+                queueItem.Id, queueItem.JobName, "default",
+                DefaultHealthWarmupHandoffGrace.TotalMilliseconds);
         var connectionWarmer = shouldCheckHealth ? usenetClient as IQueueConnectionWarmer : null;
         using var healthConnectionWarmupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task healthConnectionWarmupTask = connectionWarmer is not null
@@ -249,6 +259,78 @@ public class QueueItemProcessor(
                 healthPrimeDepth,
                 queueItem,
                 healthConnectionWarmupCts.Token);
+
+        List<string> articlesToCheck = [];
+        var checkedFullHealth = false;
+        var healthArticleCount = 0;
+        Task? healthCheckTask = null;
+        Stopwatch? healthTimer = null;
+        using var healthCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        await using var healthCheckLifetime = new HealthCheckLifetime(
+            healthCts,
+            () => healthCheckTask);
+
+        void StartHealthCheck(string overlap)
+        {
+            healthArticleCount = articlesToCheck.Count;
+            if (overlap == "none")
+            {
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} " +
+                    "overlap=none reason=processor-backlog",
+                    queueItem.Id, queueItem.JobName, articlesToCheck.Count);
+            }
+            else
+            {
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} overlap={Overlap}",
+                    queueItem.Id, queueItem.JobName, articlesToCheck.Count, overlap);
+            }
+            healthProgress.Report(0);
+            var currentHealthProgress = new InlineProgress<int>(value => healthProgress.Report(value))
+                .ToPercentage(articlesToCheck.Count);
+            var healthCheckConcurrency = configManager.GetHealthCheckConnections();
+            var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
+            var healthPipelineLanes = Math.Min(
+                healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=health mode={Mode} depth={Depth} lanes={Lanes}",
+                queueItem.Id, queueItem.JobName,
+                configManager.IsHealthPipeliningEnabled() ? "pipelined-stat" : "parallel-stat",
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
+                configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
+            healthTimer = Stopwatch.StartNew();
+            if (overlap == "none" && connectionWarmer is not null)
+            {
+                // Deferred start: the prep-time warm bursts above the persistent
+                // floor decay after one minute of idleness, so a long processor
+                // backlog leaves the pools at floor level. Re-burst both pools on
+                // the still-live warmup CTS; foreground health starts after the
+                // scheduling mode's bounded handoff grace.
+                healthConnectionWarmupTask = Task.WhenAll(
+                    PrewarmHealthConnectionsDuringPrepAsync(
+                        connectionWarmer, queueItem, healthConnectionWarmupCts.Token),
+                    PrewarmPrimaryHealthConnectionsAfterPrepAsync(
+                        connectionWarmer, healthPrimeSegmentIds, healthPrimeDepth,
+                        queueItem, healthConnectionWarmupCts.Token));
+            }
+            var healthWorkTask = RunHealthCheckAfterWarmupAsync(
+                healthConnectionWarmupTask,
+                healthConnectionWarmupCts,
+                ct,
+                () => configManager.IsHealthPipeliningEnabled()
+                    ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
+                        healthPipelineLanes, currentHealthProgress, healthCts.Token)
+                    : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
+                        currentHealthProgress, healthCts.Token),
+                () => Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health-warmup " +
+                    "handoff=grace-expired graceMs={GraceMs}",
+                    queueItem.Id, queueItem.JobName,
+                    DefaultHealthWarmupHandoffGrace.TotalMilliseconds),
+                DefaultHealthWarmupHandoffGrace);
+            healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
+        }
 
         // step 1 -- get name and size of each nzb file
         var stepTimer = Stopwatch.StartNew();
@@ -297,7 +379,7 @@ public class QueueItemProcessor(
                 firstSegmentsCompleted();
             }
         }
-        if (connectionWarmer is not null)
+        if (connectionWarmer is not null && healthCheckTask is null)
             healthConnectionWarmupTask = Task.WhenAll(
                 healthConnectionWarmupTask,
                 PrewarmPrimaryHealthConnectionsAfterPrepAsync(
@@ -395,86 +477,20 @@ public class QueueItemProcessor(
             .WithConcurrencyAsync(processorConcurrency)
             .GetAllAsync(ct);
 
+        if (shouldCheckHealth && healthCheckTask is null)
+            articlesToCheck = fileInfos
+                .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
+                .SelectMany(x => x.NzbFile.GetSegmentIds())
+                .ToList();
+
         // Step 3 can overlap a processor set that fits in one concurrency wave.
         // When processors are already queued behind that wave, starting the full
         // STAT workload can starve both workloads and trip provider timeouts.
-        var checkedFullHealth = false;
-        var healthArticleCount = 0;
-        Task? healthCheckTask = null;
-        Stopwatch? healthTimer = null;
-        DeferredProgress? deferredHealthProgress = null;
-        using var healthCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var articlesToCheck = shouldCheckHealth
-            ? fileInfos
-                .Where(x => x.IsRar || FilenameUtil.IsImportantFileType(x.FileName))
-                .SelectMany(x => x.NzbFile.GetSegmentIds())
-                .ToList()
-            : [];
-        var deferHealthCheck = shouldCheckHealth &&
+        var deferHealthCheck = shouldCheckHealth && healthCheckTask is null &&
             ShouldDeferHealthCheck(fileProcessors.Count, processorConcurrency);
 
-        void StartHealthCheck(bool overlapsProcessors)
-        {
-            healthArticleCount = articlesToCheck.Count;
-            if (overlapsProcessors)
-            {
-                Log.Information(
-                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} overlap=processors",
-                    queueItem.Id, queueItem.JobName, articlesToCheck.Count);
-            }
-            else
-            {
-                Log.Information(
-                    "queue-stage nzo={NzoId} job={JobName} stage=health start articles={Articles} " +
-                    "overlap=none reason=processor-backlog",
-                    queueItem.Id, queueItem.JobName, articlesToCheck.Count);
-            }
-            deferredHealthProgress = new DeferredProgress(progress
-                .Offset(100)
-                .ToPercentage(articlesToCheck.Count));
-            if (!overlapsProcessors) deferredHealthProgress.Enable();
-            var healthCheckConcurrency = configManager.GetHealthCheckConnections();
-            var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
-            var healthPipelineLanes = Math.Min(healthCheckConcurrency, configManager.GetHealthPipeliningLanes());
-            Log.Information(
-                "queue-stage nzo={NzoId} job={JobName} stage=health mode={Mode} depth={Depth} lanes={Lanes}",
-                queueItem.Id, queueItem.JobName,
-                configManager.IsHealthPipeliningEnabled() ? "pipelined-stat" : "parallel-stat",
-                configManager.IsHealthPipeliningEnabled() ? healthPipelineDepth : 1,
-                configManager.IsHealthPipeliningEnabled() ? healthPipelineLanes : healthCheckConcurrency);
-            healthTimer = Stopwatch.StartNew();
-            if (!overlapsProcessors && connectionWarmer is not null)
-            {
-                // Deferred start: the prep-time warm bursts above the persistent
-                // floor decay after one minute of idleness, so a long processor
-                // backlog leaves the pools at floor level. Re-burst both pools on
-                // the still-live warmup CTS; the grace handoff below still starts
-                // health as soon as useful capacity exists and lets growth
-                // continue in parallel.
-                healthConnectionWarmupTask = Task.WhenAll(
-                    PrewarmHealthConnectionsDuringPrepAsync(
-                        connectionWarmer, queueItem, healthConnectionWarmupCts.Token),
-                    PrewarmPrimaryHealthConnectionsAfterPrepAsync(
-                        connectionWarmer, healthPrimeSegmentIds, healthPrimeDepth,
-                        queueItem, healthConnectionWarmupCts.Token));
-            }
-            var healthWorkTask = RunHealthCheckAfterWarmupAsync(
-                healthConnectionWarmupTask,
-                healthConnectionWarmupCts,
-                ct,
-                () => configManager.IsHealthPipeliningEnabled()
-                    ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
-                        healthPipelineLanes, deferredHealthProgress, healthCts.Token)
-                    : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
-                        deferredHealthProgress, healthCts.Token),
-                () => Log.Information(
-                    "queue-stage nzo={NzoId} job={JobName} stage=health-warmup " +
-                    "handoff=grace-expired graceMs={GraceMs}",
-                    queueItem.Id, queueItem.JobName, HealthWarmupHandoffGrace.TotalMilliseconds));
-            healthCheckTask = StopTimerWhenCompleted(healthWorkTask, healthTimer);
-        }
-
-        if (shouldCheckHealth && !deferHealthCheck) StartHealthCheck(overlapsProcessors: true);
+        if (shouldCheckHealth && healthCheckTask is null && !deferHealthCheck)
+            StartHealthCheck("processors");
 
         List<BaseProcessor.Result?> fileProcessingResultsAll;
         try
@@ -512,14 +528,15 @@ public class QueueItemProcessor(
         if (lazyRarResult is not null) fileProcessingResults.Add(lazyRarResult);
         var msProcessors = stepTimer.ElapsedMilliseconds;
         RecordPrepProgress("processors", msPar2, msRar, msProcessors, lazyRarResult is not null);
+        // Lazy archive mounting can leave no file processors to report the
+        // second half of prep progress. Prep is nevertheless complete here,
+        // so always publish its terminal state before waiting on health.
+        progress.Report(100);
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=processors done ms={ElapsedMs} results={Results}",
             queueItem.Id, queueItem.JobName, msProcessors, fileProcessingResults.Count);
         stepTimer.Restart();
 
-        // Do not let overlapped health reports move the queue progress into the
-        // health range before the processor phase has reached 100%.
-        deferredHealthProgress?.Enable();
-        if (deferHealthCheck) StartHealthCheck(overlapsProcessors: false);
+        if (deferHealthCheck) StartHealthCheck("none");
         // Preparation provider failures go straight to Watchdog. Only failures
         // observed from the subsequent health phase retain the bounded queue
         // retry policy.
@@ -656,6 +673,30 @@ public class QueueItemProcessor(
         }
     }
 
+    private sealed class HealthCheckLifetime(
+        CancellationTokenSource cancellation,
+        Func<Task?> task) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            var current = task();
+            if (current is null) return;
+
+            if (!current.IsCompleted)
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await current.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Cleanup only: the normal completion path observes and reports
+                // health failures. Here a prep failure is already unwinding and
+                // must remain the error shown to the user.
+            }
+        }
+    }
+
     private static async Task PrewarmHealthConnectionsDuringPrepAsync(
         IQueueConnectionWarmer connectionWarmer,
         QueueItem queueItem,
@@ -723,7 +764,7 @@ public class QueueItemProcessor(
     {
         if (!warmupTask.IsCompleted)
         {
-            var grace = handoffGrace ?? HealthWarmupHandoffGrace;
+            var grace = handoffGrace ?? DefaultHealthWarmupHandoffGrace;
             var graceTask = Task.Delay(grace, operationCancellation);
             if (await Task.WhenAny(warmupTask, graceTask).ConfigureAwait(false) != warmupTask)
             {
@@ -1202,21 +1243,4 @@ public class QueueItemProcessor(
         }
     }
 
-    private sealed class DeferredProgress(IProgress<int> target) : IProgress<int>
-    {
-        private int _enabled;
-        private int _latest;
-
-        public void Report(int value)
-        {
-            Interlocked.Exchange(ref _latest, value);
-            if (Volatile.Read(ref _enabled) != 0) target.Report(value);
-        }
-
-        public void Enable()
-        {
-            if (Interlocked.Exchange(ref _enabled, 1) == 0)
-                target.Report(Volatile.Read(ref _latest));
-        }
-    }
 }

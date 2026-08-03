@@ -224,6 +224,7 @@ export const QueueRow = memo(({ slot, onIsSelectedChanged, onIsRemovingChanged, 
                 category={slot.cat}
                 status={slot.status}
                 percentage={slot.true_percentage}
+                healthPercentage={slot.health_percentage}
                 fileSizeBytes={Number(slot.mb) * 1024 * 1024}
                 actions={<ActionButton type="delete" disabled={!!slot.isRemoving || isActivelyUploading} onClick={onRemove} />}
                 onRowSelectionChanged={isSelected => onIsSelectedChanged(slot.nzo_id, isSelected)}

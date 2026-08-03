@@ -120,6 +120,25 @@ public class FetchFirstSegmentsStepTests
     }
 
     [Fact]
+    public async Task ConfirmedMissingRequiredArticleCancelsOtherPrepWork()
+    {
+        var files = Enumerable.Range(0, 3).Select(NzbFile).ToList();
+        var client = new FlakyFirstSegmentClient(
+            missingSegments: ["file-0-segment"],
+            stalledSegments: ["file-1-segment", "file-2-segment"]);
+
+        var error = await Assert.ThrowsAsync<NonRetryableDownloadException>(() =>
+            FetchFirstSegmentsStep.FetchFirstSegments(
+                    files, client, new ConfigManager(), CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Contains("missing from every available Usenet provider", error.Message);
+        Assert.Equal(1, client.Attempts["file-0-segment"]);
+        Assert.Equal(1, client.Attempts["file-1-segment"]);
+        Assert.Equal(1, client.Attempts["file-2-segment"]);
+    }
+
+    [Fact]
     public async Task PreparationSharesOneFallbackAdmissionContextAcrossFirstSegments()
     {
         var files = Enumerable.Range(0, 3).Select(NzbFile).ToList();

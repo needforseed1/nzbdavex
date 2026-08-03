@@ -33,6 +33,9 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
     // Never open more than this many sockets at once, regardless of provider/config.
     private const int HardConnectionCeiling = 200;
+    private const double HealthRoundLatencyBudgetMultiplier = 5;
+    private static readonly TimeSpan HealthRoundFixedBudget = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MaxHealthRoundTimeout = TimeSpan.FromSeconds(60);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -64,7 +67,9 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
 
         // 2) Corpus — real message-ids to download.
         Report("corpus", "Gathering test articles…", 12, result, null);
-        var pool = await corpus.GetSegmentPoolAsync(profile.MaxCorpusSegments, ct).ConfigureAwait(false);
+        var pool = healthOnly
+            ? await corpus.GetHealthSegmentPoolAsync(profile.HealthStatSegments, ct).ConfigureAwait(false)
+            : await corpus.GetSegmentPoolAsync(profile.MaxCorpusSegments, ct).ConfigureAwait(false);
         if (pool.Count == 0)
         {
             result.ThroughputTested = false;
@@ -83,7 +88,7 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         if (healthOnly)
         {
             result.HealthPipelining = await MeasureHealthPipeliningAsync(
-                provider, pool, profile, result, ct).ConfigureAwait(false);
+                provider, pool, profile, result.Latency?.AvgMs ?? 0, result, ct).ConfigureAwait(false);
             Report("done", "Done.", 100, result, null);
             return result;
         }
@@ -274,11 +279,15 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
         UsenetProviderConfig.ConnectionDetails provider,
         IReadOnlyList<string> pool,
         BenchmarkProfile profile,
+        double latencyMs,
         BenchmarkResult benchmarkResult,
         CancellationToken ct)
     {
         var realCount = Math.Min(profile.HealthStatSegments, pool.Count);
-        var knownMissingCount = Math.Clamp(Math.Max(1, realCount / 8), 8, 32);
+        // One known miss is sufficient to verify negative STAT handling. The
+        // previous 8-32 synthetic misses made slow negative lookups dominate a
+        // benchmark intended to tune the normal bulk path.
+        var knownMissingCount = realCount > 0 ? 1 : 0;
         var knownMissing = Enumerable.Range(0, knownMissingCount)
             .Select(i => $"nzbdav-health-benchmark-{Guid.NewGuid():N}-{i}@invalid.local")
             .ToArray();
@@ -299,9 +308,11 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
             var depth = profile.HealthPipelineDepths[i];
             Report("health-pipelining", $"Testing health STAT depth {depth}…",
                 ProgressPercent(20, 92, i, profile.HealthPipelineDepths.Length), benchmarkResult, null);
+            var roundTimeout = ResolveHealthRoundTimeout(
+                profile.HealthStatRoundTimeout, latencyMs, ids.Count, depth);
             var sample = await MeasureHealthDepthAsync(
                 provider, ids, knownMissingSet, depth, profile.HealthStatRounds,
-                profile.HealthStatRoundTimeout, ct).ConfigureAwait(false);
+                roundTimeout, ct).ConfigureAwait(false);
             samples.Add(sample);
             result.Tested.Add(sample.Point);
         }
@@ -330,6 +341,23 @@ public sealed class UsenetBenchmarkService(WebsocketManager websocketManager, Be
                 "No STAT pipeline depth completed every round reliably. Do not enable health pipelining for this provider.");
 
         return result;
+    }
+
+    internal static TimeSpan ResolveHealthRoundTimeout(
+        TimeSpan minimumTimeout,
+        double latencyMs,
+        int requestCount,
+        int depth)
+    {
+        if (latencyMs <= 0 || requestCount <= 0)
+            return minimumTimeout;
+
+        var batches = Math.Max(1, (requestCount + Math.Max(1, depth) - 1) / Math.Max(1, depth));
+        var estimated = TimeSpan.FromMilliseconds(
+            batches * latencyMs * HealthRoundLatencyBudgetMultiplier +
+            HealthRoundFixedBudget.TotalMilliseconds);
+        if (estimated < minimumTimeout) return minimumTimeout;
+        return estimated > MaxHealthRoundTimeout ? MaxHealthRoundTimeout : estimated;
     }
 
     private static async Task<HealthDepthSample> MeasureHealthDepthAsync(

@@ -15,6 +15,7 @@ import { isPreflightSettingsValid, PreflightSettings } from "./preflight/preflig
 import { isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
 import { isWardenSettingsValid, WardenSettings } from "./warden/warden";
 import { isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
+import { isPlexSettingsValid, PlexSettings } from "./plex/plex";
 import { useCallback, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal";
@@ -71,9 +72,10 @@ function Body(props: BodyProps) {
     const isArrsUpdated = dirtySections.has("arrs");
     const isRepairsUpdated = dirtySections.has("repairs");
     const isRcloneUpdated = dirtySections.has("rclone");
+    const isPlexUpdated = dirtySections.has("plex");
     const isMaintenanceUpdated = dirtySections.has("maintenance");
     const isUpdated = changedKeys.size > 0;
-    const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isMaintenanceUpdated;
+    const isAdvancedUpdated = isWebdavUpdated || isSabnzbdUpdated || isArrsUpdated || isRepairsUpdated || isRcloneUpdated || isPlexUpdated || isMaintenanceUpdated;
     const navigationBlocker = useNavigationBlocker(isUpdated);
 
     const usenetTitle = tabTitle("Usenet", isUsenetUpdated);
@@ -97,6 +99,7 @@ function Body(props: BodyProps) {
         { active: validationSections.has("watchtower"), label: "Watchtower", validate: () => isWatchtowerSettingsValid(newConfig) },
         { active: validationSections.has("warden"), label: "Warden", validate: () => isWardenSettingsValid(newConfig) },
         { active: validationSections.has("rclone"), label: "Rclone", validate: () => isRcloneSettingsValid(newConfig) },
+        { active: validationSections.has("plex"), label: "Plex", validate: () => isPlexSettingsValid(newConfig) },
         { active: validationSections.has("repairs"), label: "Repairs", validate: () => isRepairsSettingsValid(newConfig) },
         { active: validationSections.has("maintenance"), label: "Maintenance", validate: () => isMaintenanceSettingsValid(newConfig) },
     ]);
@@ -142,6 +145,7 @@ function Body(props: BodyProps) {
                 ...newConfigAtSave,
                 "webdav.pass": "",
                 "rclone.pass": "",
+                "plex.token": "",
             };
             setConfig(savedConfig);
             setNewConfig(current => ({
@@ -154,6 +158,9 @@ function Body(props: BodyProps) {
                 "rclone.pass": current["rclone.pass"] === newConfigAtSave["rclone.pass"]
                     ? ""
                     : current["rclone.pass"],
+                "plex.token": current["plex.token"] === newConfigAtSave["plex.token"]
+                    ? ""
+                    : current["plex.token"],
             }));
             setIsSaved(true);
         } catch (error) {
@@ -234,6 +241,13 @@ function Body(props: BodyProps) {
                                 description="Remote control protocol settings for mounting nzbdav via rclone."
                                 isUpdated={isRcloneUpdated}>
                                 <RcloneSettings config={newConfig} setNewConfig={setNewConfig} />
+                            </AdvancedItem>
+                            <AdvancedItem
+                                eventKey="plex"
+                                title="Plex"
+                                description="Label existing mount reads using current Plex sessions and background activities."
+                                isUpdated={isPlexUpdated}>
+                                <PlexSettings config={newConfig} setNewConfig={setNewConfig} />
                             </AdvancedItem>
                             <AdvancedItem
                                 eventKey="maintenance"

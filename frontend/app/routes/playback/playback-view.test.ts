@@ -10,16 +10,97 @@ import {
     formatWatchTime,
     hasPlaybackImpact,
     matchesFilter,
+    mountPurposeLabel,
+    mountPurposeTitle,
     playVerdict,
     playVerdictLabel,
     playVerdictTitle,
+    plexAttributionBadge,
+    plexAttributionTitle,
     playsEqual,
     providerShares,
     shortHost,
     summarizeDelays,
     summarizeRetrieval,
+    shouldShowPlexAttribution,
     usedBackupProvider,
 } from "./playback-view";
+
+test("time-only playing sessions are probable while background jobs remain possible", () => {
+    assert.equal(
+        plexAttributionBadge("playback", "time-only"),
+        "Plex playback");
+    assert.match(
+        plexAttributionTitle("playback", "time-only"),
+        /probable source/);
+    assert.equal(
+        plexAttributionBadge("intro-detection", "time-only"),
+        "Plex intro detection");
+    assert.equal(
+        plexAttributionBadge("deep-media-analysis", "time-only"),
+        "Plex deep media analysis");
+    assert.equal(
+        shouldShowPlexAttribution("deep-media-analysis", "time-only"),
+        true);
+    assert.equal(shouldShowPlexAttribution("playback", "time-only"), true);
+    assert.equal(shouldShowPlexAttribution("paused", "time-only"), false);
+    assert.equal(shouldShowPlexAttribution("paused", "exact-path"), true);
+    assert.equal(
+        shouldShowPlexAttribution("playback", "time-only", "import-inspection"),
+        false);
+});
+
+test("specific mount purposes explain symlink and import reads", () => {
+    assert.equal(mountPurposeLabel("symlink-resolution"), "Symlink resolution");
+    assert.equal(mountPurposeLabel("analysis-probe"), "Analysis probe");
+    assert.equal(mountPurposeLabel("import-inspection", "sonarr"), "Sonarr import");
+    assert.equal(mountPurposeLabel("import-inspection", "RADARR"), "Radarr import");
+    assert.equal(mountPurposeLabel("import-inspection"), "Import inspection");
+    assert.match(
+        mountPurposeTitle(play({
+            mountPurpose: "analysis-probe",
+            bytesServed: 0,
+            bytesFetched: 0,
+        })) ?? "",
+        /scanner or media analyzer/);
+    assert.match(
+        mountPurposeTitle(play({
+            mountPurpose: "symlink-resolution",
+            bytesServed: 76,
+            bytesFetched: 0,
+        })) ?? "",
+        /mount metadata, not media playback/);
+
+    const detail = mountPurposeTitle(play({
+        mountPurpose: "import-inspection",
+        mountRelatedFileCount: 22,
+        mountCompletedAtUnix: 1000,
+        startedAtUnix: 1002,
+    })) ?? "";
+    assert.match(detail, /22 files/);
+    assert.match(detail, /2s after/);
+    assert.match(detail, /Sonarr, Radarr/);
+
+    const sonarrDetail = mountPurposeTitle(play({
+        mountPurpose: "import-inspection",
+        submissionSource: "sonarr",
+        mountRelatedFileCount: 22,
+        mountCompletedAtUnix: 1000,
+        startedAtUnix: 1002,
+    })) ?? "";
+    assert.match(sonarrDetail, /submitted to NzbDAVex by Sonarr/);
+    assert.match(sonarrDetail, /attributed to Sonarr import inspection/);
+
+    const singleFileDetail = mountPurposeTitle(play({
+        mountPurpose: "import-inspection",
+        mountRelatedFileCount: 1,
+        mountCompletedAtUnix: 1000,
+        startedAtUnix: 1082,
+    })) ?? "";
+    assert.match(singleFileDetail, /matching \.rclonelink/);
+    assert.match(singleFileDetail, /beginning and end/);
+    assert.match(singleFileDetail, /1m after/);
+});
 
 const emptyCounters: PlaybackCounters = {
     upstreamStalls: 0,
@@ -127,11 +208,11 @@ test("verdict reflects delivered playback, not successful recovery work", () => 
 test("a play that served zeros says so instead of reading as clean", () => {
     const damaged = play({ issues: ["corrupted"] });
     assert.equal(playVerdictLabel(damaged), "Damaged");
-    assert.equal(playVerdictLabel(play()), "No source issue");
+    assert.equal(playVerdictLabel(play()), "Source OK");
     assert.equal(playVerdictLabel(play({ issues: ["stalled"] })), "Usenet wait");
     assert.equal(
         playVerdictLabel(play({ endReason: "aborted", issues: ["aborted"] })),
-        "No source issue");
+        "Source OK");
 
     // It counts as viewer impact and is listed in Retrieval.
     assert.equal(hasPlaybackImpact(["corrupted"]), true);
@@ -177,7 +258,8 @@ test("filters mirror the backend rules", () => {
     assert.equal(matchesFilter(failed, "failed"), true);
     assert.equal(matchesFilter(recovered, "issues"), false);
 
-    // A tiny direct probe is observable even though its exact intent is not.
+    // Tiny reads remain observable regardless of whether they are direct or
+    // also part of mount activity.
     assert.equal(matchesFilter(probe, "playback"), false);
     assert.equal(matchesFilter(probe, "probes"), true);
     assert.equal(matchesFilter(stopped, "probes"), false);
@@ -185,10 +267,14 @@ test("filters mirror the backend rules", () => {
     assert.equal(matchesFilter(mountRead, "mount"), true);
     assert.equal(matchesFilter(mountRead, "probes"), false);
     assert.equal(matchesFilter(mountBackground, "playback"), false);
-    assert.equal(matchesFilter(mountBackground, "probes"), false);
+    assert.equal(matchesFilter(mountBackground, "probes"), true);
     assert.equal(matchesFilter(mountBackground, "mount"), true);
     assert.equal(matchesFilter(browserPlayback, "playback"), true);
-
+    assert.equal(matchesFilter(play({
+        isRcloneActivity: true,
+        isReliablePlayback: false,
+        isPlexPlayback: true,
+    }), "playback"), true);
     const stats = computeStats(
         [stopped, slow, failed, probe, mountRead, mountBackground, browserPlayback]);
     assert.deepEqual(
@@ -196,16 +282,13 @@ test("filters mirror the backend rules", () => {
         {
             all: 7,
             playback: 4,
-            probes: 1,
+            probes: 2,
             mount: 2,
             mountBytesServed: 60,
             mountBytesFetched: 80,
             issues: 2,
             failed: 1,
         });
-    assert.equal(
-        stats.playback + stats.probes + stats.mount,
-        stats.all);
 });
 
 test("clients are named from the user agent, then the ip", () => {
@@ -374,6 +457,10 @@ test("polling skips re-render when nothing changed", () => {
     assert.equal(playsEqual(a, [play({ bytesFetched: 10 })]), false);
     assert.equal(playsEqual(a, [play({ isReliablePlayback: false })]), false);
     assert.equal(playsEqual(a, [play({ isLikelyBackgroundActivity: true })]), false);
+    assert.equal(playsEqual(a, [play({ mountPurpose: "import-inspection" })]), false);
+    assert.equal(playsEqual(a, [play({ mountRelatedFileCount: 22 })]), false);
+    assert.equal(playsEqual(a, [play({ submissionSource: "sonarr" })]), false);
+    assert.equal(playsEqual(a, [play({ isPlexPlayback: true })]), false);
     assert.equal(playsEqual(a, [play({ issues: ["stalled"] })]), false);
     assert.equal(playsEqual(a, []), false);
 });

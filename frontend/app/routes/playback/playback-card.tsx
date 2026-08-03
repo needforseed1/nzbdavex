@@ -12,11 +12,19 @@ import {
     formatPct,
     formatRate,
     formatWatchTime,
+    mountPurposeLabel,
+    mountPurposeTitle,
     playVerdict,
     playVerdictLabel,
     playVerdictTitle,
+    plexAttributionBadge,
+    plexAttributionTitle,
+    plexClientLabel,
+    plexPurposeLabel,
+    shouldShowPlexAttribution,
     summarizeDelays,
     summarizeRetrieval,
+    submissionSourceLabel,
     usedBackupProvider,
 } from "./playback-view";
 
@@ -25,6 +33,18 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
     const verdict = playVerdict(play);
     const verdictLabel = playVerdictLabel(play);
     const client = describeClient(play.clientUserAgent, play.clientIp);
+    const showPlexAttribution = shouldShowPlexAttribution(
+        play.plexPurpose,
+        play.plexConfidence,
+        play.mountPurpose);
+    const plexClient = showPlexAttribution
+        ? plexClientLabel(
+            play.plexProduct,
+            play.plexPlatform,
+            play.plexPlayer)
+        : "";
+    const mountLabel = mountPurposeLabel(play.mountPurpose, play.submissionSource);
+    const mountTitle = mountPurposeTitle(play);
     const backupUsed = usedBackupProvider(play);
 
     // The row is the click target, but the chevron is the real button: the
@@ -45,27 +65,36 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
                 <div className={styles.playIdent}>
                     <div className={styles.playTitle} title={play.nzbName ?? play.title}>{play.title}</div>
                     <div className={styles.playMeta}>
-                        {play.isLikelyBackgroundActivity && (
+                        {mountLabel && (
+                            <span className={styles.metaBadge} title={mountTitle ?? undefined}>
+                                {mountLabel}
+                            </span>
+                        )}
+                        {showPlexAttribution && play.plexPurpose && (
+                            <span
+                                className={styles.metaBadge}
+                                title={plexAttributionTitle(
+                                    play.plexPurpose,
+                                    play.plexConfidence)}>
+                                {plexAttributionBadge(
+                                    play.plexPurpose,
+                                    play.plexConfidence)}
+                            </span>
+                        )}
+                        {!mountLabel && play.isLikelyBackgroundActivity && (
                             <span
                                 className={styles.metaBadge}
                                 title="The rclone access pattern strongly suggests background work: repeated tail probes or concurrent large reads. The originating application is unknown.">
                                 Likely background
                             </span>
                         )}
-                        {!play.isLikelyBackgroundActivity && play.isProbe && (
+                        {!mountLabel && !play.isLikelyBackgroundActivity && play.isProbe && (
                             <span
                                 className={styles.metaBadge}
                                 title={play.isRcloneActivity
                                     ? "Only a tiny part of the file was requested through rclone. The originating application and exact purpose are unknown."
                                     : "Only a tiny part of the file was read by a direct WebDAV client. Its exact purpose is unknown, but it does not look like playback."}>
-                                {play.isRcloneActivity ? "rclone probe" : "probe"}
-                            </span>
-                        )}
-                        {play.isRcloneActivity && !play.isLikelyBackgroundActivity && !play.isProbe && (
-                            <span
-                                className={styles.metaBadge}
-                                title="The WebDAV request came through rclone, which does not identify the process or container reading its shared mount.">
-                                rclone
+                                Probe
                             </span>
                         )}
                         {backupUsed && (
@@ -76,6 +105,12 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
                             </span>
                         )}
                         {play.category && <span className={styles.metaBadge}>{play.category}</span>}
+                        {plexClient && (
+                            <span className={styles.metaText} title={plexClient}>
+                                {plexClient}
+                            </span>
+                        )}
+                        {plexClient && <span className={styles.metaDot} aria-hidden="true">·</span>}
                         <span className={styles.metaText} title={play.clientUserAgent ?? undefined}>{client}</span>
                         <span className={styles.metaDot} aria-hidden="true">·</span>
                         <span
@@ -170,6 +205,13 @@ function PlaybackDetail({
     const delays = summarizeDelays(play.counters);
     const retrieval = summarizeRetrieval(play.counters);
     const quiet = delays.length === 0 && retrieval.length === 0;
+    const mountLabel = mountPurposeLabel(play.mountPurpose, play.submissionSource);
+    const mountTitle = mountPurposeTitle(play);
+    const submissionSource = submissionSourceLabel(play.submissionSource);
+    const showPlexAttribution = shouldShowPlexAttribution(
+        play.plexPurpose,
+        play.plexConfidence,
+        play.mountPurpose);
 
     return (
         <div className={styles.detailPanel} id={id}>
@@ -225,6 +267,12 @@ function PlaybackDetail({
                             <span className={styles.detailValue} title={play.nzbName}>{play.nzbName}</span>
                         </div>
                     )}
+                    {submissionSource && (
+                        <div className={styles.detailRow}>
+                            <span className={styles.detailLabel}>NZB submitted by</span>
+                            <span className={styles.detailValue}>{submissionSource}</span>
+                        </div>
+                    )}
                     <div className={styles.detailRow}>
                         <span className={styles.detailLabel}>Size</span>
                         <span className={styles.detailValue}>{formatBytes(play.fileSize)}</span>
@@ -240,6 +288,69 @@ function PlaybackDetail({
                             {play.clientIp ? ` · ${play.clientIp}` : ""}
                         </span>
                     </div>
+                    {mountLabel && (
+                        <>
+                            <div className={styles.detailRow}>
+                                <span className={styles.detailLabel}>Mount purpose</span>
+                                <span className={styles.detailValue}>{mountLabel}</span>
+                            </div>
+                            <div className={styles.detailRow}>
+                                <span className={styles.detailLabel}>Mount evidence</span>
+                                <span className={styles.detailValue}>{mountTitle}</span>
+                            </div>
+                        </>
+                    )}
+                    {showPlexAttribution && play.plexPurpose && (
+                        <>
+                            <div className={styles.detailRow}>
+                                <span className={styles.detailLabel}>Plex purpose</span>
+                                <span className={styles.detailValue}>
+                                    {plexPurposeLabel(play.plexPurpose)}
+                                    {play.plexIsTranscode ? " · transcoding" : ""}
+                                </span>
+                            </div>
+                            <div className={styles.detailRow}>
+                                <span className={styles.detailLabel}>Plex match</span>
+                                <span
+                                    className={styles.detailValue}
+                                    title={plexAttributionTitle(
+                                        play.plexPurpose,
+                                        play.plexConfidence)}>
+                                    {play.plexConfidence === "exact-path"
+                                        ? "Exact media path + time"
+                                        : play.plexPurpose === "playback"
+                                            ? "Time only · probable source"
+                                            : "Time only · possible, not proven"}
+                                </span>
+                            </div>
+                            {plexClientLabel(
+                                play.plexProduct,
+                                play.plexPlatform,
+                                play.plexPlayer) && (
+                                <div className={styles.detailRow}>
+                                    <span className={styles.detailLabel}>Plex client</span>
+                                    <span className={styles.detailValue}>
+                                        {plexClientLabel(
+                                            play.plexProduct,
+                                            play.plexPlatform,
+                                            play.plexPlayer)}
+                                    </span>
+                                </div>
+                            )}
+                            {play.plexDetail && (
+                                <div className={styles.detailRow}>
+                                    <span className={styles.detailLabel}>Plex detail</span>
+                                    <span className={styles.detailValue}>{play.plexDetail}</span>
+                                </div>
+                            )}
+                            {play.plexRatingKey && (
+                                <div className={styles.detailRow}>
+                                    <span className={styles.detailLabel}>Plex rating key</span>
+                                    <span className={styles.detailValue}>{play.plexRatingKey}</span>
+                                </div>
+                            )}
+                        </>
+                    )}
                     {/* Off the collapsed row: it is a detail about how the play
                         was served, not part of identifying it. */}
                     {backupUsed && (
@@ -294,7 +405,11 @@ function PlaybackDetail({
                     {play.sessions.length} session{play.sessions.length === 1 ? "" : "s"}
                 </div>
                 {play.sessions.map(session => (
-                    <PlaybackSessionRow key={session.id} session={session} />
+                <PlaybackSessionRow
+                    key={session.id}
+                    session={session}
+                    mountPurpose={play.mountPurpose}
+                />
                 ))}
             </div>
         </div>

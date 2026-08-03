@@ -239,4 +239,5 @@ public class PrioritizedSemaphore : IDisposable
         foreach (var tcs in waitersToCancel)
             tcs.TrySetException(new ObjectDisposedException(nameof(AsyncSemaphore)));
     }
+
 }

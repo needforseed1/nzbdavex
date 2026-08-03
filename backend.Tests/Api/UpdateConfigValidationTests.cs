@@ -53,23 +53,23 @@ public class UpdateConfigValidationTests
     }
 
     [Fact]
-    public void WarmValidationConnectionsAcceptAutomaticAndEnforceGlobalRange()
+    public void WarmValidationConnectionsAcceptAutomaticAndValuesAboveFormerLimit()
     {
         ConfigUpdateValidator.Validate([
             new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "" },
         ]);
         ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "512" },
+            new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "1024" },
         ]);
 
         Assert.Throws<BadHttpRequestException>(() =>
             ConfigUpdateValidator.Validate([
-                new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "513" },
+                new ConfigItem { ConfigName = "usenet.warm-validation-concurrency", ConfigValue = "2147483648" },
             ]));
     }
 
     [Fact]
-    public void PlaybackReservationAllowsZeroAndEnforcesGlobalRange()
+    public void PlaybackReservationAllowsZeroAndValuesAboveFormerLimit()
     {
         ConfigUpdateValidator.Validate([
             new ConfigItem
@@ -89,7 +89,7 @@ public class UpdateConfigValidationTests
             new ConfigItem
             {
                 ConfigName = "usenet.playback-reserved-connections",
-                ConfigValue = "512",
+                ConfigValue = "1024",
             },
         ]);
 
@@ -98,7 +98,7 @@ public class UpdateConfigValidationTests
                 new ConfigItem
                 {
                     ConfigName = "usenet.playback-reserved-connections",
-                    ConfigValue = "513",
+                    ConfigValue = "2147483648",
                 },
             ]));
     }
@@ -146,18 +146,18 @@ public class UpdateConfigValidationTests
     [Theory]
     [InlineData("usenet.ready-connections.primary")]
     [InlineData("usenet.ready-connections.health")]
-    public void ReadyConnectionFloorsAcceptZeroAndEnforceGlobalRange(string key)
+    public void ReadyConnectionFloorsAcceptZeroAndValuesAboveFormerLimit(string key)
     {
         ConfigUpdateValidator.Validate([
             new ConfigItem { ConfigName = key, ConfigValue = "0" },
         ]);
         ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = key, ConfigValue = "512" },
+            new ConfigItem { ConfigName = key, ConfigValue = "1024" },
         ]);
 
         Assert.Throws<BadHttpRequestException>(() =>
             ConfigUpdateValidator.Validate([
-                new ConfigItem { ConfigName = key, ConfigValue = "513" },
+                new ConfigItem { ConfigName = key, ConfigValue = "2147483648" },
             ]));
     }
 

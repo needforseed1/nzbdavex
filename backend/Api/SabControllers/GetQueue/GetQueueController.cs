@@ -19,6 +19,7 @@ public class GetQueueController(
     {
         // get in progress item
         var (inProgressQueueItem, progressPercentage) = queueManager.GetInProgressQueueItem();
+        var healthProgressPercentage = queueManager.GetInProgressQueueHealthProgress();
 
         // get total count
         var ct = request.CancellationToken;
@@ -54,7 +55,8 @@ public class GetQueueController(
                 var recoveryNotice = providerUsageTracker.SnapshotRecoveryNotice(queueItem.Id);
                 return GetQueueResponse.QueueSlot.FromQueueItem(
                     queueItem, index, percentage, status, providerUsage, nicknamesByHost,
-                    recoveryNotice);
+                    recoveryNotice,
+                    isInProgress ? healthProgressPercentage : null);
             })
             .ToList();
 

@@ -7,6 +7,9 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
     [JsonPropertyName("plays")]
     public required List<PlayDto> Plays { get; init; }
 
+    [JsonPropertyName("plexStatus")]
+    public required PlexStatusDto PlexStatus { get; init; }
+
     /// <summary>
     /// Raw session rows this answer was built from. Plays are grouped after the
     /// rows are sampled, so a page that does not say how deep the sample went
@@ -38,6 +41,11 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("title")] public required string Title { get; init; }
         [JsonPropertyName("nzbName")] public string? NzbName { get; init; }
         [JsonPropertyName("category")] public string? Category { get; init; }
+        /// <summary>
+        /// Normalized application that originally submitted the NZB. This is
+        /// provenance, not necessarily the application performing a later read.
+        /// </summary>
+        [JsonPropertyName("submissionSource")] public string? SubmissionSource { get; init; }
         [JsonPropertyName("path")] public required string Path { get; init; }
         [JsonPropertyName("davItemId")] public string? DavItemId { get; init; }
         [JsonPropertyName("historyItemId")] public string? HistoryItemId { get; init; }
@@ -87,10 +95,51 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         /// </summary>
         [JsonPropertyName("isLikelyBackgroundActivity")]
         public required bool IsLikelyBackgroundActivity { get; set; }
+        /// <summary>
+        /// A specific mount-side purpose NzbDAVex can infer without knowing the
+        /// process behind rclone. "symlink-resolution" is exact from the
+        /// requested .rclonelink file; "import-inspection" requires either a
+        /// multi-file batch or a matching .rclonelink followed by a brief
+        /// head/tail inspection of one newly completed file; "analysis-probe"
+        /// is a zero-transfer burst that reaches the end of a media file.
+        /// </summary>
+        [JsonPropertyName("mountPurpose")] public string? MountPurpose { get; set; }
+        [JsonPropertyName("mountRelatedFileCount")] public int? MountRelatedFileCount { get; set; }
+        [JsonPropertyName("mountCompletedAtUnix")] public long? MountCompletedAtUnix { get; set; }
+        [JsonPropertyName("plexPurpose")] public string? PlexPurpose { get; init; }
+        [JsonPropertyName("plexConfidence")] public string? PlexConfidence { get; init; }
+        [JsonPropertyName("plexProduct")] public string? PlexProduct { get; init; }
+        [JsonPropertyName("plexPlayer")] public string? PlexPlayer { get; init; }
+        [JsonPropertyName("plexPlatform")] public string? PlexPlatform { get; init; }
+        [JsonPropertyName("plexRatingKey")] public string? PlexRatingKey { get; init; }
+        [JsonPropertyName("plexDetail")] public string? PlexDetail { get; init; }
+        [JsonPropertyName("plexIsTranscode")] public bool? PlexIsTranscode { get; init; }
+        /// <summary>
+        /// True for an exact media match or a unique time-only Plex session
+        /// observed playing. It identifies likely source/purpose, not watch time.
+        /// </summary>
+        [JsonPropertyName("isPlexPlayback")] public bool IsPlexPlayback { get; set; }
         [JsonPropertyName("issues")] public required List<string> Issues { get; init; }
         [JsonPropertyName("counters")] public required CountersDto Counters { get; init; }
         [JsonPropertyName("providers")] public required List<ProviderDto> Providers { get; init; }
         [JsonPropertyName("sessions")] public required List<SessionDto> Sessions { get; init; }
+
+        // Used only while classifying the response. The completion timestamp is
+        // exposed above only after a strong import-batch match.
+        [JsonIgnore] public long? ContentCompletedAtUnix { get; init; }
+    }
+
+    public class PlexStatusDto
+    {
+        [JsonPropertyName("enabled")] public required bool Enabled { get; init; }
+        [JsonPropertyName("connected")] public required bool Connected { get; init; }
+        [JsonPropertyName("lastSuccessfulPollAtUnix")]
+        public long? LastSuccessfulPollAtUnix { get; init; }
+        [JsonPropertyName("lastError")] public string? LastError { get; init; }
+        [JsonPropertyName("serverName")] public string? ServerName { get; init; }
+        [JsonPropertyName("serverVersion")] public string? ServerVersion { get; init; }
+        [JsonPropertyName("activitiesConnected")] public bool? ActivitiesConnected { get; init; }
+        [JsonPropertyName("activitiesError")] public string? ActivitiesError { get; init; }
     }
 
     public class SessionDto
@@ -120,6 +169,14 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         /// UI can say "not recorded" instead of implying a flawless stream.
         /// </summary>
         [JsonPropertyName("hasDiagnostics")] public required bool HasDiagnostics { get; init; }
+        [JsonPropertyName("plexPurpose")] public string? PlexPurpose { get; init; }
+        [JsonPropertyName("plexConfidence")] public string? PlexConfidence { get; init; }
+        [JsonPropertyName("plexProduct")] public string? PlexProduct { get; init; }
+        [JsonPropertyName("plexPlayer")] public string? PlexPlayer { get; init; }
+        [JsonPropertyName("plexPlatform")] public string? PlexPlatform { get; init; }
+        [JsonPropertyName("plexRatingKey")] public string? PlexRatingKey { get; init; }
+        [JsonPropertyName("plexDetail")] public string? PlexDetail { get; init; }
+        [JsonPropertyName("plexIsTranscode")] public bool? PlexIsTranscode { get; init; }
         [JsonPropertyName("issues")] public required List<string> Issues { get; init; }
         [JsonPropertyName("counters")] public required CountersDto Counters { get; init; }
         [JsonPropertyName("providers")] public required List<ProviderDto> Providers { get; init; }

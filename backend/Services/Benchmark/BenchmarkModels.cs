@@ -83,7 +83,10 @@ public sealed class BenchmarkProfile
             PipelineTestConnections = 4,
             PipelineDepths = [8, 16],
             StartupSegments = 8,
-            HealthStatSegments = 128,
+            // One complete depth-64 batch is enough for the quick test. A
+            // larger mixed corpus made low-depth trials take longer than their
+            // fixed deadline even when the provider was behaving normally.
+            HealthStatSegments = 64,
             HealthStatRounds = 2,
             HealthStatRoundTimeout = TimeSpan.FromSeconds(4),
             HealthPipelineDepths = [1, 4, 8, 16, 32, 64],

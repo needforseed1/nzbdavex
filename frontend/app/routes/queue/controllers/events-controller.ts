@@ -11,6 +11,7 @@ export type QueueEvents = {
     onRemoveQueueSlots: (ids: Set<string>) => void,
     onChangeQueueSlotStatus: (message: string) => void,
     onChangeQueueSlotPercentage: (message: string) => void,
+    onChangeQueueSlotHealthPercentage: (message: string) => void,
     onChangeQueueSlotProviders: (message: string) => void,
     onChangeQueueSlotRecoveryNotice: (message: string) => void,
 };
@@ -60,6 +61,13 @@ export function useQueueEvents(
     const onChangeQueueSlotPercentage = useCallback((message: string) => {
         const [nzo_id, true_percentage] = message.split('|');
         setQueueSlots(slots => slots.map(x => x.nzo_id === nzo_id ? { ...x, true_percentage } : x));
+    }, [setQueueSlots]);
+
+    const onChangeQueueSlotHealthPercentage = useCallback((message: string) => {
+        const [nzo_id, health_percentage] = message.split('|');
+        setQueueSlots(slots => slots.map(x => x.nzo_id === nzo_id
+            ? { ...x, health_percentage: health_percentage || null }
+            : x));
     }, [setQueueSlots]);
 
     const onChangeQueueSlotProviders = useCallback((message: string) => {
@@ -112,6 +120,7 @@ export function useQueueEvents(
         onRemoveQueueSlots,
         onChangeQueueSlotStatus,
         onChangeQueueSlotPercentage,
+        onChangeQueueSlotHealthPercentage,
         onChangeQueueSlotProviders,
         onChangeQueueSlotRecoveryNotice,
     });

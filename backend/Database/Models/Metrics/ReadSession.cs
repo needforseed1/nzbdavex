@@ -78,6 +78,18 @@ public class ReadSession
 
     public string? ErrorNote { get; set; }
 
+    // Optional source/purpose enrichment for reads made through rclone. Exact
+    // playback matches use DAV identity plus time; scanner/analyzer attribution
+    // is explicitly stored as time-only when Plex exposes no media path.
+    public string? PlexPurpose { get; set; }
+    public string? PlexConfidence { get; set; }
+    public string? PlexProduct { get; set; }
+    public string? PlexPlayer { get; set; }
+    public string? PlexPlatform { get; set; }
+    public string? PlexRatingKey { get; set; }
+    public string? PlexDetail { get; set; }
+    public bool? PlexIsTranscode { get; set; }
+
     public enum EndReasonCode
     {
         Completed = 0,

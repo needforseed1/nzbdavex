@@ -9,7 +9,7 @@ public class SettingsRegistryTests
     {
         Assert.Equal("false", SettingsRegistry.Defaults["usenet.segment-cache.enabled"]);
         Assert.Equal("", SettingsRegistry.Defaults["usenet.playback-reserved-connections"]);
-        Assert.Equal((0, 512), SettingsRegistry.Ranges["usenet.playback-reserved-connections"]);
+        Assert.Equal((0, int.MaxValue), SettingsRegistry.Ranges["usenet.playback-reserved-connections"]);
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.depth"]);
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.health.depth"]);
         Assert.Equal((1, 100000), SettingsRegistry.Ranges["watchtower.active-set-cap"]);

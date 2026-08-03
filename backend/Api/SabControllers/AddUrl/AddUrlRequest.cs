@@ -55,10 +55,10 @@ public class AddUrlRequest() : AddFileRequest
             ContentType = nzbFile.ContentType,
             NzbFileStream = nzbFile.FileStream,
             Category = context.GetRequestParam("cat") ?? configManager.GetManualUploadCategory(),
-            SubmissionSource = SabRequestSource.IsStreamingApiKey(
-                context.GetRequestApiKey(), configManager.GetApiKey())
-                ? SabRequestSource.StreamingSubmissionSource
-                : null,
+            SubmissionSource = SabRequestSource.GetSubmissionSource(
+                context.GetRequestApiKey(),
+                configManager.GetApiKey(),
+                context.Request.Headers.UserAgent.ToString()),
             Priority = MapPriorityOption(context.GetRequestParam("priority")),
             PostProcessing = MapPostProcessingOption(context.GetRequestParam("pp")),
             CancellationToken = context.RequestAborted

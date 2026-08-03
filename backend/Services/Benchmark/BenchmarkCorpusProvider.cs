@@ -19,6 +19,57 @@ public sealed class BenchmarkCorpusProvider(DavDatabaseClient db)
     // releases already yields thousands of segments — far more than any run needs.
     private const int MaxNzbFilesToScan = 60;
     private const int MaxQueueNzbsToScan = 10;
+    private const int MaxHealthHistoryItemsToScan = 10;
+
+    /// <summary>
+    /// Builds a coherent health-check corpus from one recently completed NZB.
+    /// Bulk health checks operate on one release at a time; mixing unrelated
+    /// old files can turn provider-specific retention misses into the dominant
+    /// benchmark cost and does not represent the queue path being tuned.
+    /// </summary>
+    public async Task<List<string>> GetHealthSegmentPoolAsync(
+        int maxSegments,
+        CancellationToken ct)
+    {
+        var best = new List<string>();
+        try
+        {
+            var recentBlobIds = await db.Ctx.HistoryItems
+                .Where(x => x.DownloadStatus == HistoryItem.DownloadStatusOption.Completed &&
+                            x.NzbBlobId != null)
+                .OrderByDescending(x => x.CreatedAt)
+                .Select(x => x.NzbBlobId!.Value)
+                .Take(MaxHealthHistoryItemsToScan * 2)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            foreach (var blobId in recentBlobIds.Distinct().Take(MaxHealthHistoryItemsToScan))
+            {
+                ct.ThrowIfCancellationRequested();
+                await using var stream = BlobStore.ReadBlob(blobId);
+                if (stream is null) continue;
+
+                try
+                {
+                    var document = await NzbDocument.LoadAsync(stream).ConfigureAwait(false);
+                    var candidate = SelectHealthSegments(document, maxSegments);
+                    if (candidate.Count > best.Count) best = candidate;
+                    if (candidate.Count >= maxSegments) return candidate;
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    Log.Debug(e, "Skipping unparseable retained NZB during health benchmark corpus build.");
+                }
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Log.Warning(e, "Coherent health benchmark corpus gathering failed; using fallback corpus.");
+        }
+
+        if (best.Count > 0) return best;
+        return await GetSegmentPoolAsync(maxSegments, ct).ConfigureAwait(false);
+    }
 
     public async Task<List<string>> GetSegmentPoolAsync(int maxSegments, CancellationToken ct)
     {
@@ -100,6 +151,19 @@ public sealed class BenchmarkCorpusProvider(DavDatabaseClient db)
             if (string.IsNullOrWhiteSpace(id)) continue;
             if (seen.Add(id)) pool.Add(id);
         }
+    }
+
+    internal static List<string> SelectHealthSegments(NzbDocument document, int maxSegments)
+    {
+        var pool = new List<string>(Math.Max(0, maxSegments));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in document.Files.OrderByDescending(x => x.Segments.Count))
+        {
+            AddIds(pool, seen, file.GetSegmentIds(), maxSegments);
+            if (pool.Count >= maxSegments) break;
+        }
+
+        return pool;
     }
 
     // Shuffle so sequential nzb ordering doesn't bias which segments land in the

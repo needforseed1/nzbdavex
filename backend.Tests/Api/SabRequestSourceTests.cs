@@ -17,6 +17,30 @@ public class SabRequestSourceTests
     }
 
     [Theory]
+    [InlineData("Sonarr/4.0.15.2941 (debian 12.0)", "sonarr")]
+    [InlineData(" sonarr/4.0.15.2941", "sonarr")]
+    [InlineData("Radarr/6.0.4.10291 (ubuntu 24.04)", "radarr")]
+    [InlineData("RADARR (linux)", "radarr")]
+    [InlineData("NotSonarr/1.0", null)]
+    [InlineData("Mozilla/5.0", null)]
+    [InlineData("", null)]
+    public void NormalizesArrUserAgents(string userAgent, string? expected)
+    {
+        Assert.Equal(expected, SabRequestSource.GetArrSubmissionSource(userAgent));
+    }
+
+    [Fact]
+    public void ExplicitStreamingKeyTakesPrecedenceOverUserAgent()
+    {
+        Assert.Equal(
+            "streaming",
+            SabRequestSource.GetSubmissionSource(
+                "streaming:normal-key",
+                "normal-key",
+                "Sonarr/4.0"));
+    }
+
+    [Theory]
     [InlineData("Movies", "streaming", "streaming-movie")]
     [InlineData("movies", "streaming", "streaming-movie")]
     [InlineData("TV", "streaming", "streaming-series")]

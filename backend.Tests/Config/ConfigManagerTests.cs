@@ -45,19 +45,19 @@ public class ConfigManagerTests
     }
 
     [Fact]
-    public void WarmValidationBudgetUsesGlobalCapacityAndAllowsOverride()
+    public void WarmValidationBudgetUsesProviderCapacityAndAllowsOverride()
     {
         Assert.Equal(360, ConfigManager.CalculateAvailableHealthWarmConnections(
             ProviderConfig(providerCount: 4, connectionsPerProvider: 100)));
         Assert.Equal(360, ConfigManager.CalculateAutomaticWarmValidationConnectionBudget(
             ProviderConfig(providerCount: 4, connectionsPerProvider: 100)));
-        Assert.Equal(512, ConfigManager.CalculateAvailableHealthWarmConnections(
+        Assert.Equal(1080, ConfigManager.CalculateAvailableHealthWarmConnections(
             ProviderConfig(providerCount: 12, connectionsPerProvider: 100)));
-        Assert.Equal(384, ConfigManager.CalculateAutomaticWarmValidationConnectionBudget(
+        Assert.Equal(1080, ConfigManager.CalculateAutomaticWarmValidationConnectionBudget(
             ProviderConfig(providerCount: 12, connectionsPerProvider: 100)));
 
-        var overridden = WithValues(("usenet.warm-validation-concurrency", "512"));
-        Assert.Equal(512, overridden.GetWarmValidationConnectionBudget());
+        var overridden = WithValues(("usenet.warm-validation-concurrency", "1024"));
+        Assert.Equal(1024, overridden.GetWarmValidationConnectionBudget());
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public class ConfigManagerTests
             ("usenet.ready-connections.primary", "-1"),
             ("usenet.ready-connections.health", "999"));
         Assert.Equal(0, overridden.GetPrimaryReadyConnections());
-        Assert.Equal(512, overridden.GetHealthReadyConnections());
+        Assert.Equal(999, overridden.GetHealthReadyConnections());
     }
 
     [Fact]

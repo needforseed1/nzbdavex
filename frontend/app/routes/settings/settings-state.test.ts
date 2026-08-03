@@ -16,6 +16,7 @@ test("assigns representative keys to every settings section", () => {
         ["arr.instances", "arrs"],
         ["media.library-dir", "repairs"],
         ["rclone.host", "rclone"],
+        ["plex.base-url", "plex"],
         ["maintenance.remove-orphaned-schedule-time", "maintenance"],
     ] as const);
 

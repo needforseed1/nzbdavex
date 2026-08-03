@@ -43,6 +43,17 @@ public static class PlaybackHistory
     private static readonly TimeSpan BackgroundBulkReadMaxStartSkew = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan BackgroundBulkReadMinOverlap = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan BackgroundBulkReadContinuationGap = TimeSpan.FromMinutes(30);
+    private const int ImportInspectionMinRelatedFiles = 3;
+    private static readonly TimeSpan ImportInspectionWindow = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan ImportInspectionMaxStartSkew = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan ImportInspectionSymlinkMaxGap = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ImportInspectionSingleMaxActiveTime = TimeSpan.FromMinutes(2);
+    private const double ImportInspectionSingleMaxFileFraction = 0.03;
+    private const double ImportInspectionSingleMinReachedFraction = 0.95;
+    private const int ImportInspectionSingleMaxRequests = 8;
+    private static readonly TimeSpan AnalysisProbeMaxActiveTime = TimeSpan.FromSeconds(5);
+    private const double AnalysisProbeMinReachedFraction = 0.95;
+    private const int AnalysisProbeMinRequests = 10;
     private static readonly string[] RecognizedPlaybackUserAgentMarkers =
     [
         "infuse",
@@ -160,6 +171,14 @@ public static class PlaybackHistory
             EndReason = endReason,
             ErrorNote = row.ErrorNote,
             HasDiagnostics = row.RequestCount > 0 || row.ProviderStatsJson is not null,
+            PlexPurpose = row.PlexPurpose,
+            PlexConfidence = row.PlexConfidence,
+            PlexProduct = row.PlexProduct,
+            PlexPlayer = row.PlexPlayer,
+            PlexPlatform = row.PlexPlatform,
+            PlexRatingKey = row.PlexRatingKey,
+            PlexDetail = row.PlexDetail,
+            PlexIsTranscode = row.PlexIsTranscode,
             Issues = DescribeIssues(counters, endReason, providers),
             Counters = counters,
             Providers = providers,
@@ -303,9 +322,9 @@ public static class PlaybackHistory
     public static bool MatchesFilter(PlayDto play, string? filter) => filter?.ToLowerInvariant() switch
     {
         null or "" or "all" => true,
-        "playback" or "plays" => play.IsReliablePlayback,
-        "probes" or "scans" => !play.IsRcloneActivity && play.IsProbe,
-        "mount" or "rclone" or "plex" => play.IsRcloneActivity,
+        "playback" or "plays" => play.IsReliablePlayback || play.IsPlexPlayback,
+        "probes" or "scans" => play.IsProbe,
+        "mount" or "rclone" => play.IsRcloneActivity,
         "other" or "other-direct" =>
             !play.IsRcloneActivity && !play.IsProbe && !play.IsReliablePlayback,
         "issues" => play.Issues.Any(x => PlaybackImpactIssues.Contains(x)),
@@ -362,6 +381,16 @@ public static class PlaybackHistory
         var issues = DescribeIssues(counters, last.EndReason, providers);
         var isProbe = IsProbe(bytesServed, last.EndReason, issues);
         var isRcloneActivity = IsRcloneUserAgent(first.ClientUserAgent);
+        var isSymlinkResolution = isRcloneActivity && group.All(session =>
+            (session.FileName ?? System.IO.Path.GetFileName(session.Path))
+            .EndsWith(".rclonelink", StringComparison.OrdinalIgnoreCase));
+        var plex = group
+            .Where(IsUsefulPlexAttribution)
+            .OrderByDescending(session =>
+                session.PlexConfidence == "exact-path" ? 1 : 0)
+            .ThenByDescending(session => session.BytesServed)
+            .ThenByDescending(session => session.StartedAtMs)
+            .FirstOrDefault();
         var representativeClient = group
             .GroupBy(x => x.ClientUserAgent ?? "", StringComparer.OrdinalIgnoreCase)
             .Select(sessionsForAgent => new
@@ -387,6 +416,7 @@ public static class PlaybackHistory
                 first.Path),
             NzbName = content?.NzbName,
             Category = content?.Category,
+            SubmissionSource = content?.SubmissionSource,
             Path = first.Path,
             DavItemId = first.DavItemId,
             HistoryItemId = group.Select(x => x.HistoryItemId).FirstOrDefault(x => x is not null),
@@ -424,12 +454,48 @@ public static class PlaybackHistory
             // they called themselves. The user agent is frequently just
             // Dalvik, stagefright, or a browser after proxies and player stacks.
             IsReliablePlayback = !isProbe && !isRcloneActivity,
-            IsLikelyBackgroundActivity = false,
+            IsLikelyBackgroundActivity = isSymlinkResolution,
+            MountPurpose = isSymlinkResolution ? "symlink-resolution" : null,
+            ContentCompletedAtUnix = content?.CompletedAtUnix,
+            PlexPurpose = plex?.PlexPurpose,
+            PlexConfidence = plex?.PlexConfidence,
+            PlexProduct = plex?.PlexProduct,
+            PlexPlayer = plex?.PlexPlayer,
+            PlexPlatform = plex?.PlexPlatform,
+            PlexRatingKey = plex?.PlexRatingKey,
+            PlexDetail = plex?.PlexDetail,
+            PlexIsTranscode = plex?.PlexIsTranscode,
+            IsPlexPlayback = plex?.PlexPurpose == "playback"
+                             && plex.PlexConfidence is "exact-path" or "time-only",
             Issues = issues,
             Counters = counters,
             Providers = providers,
             Sessions = group.OrderByDescending(x => x.StartedAtMs).ToList(),
         };
+    }
+
+    private static bool IsUsefulPlexAttribution(SessionDto session)
+    {
+        if (string.IsNullOrWhiteSpace(session.PlexPurpose)) return false;
+        if (session.PlexConfidence == "exact-path") return true;
+
+        // Timing alone is useful for a playing session or an explicit Plex
+        // maintenance activity. A paused, stopped, prebuffering, or transcode
+        // session can coexist with unrelated mount work for minutes and proved
+        // far too broad in real Sonarr imports.
+        return session.PlexConfidence == "time-only" &&
+               (session.PlexPurpose == "playback" ||
+                session.PlexPurpose is
+                    "library-scan" or
+                    "intro-detection" or
+                    "credits-detection" or
+                    "thumbnail-generation" or
+                    "chapter-generation" or
+                    "loudness-analysis" or
+                    "sonic-analysis" or
+                    "fingerprinting" or
+                    "deep-media-analysis" or
+                    "media-analysis");
     }
 
     /// <summary>
@@ -447,6 +513,14 @@ public static class PlaybackHistory
     /// </summary>
     private static void ClassifyLikelyBackgroundActivity(IReadOnlyList<PlayDto> plays)
     {
+        ClassifyImportInspection(plays);
+
+        foreach (var play in plays.Where(IsAnalysisProbe))
+        {
+            play.MountPurpose = "analysis-probe";
+            play.IsLikelyBackgroundActivity = true;
+        }
+
         foreach (var play in plays.Where(IsRepeatedTailProbe))
             play.IsLikelyBackgroundActivity = true;
 
@@ -498,6 +572,115 @@ public static class PlaybackHistory
         } while (changed);
     }
 
+    /// <summary>
+    /// Identifies a media manager inspecting newly completed content. Multi-file
+    /// imports are recognized from their batch shape. A single-file import also
+    /// requires the matching .rclonelink resolution immediately beforehand and
+    /// a brief head/tail inspection shape; completion timing alone is not enough.
+    /// NzbDAVex still cannot tell whether the importer is Sonarr, Radarr, or
+    /// another application behind rclone.
+    /// </summary>
+    private static void ClassifyImportInspection(IReadOnlyList<PlayDto> plays)
+    {
+        var candidates = plays
+            .Where(play =>
+                play.IsRcloneActivity &&
+                play.MountPurpose is null &&
+                play.HistoryItemId is not null &&
+                play.ContentCompletedAtUnix is not null &&
+                play.StartedAtUnix >= play.ContentCompletedAtUnix - 5 &&
+                play.StartedAtUnix - play.ContentCompletedAtUnix <=
+                    ImportInspectionWindow.TotalSeconds)
+            .ToList();
+
+        var symlinkResolutions = plays
+            .Where(play => play.MountPurpose == "symlink-resolution")
+            .ToList();
+        foreach (var play in candidates.Where(play =>
+                     IsSingleFileImportInspection(play, symlinkResolutions)))
+            MarkImportInspection(play, 1);
+
+        var batches = candidates
+            .GroupBy(play => string.Join(
+                '\n',
+                play.HistoryItemId,
+                play.ClientIp ?? "",
+                play.ClientUserAgent ?? ""),
+                StringComparer.Ordinal);
+
+        foreach (var batch in batches)
+        {
+            var ordered = batch.OrderBy(play => play.StartedAtUnix).ToList();
+            for (var index = 0; index < ordered.Count; index++)
+            {
+                var anchor = ordered[index].StartedAtUnix;
+                var window = ordered
+                    .Skip(index)
+                    .TakeWhile(play =>
+                        play.StartedAtUnix - anchor <=
+                        ImportInspectionMaxStartSkew.TotalSeconds)
+                    .ToList();
+                var relatedFileCount = window
+                    .Select(ContentKey)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count();
+                if (relatedFileCount < ImportInspectionMinRelatedFiles) continue;
+
+                foreach (var play in window)
+                    MarkImportInspection(play, relatedFileCount);
+            }
+        }
+    }
+
+    private static bool IsSingleFileImportInspection(
+        PlayDto play,
+        IReadOnlyList<PlayDto> symlinkResolutions)
+    {
+        if (play.FileSize is not (> 0) ||
+            play.WatchedMs > ImportInspectionSingleMaxActiveTime.TotalMilliseconds ||
+            play.Sessions.Sum(session => session.RequestCount) >
+                ImportInspectionSingleMaxRequests)
+            return false;
+
+        var transferredFraction = play.BytesServed / (double)play.FileSize.Value;
+        var reachedFraction = play.MaxOffset / (double)play.FileSize.Value;
+        if (transferredFraction > ImportInspectionSingleMaxFileFraction ||
+            reachedFraction < ImportInspectionSingleMinReachedFraction)
+            return false;
+
+        var mediaFileName = System.IO.Path.GetFileName(play.Title);
+        return symlinkResolutions.Any(link =>
+            SameRcloneClient(play, link) &&
+            link.StartedAtUnix <= play.StartedAtUnix &&
+            play.StartedAtUnix - link.EndedAtUnix >= -1 &&
+            play.StartedAtUnix - link.EndedAtUnix <=
+                ImportInspectionSymlinkMaxGap.TotalSeconds &&
+            string.Equals(
+                StripRcloneLinkSuffix(System.IO.Path.GetFileName(link.Title)),
+                mediaFileName,
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string StripRcloneLinkSuffix(string fileName) =>
+        fileName.EndsWith(".rclonelink", StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^".rclonelink".Length]
+            : fileName;
+
+    private static void MarkImportInspection(PlayDto play, int relatedFileCount)
+    {
+        play.MountPurpose = "import-inspection";
+        play.MountRelatedFileCount = Math.Max(
+            play.MountRelatedFileCount ?? 0,
+            relatedFileCount);
+        play.MountCompletedAtUnix = play.ContentCompletedAtUnix;
+        play.IsLikelyBackgroundActivity = true;
+
+        // Strong local evidence beats a weak timing-only Plex session.
+        // Exact-path matches remain authoritative.
+        if (play.PlexConfidence == "time-only")
+            play.IsPlexPlayback = false;
+    }
+
     private static bool IsRepeatedTailProbe(PlayDto play)
     {
         if (!play.IsRcloneActivity ||
@@ -510,6 +693,21 @@ public static class PlaybackHistory
         var reachedFraction = play.MaxOffset / (double)play.FileSize.Value;
         return transferredFraction <= BackgroundTailProbeMaxFileFraction &&
                reachedFraction >= BackgroundTailProbeMinReachedFraction;
+    }
+
+    private static bool IsAnalysisProbe(PlayDto play)
+    {
+        if (!play.IsRcloneActivity ||
+            play.MountPurpose is not null ||
+            play.FileSize is not (> 0) ||
+            play.BytesServed != 0 ||
+            play.BytesFetched != 0 ||
+            play.WatchedMs > AnalysisProbeMaxActiveTime.TotalMilliseconds ||
+            play.Sessions.Sum(session => session.RequestCount) < AnalysisProbeMinRequests)
+            return false;
+
+        return play.MaxOffset / (double)play.FileSize.Value >=
+               AnalysisProbeMinReachedFraction;
     }
 
     private static bool IsBulkBackgroundCandidate(PlayDto play)
@@ -665,4 +863,9 @@ public static class PlaybackHistory
         candidates.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "unknown";
 }
 
-public sealed record PlaybackContentInfo(string? Title, string? NzbName, string? Category);
+public sealed record PlaybackContentInfo(
+    string? Title,
+    string? NzbName,
+    string? Category,
+    long? CompletedAtUnix = null,
+    string? SubmissionSource = null);

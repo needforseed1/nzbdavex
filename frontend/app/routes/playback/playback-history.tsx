@@ -1,5 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
-import type { PlaybackPlay } from "~/clients/backend-client.server";
+import type {
+    PlaybackPlay,
+    PlexStatus,
+} from "~/clients/backend-client.server";
 import cardStyles from "./playback-card.module.css";
 import styles from "./playback-layout.module.css";
 import { PlaybackCard } from "./playback-card";
@@ -13,6 +16,7 @@ import {
 
 export function PlaybackHistory({
     plays,
+    plexStatus,
     sampledSessions,
     truncated,
     autoRefresh,
@@ -24,6 +28,7 @@ export function PlaybackHistory({
     onClear,
 }: {
     plays: PlaybackPlay[],
+    plexStatus: PlexStatus,
     sampledSessions: number,
     truncated: boolean,
     autoRefresh: boolean,
@@ -34,11 +39,13 @@ export function PlaybackHistory({
     onRefresh: () => void,
     onClear: () => void,
 }) {
-    const [filter, setFilter] = useState<FilterKey>("playback");
+    const [filter, setFilter] = useState<FilterKey>("mount");
     const stats = useMemo(() => computeStats(plays), [plays]);
-    const visible = useMemo(
+    const visiblePlays = useMemo(
         () => plays.filter(play => matchesFilter(play, filter)),
         [plays, filter]);
+    const nothingVisible = visiblePlays.length === 0;
+    const noActivity = plays.length === 0;
 
     return (
         <div className={styles.group}>
@@ -46,7 +53,8 @@ export function PlaybackHistory({
                 <div className={styles.groupHeading}>
                     <h2 className={styles.title}>Playback &amp; file activity</h2>
                     <div className={styles.subtitle}>
-                        Playback is identified by direct read behavior, independent of the client name.
+                        Mount labels explain symlink and import reads; Plex labels identify
+                        correlated Plex activity.
                     </div>
                 </div>
                 <div className={styles.controls}>
@@ -82,7 +90,7 @@ export function PlaybackHistory({
                         type="button"
                         className={`${styles.toolbarBtn} ${styles.toolbarBtnDanger}`}
                         onClick={onClear}
-                        disabled={plays.length === 0 || clearing}
+                        disabled={noActivity || clearing}
                         title="Permanently delete playback and file-activity history.">
                         {clearing ? "Clearing…" : "Clear history"}
                     </button>
@@ -91,25 +99,25 @@ export function PlaybackHistory({
 
             <div className={styles.filterBar}>
                 <FilterChip
-                    active={filter === "playback"}
-                    onClick={() => setFilter("playback")}
-                    count={stats.playback}
-                    title="Substantial direct reads that look like playback. Client names are not required; shared-mount traffic and tiny probes are excluded.">
-                    Playback
-                </FilterChip>
-                <FilterChip
                     active={filter === "mount"}
                     onClick={() => setFilter("mount")}
                     count={stats.mount}
-                    title="Everything requested through rclone. The originating application or container is not visible.">
-                    Mount activity
+                    title="Every request made through rclone, including symlink resolution, import inspection, Plex activity, probes, scans, and unattributed mount reads.">
+                    All mount activity
+                </FilterChip>
+                <FilterChip
+                    active={filter === "playback"}
+                    onClick={() => setFilter("playback")}
+                    count={stats.playback}
+                    title="Substantial direct reads plus exact or uniquely correlated Plex sessions reported playing. Probable time-only matches retain an uncertainty badge.">
+                    Playback
                 </FilterChip>
                 <FilterChip
                     active={filter === "probes"}
                     onClick={() => setFilter("probes")}
                     count={stats.probes}
-                    title="Tiny successful reads from clients connecting directly to WebDAV. Their exact purpose is unknown; rclone requests remain under Mount activity.">
-                    Direct probes
+                    title="Tiny successful reads from direct clients or rclone. Known .rclonelink reads are identified as symlink resolution rather than guessed from size.">
+                    Probes
                 </FilterChip>
                 <FilterChip active={filter === "issues"} onClick={() => setFilter("issues")} count={stats.issues}>
                     Source issues
@@ -121,13 +129,33 @@ export function PlaybackHistory({
 
             {filter === "mount" && stats.mount > 0 && (
                 <div className={styles.filterSummary}>
-                    Originating app unknown
+                    All rclone reads
                     <span aria-hidden="true">·</span>
                     <strong>{formatBytes(stats.mountBytesFetched)}</strong> fetched from Usenet
                     <span aria-hidden="true">·</span>
                     {formatBytes(stats.mountBytesServed)} served through rclone
                     <span aria-hidden="true">·</span>
                     {formatCount(stats.mount)} activit{stats.mount === 1 ? "y" : "ies"}
+                    <span aria-hidden="true">·</span>
+                    Specific mount and Plex badges explain known purposes
+                </div>
+            )}
+
+            {plexStatus.enabled && !plexStatus.connected && (
+                <div className={styles.errorBox}>
+                    Plex is unavailable{plexStatus.lastError ? `: ${plexStatus.lastError}` : "."}
+                    {" "}Existing reads remain visible; new rclone reads will not receive Plex labels.
+                </div>
+            )}
+
+            {filter === "mount"
+                && plexStatus.enabled
+                && plexStatus.connected
+                && plexStatus.activitiesConnected === false && (
+                <div className={`${cardStyles.notice} ${cardStyles.noticeBar}`}>
+                    Plex playback attribution is connected, but scanner and analyzer attribution is unavailable
+                    {plexStatus.activitiesError ? `: ${plexStatus.activitiesError}` : "."}
+                    {" "}The affected mount reads remain visible without a Plex tag.
                 </div>
             )}
 
@@ -144,18 +172,18 @@ export function PlaybackHistory({
 
             {error && <div className={styles.errorBox}>Could not load: {error}</div>}
 
-            {visible.length === 0 ? (
+            {nothingVisible ? (
                 <div className={styles.emptyState}>
-                    {plays.length === 0
+                    {noActivity
                         ? "No file activity recorded yet."
                         : filter === "playback" &&
                           stats.probes + stats.mount > 0
-                            ? "No direct playback in this sample. Mount activity and small probes remain available in their filters."
+                            ? "No reliable playback in this sample. Mount activity and small probes remain available in their filters."
                             : "Nothing matches this filter."}
                 </div>
             ) : (
                 <div className={styles.playList}>
-                    {visible.map(play => <PlaybackCard key={play.key} play={play} />)}
+                    {visiblePlays.map(play => <PlaybackCard key={play.key} play={play} />)}
                 </div>
             )}
         </div>

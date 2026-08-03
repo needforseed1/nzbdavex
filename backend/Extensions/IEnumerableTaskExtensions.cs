@@ -68,7 +68,8 @@ public static class IEnumerableTaskExtensions
     (
         this IEnumerable<Task<T>> tasks,
         int concurrency,
-        bool drainOnFailure = false
+        bool drainOnFailure = false,
+        Action<Exception>? onFailureBeforeDrain = null
     )
     {
         if (concurrency < 1)
@@ -87,6 +88,7 @@ public static class IEnumerableTaskExtensions
                 var outcome = await ObserveTaskAsync(completedTask).ConfigureAwait(false);
                 if (outcome.Error is not null)
                 {
+                    onFailureBeforeDrain?.Invoke(outcome.Error.SourceException);
                     shouldDrain = drainOnFailure &&
                         !outcome.Error.SourceException.IsCancellationException();
                     outcome.Error.Throw();
@@ -102,6 +104,7 @@ public static class IEnumerableTaskExtensions
                 var outcome = await ObserveTaskAsync(completedTask).ConfigureAwait(false);
                 if (outcome.Error is not null)
                 {
+                    onFailureBeforeDrain?.Invoke(outcome.Error.SourceException);
                     shouldDrain = drainOnFailure &&
                         !outcome.Error.SourceException.IsCancellationException();
                     outcome.Error.Throw();

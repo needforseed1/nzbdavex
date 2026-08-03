@@ -1,6 +1,7 @@
 using System.Text.Json;
 using NzbWebDAV.Database.Models.Metrics;
 using NzbWebDAV.Services.Metrics;
+using NzbWebDAV.Services.Plex;
 
 namespace NzbWebDAV.Services;
 
@@ -12,7 +13,8 @@ namespace NzbWebDAV.Services;
 public sealed class PlaybackSessionRecorder(
     ProviderUsageTracker usageTracker,
     PlaybackSessionStats playbackSessionStats,
-    MetricsWriter metricsWriter)
+    MetricsWriter metricsWriter,
+    PlexReadAttributionMonitor? plexAttributionMonitor = null)
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -25,12 +27,29 @@ public sealed class PlaybackSessionRecorder(
         usageTracker.Clear(entry.Id);
         var totals = playbackSessionStats.Take(entry.Id);
 
-        metricsWriter.RecordSession(BuildSession(
+        var session = BuildSession(
             entry,
             failoverSaves,
             segmentsByProvider,
             bytesByProvider,
-            totals));
+            totals);
+        var plex = plexAttributionMonitor?.Match(
+            entry.StartedAt,
+            entry.LastActivityAt,
+            entry.DavItemId,
+            entry.ClientUserAgent);
+        if (plex is not null)
+        {
+            session.PlexPurpose = plex.Purpose;
+            session.PlexConfidence = plex.Confidence;
+            session.PlexProduct = plex.Product;
+            session.PlexPlayer = plex.Player;
+            session.PlexPlatform = plex.Platform;
+            session.PlexRatingKey = plex.RatingKey;
+            session.PlexDetail = plex.Detail;
+            session.PlexIsTranscode = plex.IsTranscode;
+        }
+        metricsWriter.RecordSession(session);
     }
 
     internal static ReadSession BuildSession(

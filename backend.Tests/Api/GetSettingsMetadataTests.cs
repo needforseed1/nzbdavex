@@ -31,6 +31,7 @@ public class GetSettingsMetadataTests
     [Theory]
     [InlineData("webdav.pass")]
     [InlineData("rclone.pass")]
+    [InlineData("plex.token")]
     public void PasswordValuesAreAlwaysMasked(string key)
     {
         Assert.Equal("", GetSettingsMetadataController.ResolveEffectiveValue(

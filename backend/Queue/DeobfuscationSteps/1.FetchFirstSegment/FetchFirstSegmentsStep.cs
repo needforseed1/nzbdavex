@@ -60,7 +60,14 @@ public static class FetchFirstSegmentsStep
         {
             return await files
                 .Select(x => FetchFirstSegment(x, probeClient, prepCts.Token))
-                .WithConcurrencyAsync(concurrency, drainOnFailure: true)
+                .WithConcurrencyAsync(
+                    concurrency,
+                    drainOnFailure: true,
+                    onFailureBeforeDrain: error =>
+                    {
+                        if (error is NonRetryableDownloadException)
+                            prepCts.Cancel();
+                    })
                 .GetAllAsync(cancellationToken, progress).ConfigureAwait(false);
         }
         catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
