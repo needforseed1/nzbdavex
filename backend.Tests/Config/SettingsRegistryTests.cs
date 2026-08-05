@@ -8,6 +8,8 @@ public class SettingsRegistryTests
     public void RegistryDescribesValidationRules()
     {
         Assert.Equal("false", SettingsRegistry.Defaults["usenet.segment-cache.enabled"]);
+        Assert.Equal("true", SettingsRegistry.Defaults[
+            "usenet.pipelining.health.provider-qualification.enabled"]);
         Assert.Equal("", SettingsRegistry.Defaults["usenet.playback-reserved-connections"]);
         Assert.Equal((0, int.MaxValue), SettingsRegistry.Ranges["usenet.playback-reserved-connections"]);
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.depth"]);

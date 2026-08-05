@@ -220,7 +220,8 @@ public abstract class NntpClient : INntpClient
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        bool qualifyProviders = true
     )
     {
         if (segmentIds.Count == 0) return;

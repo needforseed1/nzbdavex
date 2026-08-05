@@ -23,6 +23,7 @@ import {
     summarizeDelays,
     summarizeRetrieval,
     shouldShowPlexAttribution,
+    shouldShowNzbName,
     usedBackupProvider,
 } from "./playback-view";
 
@@ -347,11 +348,11 @@ test("delays are listed worst first and omitted when nothing waited", () => {
         maxUpstreamStallMs: 1_500,
         providerPoolWaits: 1,
         maxProviderPoolWaitMs: 9_000,
-        // Client backpressure always sorts last — it is not a fault.
+        // Client backpressure is collected for logs, but is not a user-facing delay.
         downstreamStalls: 8,
         maxDownstreamStallMs: 3_137,
     });
-    assert.deepEqual(rows.map(r => r.key), ["pool", "upstream", "downstream"]);
+    assert.deepEqual(rows.map(r => r.key), ["pool", "upstream"]);
 
     // Time waited leads the line when it is known, because that is what decides
     // whether the viewer saw anything.
@@ -372,18 +373,24 @@ test("delays are listed worst first and omitted when nothing waited", () => {
     assert.equal(single[0].value, "1 wait · longest 1.4s");
 
     // Client pacing is downstream backpressure, not an observed playback pause.
-    // Its cumulative total is omitted because grouped requests can overlap.
+    // It remains telemetry but is deliberately absent from the UI summary.
     const paced = summarizeDelays({
         ...emptyCounters,
         downstreamStalls: 7,
         maxDownstreamStallMs: 1_836,
         totalDownstreamStallMs: 8_646,
     });
-    assert.equal(paced[0].value, "7 waits · longest 1.8s");
+    assert.deepEqual(paced, []);
     assert.equal(rows[0].value, "1 wait · longest 9s");
     assert.equal(rows[1].value, "2 waits · longest 1.5s");
-    assert.equal(rows[2].label, "Client pacing (normal)");
-    assert.equal(rows[2].value, "8 waits · longest 3.1s");
+});
+
+test("NZB name is shown only when it adds information beyond the file title", () => {
+    assert.equal(shouldShowNzbName(
+        "PAW.Patrol.The.Movie.2021.720p.BluRay.DD-EX.5.1.x264-iFT.mkv",
+        "PAW.Patrol.The.Movie.2021.720p.BluRay.DD-EX.5.1.x264-iFT"), false);
+    assert.equal(shouldShowNzbName("movie.mkv", "different.release.nzb"), true);
+    assert.equal(shouldShowNzbName("movie.mkv", null), false);
 });
 
 test("client pacing is never labelled as buffering", () => {

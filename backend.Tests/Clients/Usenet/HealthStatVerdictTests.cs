@@ -378,8 +378,9 @@ public class HealthStatVerdictTests
     public async Task ZeroResponseProbeRetriesFreshSocketBeforeQuarantiningProvider()
     {
         // One stale socket must not quarantine an otherwise fast, full-coverage
-        // provider. The first 32-command qualification call stalls; the fresh
-        // socket retry succeeds and the provider then carries primary lanes.
+        // provider. One of the first two 16-command qualification lanes stalls;
+        // after that socket is evicted, the fresh single-lane retry succeeds and
+        // the provider carries primary lanes.
         var flaky = new VerdictStatClient(
             (_, call) => call == 1 ? StatAnswer.Stall : StatAnswer.Found);
         var missing = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -395,20 +396,20 @@ public class HealthStatVerdictTests
                 segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None)
             .WaitAsync(TestTimeout);
 
-        Assert.True(flaky.Calls > 2);
-        Assert.Equal([32, 32], flaky.BatchSizes.Take(2));
+        Assert.True(flaky.Calls > 3);
+        Assert.Equal([16, 16, 32], flaky.BatchSizes.Take(3));
     }
 
     [Fact]
     public async Task LargeIndeterminateRecoveryUsesSeveralEstablishedConnections()
     {
-        // At one millisecond per answer, one socket needs more than four seconds
+        // At two milliseconds per answer, one socket needs more than four seconds
         // for this recovery set. The four-second operation budget is deliberately
         // impossible serially but comfortable when the established idle pool is
         // partitioned across bounded recovery lanes.
         var recovering = new VerdictStatClient(
-            (_, call) => call <= 2 ? StatAnswer.Stall : StatAnswer.Found,
-            TimeSpan.FromMilliseconds(1));
+            (_, call) => call <= 4 ? StatAnswer.Stall : StatAnswer.Found,
+            TimeSpan.FromMilliseconds(2));
         var recoveringProvider = Provider(recovering, "recovering", maxConnections: 8);
         await recoveringProvider.PrewarmAsync(8, CancellationToken.None);
 
@@ -418,14 +419,14 @@ public class HealthStatVerdictTests
                 Provider(missing, "missing", maxConnections: 8),
             ],
             recoveryBudget: TimeSpan.FromSeconds(4));
-        var segments = Enumerable.Range(0, 4096).Select(i => $"s{i}").ToArray();
+        var segments = Enumerable.Range(0, 2048).Select(i => $"s{i}").ToArray();
 
         await client.CheckAllSegmentsPipelinedAsync(
                 segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None)
             .WaitAsync(TestTimeout);
 
         Assert.True(recovering.MaxConcurrentCalls >= 4);
-        Assert.Equal(segments.Length, recovering.BatchSizes.Skip(2).Sum());
+        Assert.Equal(segments.Length, recovering.BatchSizes.Skip(4).Sum());
     }
 
     [Fact]

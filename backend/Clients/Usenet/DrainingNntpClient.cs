@@ -272,9 +272,10 @@ internal sealed class DrainingNntpClient : NntpClient, IQueueConnectionWarmer
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        bool qualifyProviders = true) =>
         UseAsync(client => client.CheckAllSegmentsPipelinedAsync(
-            segmentIds, depth, fallbackConcurrency, progress, cancellationToken));
+            segmentIds, depth, fallbackConcurrency, progress, cancellationToken, qualifyProviders));
 
     public Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken) =>
         UseAsync(client => client is IQueueConnectionWarmer warmer

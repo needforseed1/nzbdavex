@@ -304,6 +304,11 @@ public class ConfigManager
         return GetBoolean("usenet.pipelining.health.enabled", true);
     }
 
+    public bool IsHealthProviderQualificationEnabled()
+    {
+        return GetBoolean("usenet.pipelining.health.provider-qualification.enabled", true);
+    }
+
     public bool IsCascadeEnabled()
     {
         return GetBoolean("usenet.cascade.enabled", false);

@@ -126,11 +126,12 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
-    public async Task StalledWarmupIsCancelledAtForegroundHandoff()
+    public async Task StalledWarmupContinuesUntilForegroundHealthCompletes()
     {
         using var warmupCancellation = new CancellationTokenSource();
         var warmup = Task.Delay(Timeout.InfiniteTimeSpan, warmupCancellation.Token);
         var healthStarted = false;
+        var warmupWasRunningDuringHealth = false;
         var graceExpired = false;
 
         await QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
@@ -140,14 +141,18 @@ public class QueueItemProcessorTests
             () =>
             {
                 healthStarted = true;
+                warmupWasRunningDuringHealth =
+                    !warmupCancellation.IsCancellationRequested && !warmup.IsCompleted;
                 return Task.CompletedTask;
             },
             () => graceExpired = true,
             TimeSpan.Zero);
 
         Assert.True(graceExpired);
-        Assert.True(warmupCancellation.IsCancellationRequested);
         Assert.True(healthStarted);
+        Assert.True(warmupWasRunningDuringHealth);
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.True(warmup.IsCanceled);
     }
 
     [Fact]
@@ -174,6 +179,56 @@ public class QueueItemProcessorTests
         Assert.False(warmupCompletion.Task.IsCompleted);
 
         warmupCompletion.SetResult();
+    }
+
+    [Fact]
+    public async Task WarmupCanFinishWhileForegroundHealthIsRunning()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var warmupCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var healthStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishHealth = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
+            warmupCompletion.Task,
+            warmupCancellation,
+            CancellationToken.None,
+            async () =>
+            {
+                healthStarted.SetResult();
+                await finishHealth.Task;
+            },
+            handoffGrace: TimeSpan.Zero);
+
+        await healthStarted.Task;
+        Assert.False(warmupCancellation.IsCancellationRequested);
+        warmupCompletion.SetResult();
+        finishHealth.SetResult();
+        await run;
+
+        Assert.True(warmupCompletion.Task.IsCompletedSuccessfully);
+        Assert.False(warmupCancellation.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task ForegroundHealthFailureStillCancelsConcurrentWarmup()
+    {
+        using var warmupCancellation = new CancellationTokenSource();
+        var warmup = Task.Delay(Timeout.InfiniteTimeSpan, warmupCancellation.Token);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
+                warmup,
+                warmupCancellation,
+                CancellationToken.None,
+                () => throw new InvalidOperationException("health failed"),
+                handoffGrace: TimeSpan.Zero));
+
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.True(warmup.IsCanceled);
     }
 
     [Fact]

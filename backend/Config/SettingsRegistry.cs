@@ -15,6 +15,7 @@ public static class SettingsRegistry
       "usenet.ready-connections.primary":"5","usenet.ready-connections.health":"10","usenet.streaming-priority":"80",
       "usenet.article-buffer-size":"40","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
       "usenet.segment-cache.max-gb":"10","usenet.pipelining.playback.enabled":"false","usenet.pipelining.health.enabled":"true",
+      "usenet.pipelining.health.provider-qualification.enabled":"true",
       "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64",
       "usenet.pipelining.depth":"8","usenet.cascade.enabled":"false",
       "webdav.user":"admin","webdav.pass":"",

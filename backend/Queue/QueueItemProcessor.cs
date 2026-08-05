@@ -320,12 +320,13 @@ public class QueueItemProcessor(
                 ct,
                 () => configManager.IsHealthPipeliningEnabled()
                     ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
-                        healthPipelineLanes, currentHealthProgress, healthCts.Token)
+                        healthPipelineLanes, currentHealthProgress, healthCts.Token,
+                        configManager.IsHealthProviderQualificationEnabled())
                     : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
                         currentHealthProgress, healthCts.Token),
                 () => Log.Information(
                     "queue-stage nzo={NzoId} job={JobName} stage=health-warmup " +
-                    "handoff=grace-expired graceMs={GraceMs}",
+                    "handoff=concurrent graceMs={GraceMs}",
                     queueItem.Id, queueItem.JobName,
                     DefaultHealthWarmupHandoffGrace.TotalMilliseconds),
                 DefaultHealthWarmupHandoffGrace);
@@ -769,18 +770,30 @@ public class QueueItemProcessor(
             if (await Task.WhenAny(warmupTask, graceTask).ConfigureAwait(false) != warmupTask)
             {
                 onGraceExpired?.Invoke();
-                await warmupCancellation.CancelAsync().ConfigureAwait(false);
-                if (!warmupTask.IsCompleted)
+                operationCancellation.ThrowIfCancellationRequested();
+                try
                 {
-                    // Foreground health must never remain behind a provider operation
-                    // that is slow to observe cancellation. The shared connection
-                    // budget still bounds the late cleanup while foreground lanes get
-                    // priority for any capacity that is already available.
-                    _ = ObserveLateWarmupCompletionAsync(warmupTask);
-                    operationCancellation.ThrowIfCancellationRequested();
+                    // Foreground health must never remain behind speculative setup.
+                    // Keep already-started handshakes running, though: the shared
+                    // budget admits them only through its bounded speculative quota
+                    // and gives real health acquisitions priority. Connections they
+                    // finish can therefore join this same health check while provider
+                    // qualification is still running.
                     await runHealthCheck().ConfigureAwait(false);
-                    return;
                 }
+                finally
+                {
+                    // Do not leave speculative setup running after the foreground
+                    // operation has ended or failed. Cleanup remains bounded when a
+                    // provider is slow to observe cancellation.
+                    await CancelAndObserveWarmupAsync(
+                            warmupTask,
+                            warmupCancellation,
+                            "foreground health handoff",
+                            TimeSpan.Zero)
+                        .ConfigureAwait(false);
+                }
+                return;
             }
         }
 
@@ -792,8 +805,7 @@ public class QueueItemProcessor(
             warmupCancellation.IsCancellationRequested &&
             !operationCancellation.IsCancellationRequested)
         {
-            // Prep already produced useful capacity. Stop speculative warmup
-            // cleanly and hand the remaining growth to foreground health lanes.
+            // Cleanup may have stopped speculative setup after foreground health.
         }
 
         operationCancellation.ThrowIfCancellationRequested();

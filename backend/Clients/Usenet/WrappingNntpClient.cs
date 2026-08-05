@@ -86,9 +86,10 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient, IQueueCo
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        bool qualifyProviders = true) =>
         _usenetClient.CheckAllSegmentsPipelinedAsync(
-            segmentIds, depth, fallbackConcurrency, progress, cancellationToken);
+            segmentIds, depth, fallbackConcurrency, progress, cancellationToken, qualifyProviders);
 
     public Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken) =>
         _usenetClient is IQueueConnectionWarmer warmer

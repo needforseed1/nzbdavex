@@ -38,6 +38,25 @@ public class BulkStatProviderSelectionTests
         Assert.Equal(expected, MultiProviderNntpClient.IsPartialStatProviderEligible(found, received));
     }
 
+    [Theory]
+    [InlineData(true, 32, 0, true)]
+    [InlineData(true, 32, 1, false)]
+    [InlineData(false, 0, 0, false)]
+    [InlineData(true, 0, 0, false)]
+    public void QuiescesWarmupOnlyForConfirmedZeroCoverage(
+        bool probeSuccess,
+        int received,
+        int found,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            MultiProviderNntpClient.ShouldQuiesceHealthPrewarm(
+                probeSuccess,
+                received,
+                found));
+    }
+
     [Fact]
     public void RecoveryBudgetGrowsWithTheIndeterminateWorkload()
     {
@@ -97,6 +116,26 @@ public class BulkStatProviderSelectionTests
         Assert.Null(sparse);
         Assert.Null(providerFaults);
         Assert.Null(backoff.LaneLimit);
+    }
+
+    [Theory]
+    [InlineData(38, 50, null, 42)]
+    [InlineData(49, 50, null, 50)]
+    [InlineData(0, 50, null, 5)]
+    [InlineData(38, 50, 36, 36)]
+    [InlineData(8, 4, null, 4)]
+    public void ProviderLaneAdmissionAllowsOnlyABoundedGrowthWave(
+        int liveConnections,
+        int lowPriorityConnectionLimit,
+        int? laneBackoffLimit,
+        int expected)
+    {
+        var actual = MultiProviderNntpClient.ResolveHealthProviderLaneAdmissionLimit(
+            liveConnections,
+            lowPriorityConnectionLimit,
+            laneBackoffLimit);
+
+        Assert.Equal(expected, actual);
     }
 
     private static MultiProviderNntpClient.BulkStatAttemptSnapshot Snapshot(

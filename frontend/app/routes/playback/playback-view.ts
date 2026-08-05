@@ -94,6 +94,21 @@ export function submissionSourceLabel(source?: string | null): string | null {
     }
 }
 
+const MEDIA_OR_NZB_EXTENSION = /\.(?:avi|m2ts|m4v|mkv|mov|mp4|nzb|ts|webm|wmv)$/i;
+
+/** Avoid repeating the card title when the NZB is just the file name sans extension. */
+export function shouldShowNzbName(
+    fileName: string,
+    nzbName?: string | null,
+): boolean {
+    const nzb = nzbName?.trim();
+    if (!nzb) return false;
+    const normalize = (value: string) => value.trim()
+        .replace(MEDIA_OR_NZB_EXTENSION, "")
+        .toLocaleLowerCase();
+    return normalize(fileName) !== normalize(nzb);
+}
+
 export function mountPurposeLabel(
     purpose?: string | null,
     submissionSource?: string | null,
@@ -397,16 +412,9 @@ export function summarizeDelays(counters: PlaybackCounters): { key: string, labe
         // Sorts immediately under the upstream row it qualifies.
         weight: counters.maxUpstreamStallMs - 1,
     });
-    // Downstream backpressure is usually ordinary player/proxy pacing, not an
-    // observed playback pause. Its cumulative duration is deliberately hidden:
-    // grouped, overlapping range sessions can make that total exceed wall time.
-    if (counters.downstreamStalls > 0) rows.push({
-        key: "downstream",
-        label: "Client pacing (normal)",
-        value: describeWaits(
-            counters.downstreamStalls, 0, counters.maxDownstreamStallMs),
-        weight: -1,
-    });
+    // Downstream backpressure is ordinary player/proxy pacing, not an observed
+    // playback pause. Keep collecting it for diagnostics, but do not present a
+    // low-level write count as a user-facing delay.
     if (counters.providerPoolWaits > 0) rows.push({
         key: "pool",
         label: "Waited for a free connection",

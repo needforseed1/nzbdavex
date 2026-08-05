@@ -78,7 +78,7 @@ public interface INntpClient : IDisposable
 
     Task CheckAllSegmentsPipelinedAsync(
         IReadOnlyList<string> segmentIds, int depth, int fallbackConcurrency, IProgress<int>? progress,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken, bool qualifyProviders = true);
 
     // pipelining config (0 = disabled). Resolved from ConfigManager at the downloading layer.
     int PipeliningDepth { get; }

@@ -57,7 +57,7 @@ public class MultiProviderNntpClient(
     // demoting a provider mid-run; see BulkStatPlan.RecordAttempt.
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.Zero;
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
     // Silence, not slowness. A body that keeps delivering bytes is left alone
@@ -67,6 +67,12 @@ public class MultiProviderNntpClient(
     private const int StatRecoveryConcurrencyLimit = 4;
     private const int HealthLaneGrowthHeadroom =
         UsenetStreamingClient.ConcurrentConnectionAttemptLimit;
+    // Grow each provider in small waves. The operation-wide lane target may add
+    // many lanes at once, but handing all of them to the fastest qualification
+    // result can leave dozens waiting behind one pool while peers sit usable.
+    private const int HealthProviderLaneGrowthHeadroom = 4;
+    private static readonly TimeSpan HealthProviderLaneAdmissionPollInterval =
+        TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan StatRecoveryAdmissionTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultIndeterminateRecoveryBudget = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan IndeterminateRecoveryBudgetPerThousandSegments =
@@ -662,11 +668,48 @@ public class MultiProviderNntpClient(
             ? SelectOrderedProvidersForStat(cancellationToken, out var reserved)
             : SelectOrderedProviders(cancellationToken, out reserved);
         using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+        // Playback must not spend its entire operation budget on earlier tiers
+        // and leave BackupOnly providers untried. Keep one normal attempt window
+        // in reserve (at most half the total budget), while preserving the
+        // configured provider order until that protected window is reached.
+        var playbackBackupReserve = playback is not null &&
+                                    prepFallback is null &&
+                                    orderedProviders.Any(provider =>
+                                        provider.ProviderType == ProviderType.BackupOnly)
+            ? TimeSpan.FromTicks(Math.Min(
+                ProviderAttemptTimeout.Ticks,
+                ProviderOperationTimeout.Ticks / 2))
+            : TimeSpan.Zero;
+        var playbackBackupAttempted = false;
         var operationStopwatch = Stopwatch.StartNew();
         for (var i = 0; i < orderedProviders.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var provider = orderedProviders[i];
             var remainingOperationTime = ProviderOperationTimeout - operationStopwatch.Elapsed;
+            var preservingPlaybackBackup =
+                playbackBackupReserve > TimeSpan.Zero &&
+                !playbackBackupAttempted &&
+                provider.ProviderType != ProviderType.BackupOnly;
+            if (preservingPlaybackBackup &&
+                remainingOperationTime <= playbackBackupReserve)
+            {
+                var backupIndex = orderedProviders.FindIndex(
+                    i + 1,
+                    candidate => candidate.ProviderType == ProviderType.BackupOnly);
+                if (backupIndex >= 0)
+                {
+                    // Providers skipped here remain unverified. If the protected
+                    // backup also cannot retrieve the article, retain the
+                    // retryable verdict instead of claiming a global miss.
+                    providerCheckIncomplete |= backupIndex > i;
+                    i = backupIndex;
+                    provider = orderedProviders[i];
+                    remainingOperationTime =
+                        ProviderOperationTimeout - operationStopwatch.Elapsed;
+                    preservingPlaybackBackup = false;
+                }
+            }
             if (prepFallback is null && remainingOperationTime <= TimeSpan.Zero)
             {
                 if (playbackSegmentId is not null)
@@ -678,7 +721,8 @@ public class MultiProviderNntpClient(
                 providerCheckIncomplete = true;
                 break;
             }
-            var provider = orderedProviders[i];
+            if (provider.ProviderType == ProviderType.BackupOnly)
+                playbackBackupAttempted = true;
             var isLastProvider = i == orderedProviders.Count - 1;
             PrepFallbackContext.PrepFallbackLease? fallbackAdmission = null;
 
@@ -725,6 +769,13 @@ public class MultiProviderNntpClient(
                 : isLastProvider
                 ? ProviderOperationTimeout
                 : ProviderAttemptTimeout;
+            if (preservingPlaybackBackup)
+            {
+                var remainingBeforeBackup =
+                    remainingOperationTime - playbackBackupReserve;
+                if (remainingBeforeBackup < maximumAttemptTime)
+                    maximumAttemptTime = remainingBeforeBackup;
+            }
             var attemptTimeout = prepFallback is not null
                 ? maximumAttemptTime
                 : maximumAttemptTime < remainingOperationTime
@@ -1292,9 +1343,21 @@ public class MultiProviderNntpClient(
     private List<MultiConnectionNntpClient> SelectOrderedProvidersForStat(
         CancellationToken cancellationToken,
         out MultiConnectionNntpClient? reserved)
+        => SelectOrderedProvidersForStat(
+            cancellationToken, out reserved, laneAdmissionPlan: null,
+            out _, out _);
+
+    private List<MultiConnectionNntpClient> SelectOrderedProvidersForStat(
+        CancellationToken cancellationToken,
+        out MultiConnectionNntpClient? reserved,
+        BulkStatPlan? laneAdmissionPlan,
+        out bool waitingForLaneAdmission,
+        out bool laneReserved)
     {
         lock (_selectLock)
         {
+            waitingForLaneAdmission = false;
+            laneReserved = false;
             var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority ?? SemaphorePriority.Low;
             var enabled = providers
                 .Where(x => x.ProviderType != ProviderType.Disabled)
@@ -1330,7 +1393,20 @@ public class MultiProviderNntpClient(
                 if (preferred.Count > 0)
                 {
                     var preferredSet = preferred.ToHashSet();
-                    var selectedPrimary = preferred[0];
+                    var selectedPrimary = laneAdmissionPlan is null
+                        ? preferred[0]
+                        : preferred.FirstOrDefault(laneAdmissionPlan.TryReserveLane);
+                    if (selectedPrimary is null)
+                    {
+                        // Every useful provider is carrying its established
+                        // capacity plus a bounded growth wave. Wait for a lane
+                        // to finish instead of turning excess work into pool
+                        // acquisitions that can only expire locally.
+                        waitingForLaneAdmission = true;
+                        reserved = null;
+                        return [];
+                    }
+                    laneReserved = laneAdmissionPlan is not null;
                     // Partial providers are valuable primary workers, but when
                     // one reports a miss, go straight to the highest-coverage
                     // peer. Do not repeat the same likely-backbone miss through
@@ -1340,7 +1416,7 @@ public class MultiProviderNntpClient(
                     // recovery pass instead of burning attempt timeouts in
                     // every batch chain.
                     var preferredFallback = preferred
-                        .Skip(1)
+                        .Where(provider => !ReferenceEquals(provider, selectedPrimary))
                         .OrderByDescending(plan.Coverage)
                         .ThenBy(plan.ProbeRank)
                         .ThenBy(provider => EffectivePriority(provider, priority));
@@ -1390,35 +1466,120 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private MultiConnectionNntpClient? ReserveNextPipelinedStatFallback(
+    private async Task<PipelinedStatProviderReservation?> ReserveNextPipelinedStatFallbackAsync(
         IReadOnlyCollection<MultiConnectionNntpClient> candidates,
         BulkStatPlan? plan,
         CancellationToken cancellationToken)
     {
-        lock (_selectLock)
+        while (true)
         {
-            var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority
-                           ?? SemaphorePriority.Low;
-            IEnumerable<MultiConnectionNntpClient> ordered = candidates;
-            if (plan is not null)
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_selectLock)
             {
-                // The primary provider is reserved when the lane is created, but
-                // fallback demand only exists after that provider reports misses.
-                // Choose and reserve the fallback at that point so concurrent
-                // partial-provider misses spread across equivalent complete peers
-                // instead of every lane queueing behind the first probe-ranked one.
-                ordered = candidates
-                    .Where(provider => !plan.IsQuarantined(provider))
-                    .OrderByDescending(plan.Coverage)
-                    .ThenBy(plan.SelectionScore)
-                    .ThenBy(plan.ProbeRank)
-                    .ThenBy(provider => EffectivePriority(provider, priority))
-                    .ThenByDescending(GetRemainingBytes);
+                var priority = cancellationToken.GetContext<DownloadPriorityContext>()?.Priority
+                               ?? SemaphorePriority.Low;
+                IEnumerable<MultiConnectionNntpClient> ordered = candidates;
+                if (plan is not null)
+                {
+                    // Fallback demand only exists after the primary reports
+                    // misses. Spread it across complete peers, but apply the
+                    // same pool admission guard as primary lane selection.
+                    ordered = candidates
+                        .Where(provider => !plan.IsQuarantined(provider))
+                        .OrderByDescending(plan.Coverage)
+                        .ThenBy(plan.SelectionScore)
+                        .ThenBy(plan.ProbeRank)
+                        .ThenBy(provider => EffectivePriority(provider, priority))
+                        .ThenByDescending(GetRemainingBytes);
+                }
+
+                var orderedList = ordered.ToList();
+                if (orderedList.Count == 0) return null;
+                if (plan is not null)
+                {
+                    // Once a primary reports a miss, prefer the best available
+                    // coverage tier and wait for it. Falling through to another
+                    // partial provider both duplicates likely misses and can
+                    // turn saturation into unnecessary provider chains.
+                    var bestCoverage = plan.Coverage(orderedList[0]);
+                    orderedList = orderedList
+                        .TakeWhile(provider =>
+                            Math.Abs(plan.Coverage(provider) - bestCoverage) < 0.000001)
+                        .ToList();
+                }
+                var selected = plan is null
+                    ? orderedList[0]
+                    : orderedList.FirstOrDefault(plan.TryReserveLane);
+                if (selected is not null)
+                {
+                    selected.ReservePending();
+                    return new PipelinedStatProviderReservation(selected, plan);
+                }
             }
 
-            var selected = ordered.FirstOrDefault();
-            selected?.ReservePending();
-            return selected;
+            await plan!.WaitForLaneAvailabilityAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<PipelinedStatProviderSelection> ReservePipelinedStatProvidersAsync(
+        CancellationToken cancellationToken)
+    {
+        var plan = BulkStatPlanContext.Value;
+        if (plan is not null && !ReferenceEquals(plan.Owner, this)) plan = null;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ordered = SelectOrderedProvidersForStat(
+                cancellationToken, out var reserved, plan,
+                out var waitingForLaneAdmission, out var laneReserved);
+            if (!waitingForLaneAdmission)
+            {
+                var reservation = reserved is null
+                    ? null
+                    : new PipelinedStatProviderReservation(
+                        reserved, laneReserved ? plan : null);
+                return new PipelinedStatProviderSelection(ordered, reservation);
+            }
+
+            await plan!.WaitForLaneAvailabilityAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed record PipelinedStatProviderSelection(
+        List<MultiConnectionNntpClient> Providers,
+        PipelinedStatProviderReservation? InitialReservation) : IDisposable
+    {
+        private PipelinedStatProviderReservation? _reservation = InitialReservation;
+
+        public PipelinedStatProviderReservation? TakeReservation() =>
+            Interlocked.Exchange(ref _reservation, null);
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _reservation, null)?.Dispose();
+    }
+
+    private sealed class PipelinedStatProviderReservation : IDisposable
+    {
+        private readonly MultiConnectionNntpClient _provider;
+        private readonly BulkStatPlan? _plan;
+        private int _disposed;
+
+        public PipelinedStatProviderReservation(
+            MultiConnectionNntpClient provider,
+            BulkStatPlan? plan)
+        {
+            _provider = provider;
+            _plan = plan;
+        }
+
+        public MultiConnectionNntpClient Provider => _provider;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _provider.ReleasePending();
+            _plan?.ReleaseLane(_provider);
         }
     }
 
@@ -1481,6 +1642,31 @@ public class MultiProviderNntpClient(
                provider.PendingSelections +
                provider.PendingAcquisitions;
     }
+
+    internal static int ResolveHealthProviderLaneAdmissionLimit(
+        int liveConnections,
+        int lowPriorityConnectionLimit,
+        int? laneBackoffLimit = null)
+    {
+        var configuredCapacity = Math.Max(1, lowPriorityConnectionLimit);
+        var establishedCapacity = Math.Clamp(
+            liveConnections, 1, configuredCapacity);
+        if (laneBackoffLimit is > 0)
+            return Math.Clamp(
+                Math.Min(establishedCapacity, laneBackoffLimit.Value),
+                1,
+                configuredCapacity);
+
+        return Math.Min(
+            configuredCapacity,
+            establishedCapacity + HealthProviderLaneGrowthHeadroom);
+    }
+
+    internal static bool ShouldQuiesceHealthPrewarm(
+        bool probeSuccess,
+        int received,
+        int found) =>
+        probeSuccess && received > 0 && found == 0;
 
     private static IReadOnlyList<MultiConnectionNntpClient> PreferLiveStatProviders(
         IReadOnlyList<MultiConnectionNntpClient> candidates)
@@ -1673,13 +1859,15 @@ public class MultiProviderNntpClient(
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool qualifyProviders = true)
     {
         usageTracker.BeginHealthCheck(segmentIds.Count);
         try
         {
             await CheckAllSegmentsPipelinedCoreAsync(
-                segmentIds, depth, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
+                segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
+                qualifyProviders).ConfigureAwait(false);
             usageTracker.CompleteHealthCheck(segmentIds.Count, 0);
         }
         catch (UsenetArticleNotFoundException)
@@ -1704,7 +1892,8 @@ public class MultiProviderNntpClient(
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool qualifyProviders)
     {
         // One verdict collector per operation: a segment may only be confirmed
         // missing when every provider in this snapshot answered "missing".
@@ -1714,7 +1903,8 @@ public class MultiProviderNntpClient(
         try
         {
             await CheckAllSegmentsPipelinedWithCollectorAsync(
-                segmentIds, depth, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
+                segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
+                qualifyProviders).ConfigureAwait(false);
         }
         finally
         {
@@ -1727,7 +1917,8 @@ public class MultiProviderNntpClient(
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool qualifyProviders)
     {
         if (segmentIds.Count < BulkStatProbeThreshold || fallbackConcurrency <= 1)
         {
@@ -1742,8 +1933,10 @@ public class MultiProviderNntpClient(
         var connectionPeakTask = connectionPeaks.SampleAsync(connectionPeakCts.Token);
         try
         {
-            var qualification = await QualifyBulkStatProvidersAsync(
-                segmentIds, depth, fallbackConcurrency, cancellationToken).ConfigureAwait(false);
+            var qualification = qualifyProviders
+                ? await QualifyBulkStatProvidersAsync(
+                    segmentIds, depth, fallbackConcurrency, cancellationToken).ConfigureAwait(false)
+                : CreateUnqualifiedBulkStatPlan(segmentIds.Count, cancellationToken);
             if (qualification.Plan is null)
             {
                 await base.CheckAllSegmentsPipelinedAsync(
@@ -1787,6 +1980,48 @@ public class MultiProviderNntpClient(
             await connectionPeakTask.ConfigureAwait(false);
             connectionPeaks.LogSummary();
         }
+    }
+
+    private BulkStatQualification CreateUnqualifiedBulkStatPlan(
+        int segmentCount,
+        CancellationToken cancellationToken)
+    {
+        var eligible = SelectStatEligibleProviders(cancellationToken)
+            .Where(IsPrimaryStatProvider)
+            .ToList();
+        var healthy = eligible.Where(provider => !provider.IsTripped).ToList();
+        var routable = healthy.Count > 0 ? healthy : eligible;
+        if (routable.Count == 0) return BulkStatQualification.None;
+
+        // Keep the operation-scoped bulk scheduler even when sampling is off.
+        // A synthetic 0/0 result carries no release assumptions; it simply marks
+        // every health-capable provider as an equal primary candidate so lanes
+        // can rebalance as cold pools publish connections during the run.
+        var providersWithoutSamples = routable
+            .Select(provider => new BulkStatProbe(
+                provider,
+                Exists: [],
+                Received: 0,
+                Found: 0,
+                Missing: 0,
+                ElapsedMs: 0,
+                LaneMs: 0,
+                Lanes: 0,
+                Success: true,
+                Status: "qualification-disabled"))
+            .ToList();
+        var plan = new BulkStatPlan(
+            this,
+            providersWithoutSamples,
+            routable.ToHashSet(),
+            useQualificationMetrics: false);
+        Log.Information(
+            "health-stat qualification action=skipped reason=disabled segments={Segments} " +
+            "providers={Providers} capacity={Capacity} routing=all-health-capable",
+            segmentCount,
+            routable.Count,
+            routable.Sum(provider => provider.MaxConnections));
+        return new BulkStatQualification(plan, []);
     }
 
     protected override int GetPipelinedStatLaneTarget(int requestedLanes)
@@ -2006,17 +2241,21 @@ public class MultiProviderNntpClient(
         var first = await ProbeStatProviderOnceAsync(
                 provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
             .ConfigureAwait(false);
-        if (first.Success || first.Received > 0 || !hadEstablishedIdleConnection)
+        var incompleteMultiLaneProbe = first.Lanes > 1 &&
+                                       first.Received < segmentIds.Count;
+        if (first.Success ||
+            (first.Received > 0 && !incompleteMultiLaneProbe) ||
+            !hadEstablishedIdleConnection)
             return first;
 
-        // A qualification batch uses one socket. When an established socket
-        // returns nothing, cancellation replaces it; retrying once prevents a
-        // single stale or wedged idle connection from quarantining an otherwise
-        // healthy provider. Do not double the cold-start wait for a zero-live
-        // provider: it can still join via a successful late probe or recovery.
+        // A qualification batch uses one or two established sockets. Retry when
+        // none responds or when either half of a two-lane probe is incomplete;
+        // one stale socket must not quarantine a provider whose other lane was
+        // healthy. Do not double the cold-start wait for a zero-live provider:
+        // it can still join via a successful late probe or recovery.
         Log.Debug(
-            "health-stat probe retry provider={Provider} reason={Reason} received=0",
-            provider.Host, first.Status);
+            "health-stat probe retry provider={Provider} reason={Reason} received={Received}",
+            provider.Host, first.Status, first.Received);
         var retry = await ProbeStatProviderOnceAsync(
                 provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
             .ConfigureAwait(false);
@@ -2029,6 +2268,60 @@ public class MultiProviderNntpClient(
     }
 
     private async Task<BulkStatProbe> ProbeStatProviderOnceAsync(
+        MultiConnectionNntpClient provider,
+        IReadOnlyList<string> segmentIds,
+        int fallbackDepth,
+        bool recoveryProbe,
+        CancellationToken cancellationToken)
+    {
+        if (recoveryProbe ||
+            provider.ProviderType == ProviderType.BackupOnly ||
+            segmentIds.Count < 2 ||
+            provider.IdleConnections < 2)
+            return await ProbeStatProviderLaneAsync(
+                    provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
+                .ConfigureAwait(false);
+
+        var stopwatch = Stopwatch.StartNew();
+        var laneIndexes = new[]
+        {
+            Enumerable.Range(0, segmentIds.Count).Where(index => index % 2 == 0).ToArray(),
+            Enumerable.Range(0, segmentIds.Count).Where(index => index % 2 != 0).ToArray(),
+        };
+        var lanes = await Task.WhenAll(laneIndexes.Select(indexes =>
+                ProbeStatProviderLaneAsync(
+                    provider,
+                    indexes.Select(index => segmentIds[index]).ToArray(),
+                    fallbackDepth,
+                    recoveryProbe: false,
+                    cancellationToken: cancellationToken)))
+            .ConfigureAwait(false);
+        var exists = new bool[segmentIds.Count];
+        for (var laneIndex = 0; laneIndex < lanes.Length; laneIndex++)
+        {
+            var lane = lanes[laneIndex];
+            var indexes = laneIndexes[laneIndex];
+            for (var resultIndex = 0; resultIndex < lane.Received; resultIndex++)
+                exists[indexes[resultIndex]] = lane.Exists[resultIndex];
+        }
+
+        var success = lanes.All(lane => lane.Success);
+        return new BulkStatProbe(
+            provider,
+            exists,
+            lanes.Sum(lane => lane.Received),
+            lanes.Sum(lane => lane.Found),
+            lanes.Sum(lane => lane.Missing),
+            stopwatch.ElapsedMilliseconds,
+            lanes.Sum(lane => lane.LaneMs),
+            lanes.Length,
+            success,
+            success
+                ? "ok-2-lanes"
+                : $"{string.Join(',', lanes.Select(lane => lane.Status))}-2-lanes");
+    }
+
+    private async Task<BulkStatProbe> ProbeStatProviderLaneAsync(
         MultiConnectionNntpClient provider,
         IReadOnlyList<string> segmentIds,
         int fallbackDepth,
@@ -2063,32 +2356,33 @@ public class MultiProviderNntpClient(
             if (received != segmentIds.Count)
                 throw new IOException(
                     $"Provider {provider.Host} ended a STAT probe after {received} of {segmentIds.Count} responses.");
+            var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                segmentIds.Count - found, stopwatch.ElapsedMilliseconds, true, "ok");
+                segmentIds.Count - found, elapsedMs, elapsedMs, 1, true, "ok");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                received - found, stopwatch.ElapsedMilliseconds, false, "timeout");
+                received - found, elapsedMs, elapsedMs, 1, false, "timeout");
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
             Log.Debug(e, "Bulk STAT provider probe failed for {Provider}.", provider.Host);
+            var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                received - found, stopwatch.ElapsedMilliseconds, false, "failed");
+                received - found, elapsedMs, elapsedMs, 1, false, "failed");
         }
     }
 
     private static void LogBulkStatProbe(BulkStatProbe probe, int sampleSize)
     {
-        var rate = probe.ElapsedMs > 0
-            ? (int)Math.Round(probe.Received * 1000d / probe.ElapsedMs)
-            : probe.Received;
+        var rate = (int)Math.Round(probe.Rate);
         Log.Information(
             "health-stat probe provider={Provider} sample={Sample} found={Found} missing={Missing} " +
-            "received={Received} ms={ElapsedMs} rate={StatRate}stat/s status={Status}",
+            "received={Received} lanes={Lanes} ms={ElapsedMs} rate={StatRate}stat/s status={Status}",
             probe.Provider.Host, sampleSize, probe.Found, probe.Missing, probe.Received,
-            probe.ElapsedMs, rate, probe.Status);
+            probe.Lanes, probe.ElapsedMs, rate, probe.Status);
     }
 
     private static List<int> SelectProbeIndexes(int count, int targetCount)
@@ -2110,8 +2404,9 @@ public class MultiProviderNntpClient(
         for (var offset = 0; offset < segmentIds.Count;)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var orderedProviders = SelectOrderedProvidersForStat(cancellationToken, out var reserved);
-            using var releasePending = new ScopeReleaser(() => reserved?.ReleasePending());
+            using var selection = await ReservePipelinedStatProvidersAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var orderedProviders = selection.Providers;
             var primary = orderedProviders.Count > 0 ? orderedProviders[0] : null;
             if (primary == null) throw new InvalidOperationException("There are no usenet providers configured.");
 
@@ -2123,7 +2418,8 @@ public class MultiProviderNntpClient(
             var collector = VerdictCollectorContext.Value;
             if (collector is not null && !ReferenceEquals(collector.Owner, this)) collector = null;
             var results = await ResolvePipelinedStatBatchAsync(
-                chunk, orderedProviders, depth, plan, collector, cancellationToken).ConfigureAwait(false);
+                chunk, orderedProviders, selection.TakeReservation(), depth,
+                plan, collector, cancellationToken).ConfigureAwait(false);
             foreach (var result in results)
                 yield return result;
 
@@ -2134,6 +2430,7 @@ public class MultiProviderNntpClient(
     private async Task<IReadOnlyList<PipelinedStatResult>> ResolvePipelinedStatBatchAsync(
         IReadOnlyList<string> segmentIds,
         IReadOnlyList<MultiConnectionNntpClient> orderedProviders,
+        PipelinedStatProviderReservation? initialReservation,
         int fallbackDepth,
         BulkStatPlan? plan,
         StatVerdictCollector? collector,
@@ -2141,7 +2438,7 @@ public class MultiProviderNntpClient(
     {
         var resolved = new PipelinedStatResult?[segmentIds.Count];
         var state = await RunPipelinedStatProviderPassAsync(
-            segmentIds, orderedProviders, fallbackDepth, plan, collector, resolved,
+            segmentIds, orderedProviders, initialReservation, fallbackDepth, plan, collector, resolved,
             Enumerable.Range(0, segmentIds.Count).ToList(),
             cancellationToken).ConfigureAwait(false);
 
@@ -2169,7 +2466,8 @@ public class MultiProviderNntpClient(
                     "unresolved segments in a coordinated recovery pass.",
                     state.Pending.Count);
                 state = await RunPipelinedStatProviderPassAsync(
-                    segmentIds, orderedProviders, fallbackDepth, plan, collector, resolved,
+                    segmentIds, orderedProviders, initialReservation: null,
+                    fallbackDepth, plan, collector, resolved,
                     state.Pending, cancellationToken).ConfigureAwait(false);
             }
             finally
@@ -2541,6 +2839,7 @@ public class MultiProviderNntpClient(
     private async Task<PipelinedStatPassState> RunPipelinedStatProviderPassAsync(
         IReadOnlyList<string> segmentIds,
         IReadOnlyList<MultiConnectionNntpClient> orderedProviders,
+        PipelinedStatProviderReservation? initialReservation,
         int fallbackDepth,
         BulkStatPlan? plan,
         StatVerdictCollector? collector,
@@ -2555,6 +2854,8 @@ public class MultiProviderNntpClient(
         var remainingProviders = orderedProviders.ToList();
         var initialProvider = true;
 
+        using var releaseInitialReservation = new ScopeReleaser(
+            () => initialReservation?.Dispose());
         while (remainingProviders.Count > 0)
         {
             if (pending.Count == 0) break;
@@ -2569,13 +2870,15 @@ public class MultiProviderNntpClient(
                 break;
             }
 
-            var fallbackReservationHeld = !initialProvider;
-            var provider = initialProvider
-                ? remainingProviders[0]
-                : ReserveNextPipelinedStatFallback(
-                    remainingProviders, plan, cancellationToken);
+            var providerReservation = initialProvider && initialReservation is not null
+                ? initialReservation
+                : await ReserveNextPipelinedStatFallbackAsync(
+                        remainingProviders, plan, cancellationToken)
+                    .ConfigureAwait(false);
             initialProvider = false;
-            if (provider is null) break;
+            initialReservation = null;
+            if (providerReservation is null) break;
+            var provider = providerReservation.Provider;
             remainingProviders.Remove(provider);
             var isLastProvider = remainingProviders.Count == 0;
             var commandTimeout = isLastProvider
@@ -2687,6 +2990,21 @@ public class MultiProviderNntpClient(
                     "{Received} response(s); re-issuing {Count} unresolved segments.",
                     provider.Host, e.ReceivedResponses, stillPending.Count);
             }
+            catch (MultiConnectionNntpClient.ConnectionAcquisitionTimeoutException e)
+            {
+                lastAttemptFailed = true;
+                // No NNTP command reached the provider. This is local pool
+                // pressure, so retry elsewhere without counting it toward the
+                // provider quarantine threshold.
+                providerFaulted = false;
+                lastException = ExceptionDispatchInfo.Capture(e);
+                for (var i = received; i < attempted.Count; i++)
+                    stillPending.Add(attempted[i]);
+                Log.Debug(e,
+                    "Pipelined STAT pool admission timed out for provider {Provider}; " +
+                    "retrying {Count} unresolved segments without quarantining the provider.",
+                    provider.Host, stillPending.Count);
+            }
             catch (OperationCanceledException e) when (
                 !cancellationToken.IsCancellationRequested && attemptCts.Token.IsCancellationRequested)
             {
@@ -2716,7 +3034,7 @@ public class MultiProviderNntpClient(
             finally
             {
                 recoveryLease?.Dispose();
-                if (fallbackReservationHeld) provider.ReleasePending();
+                providerReservation.Dispose();
                 if (!gateSkipped)
                     plan?.RecordAttempt(provider, attempted.Count, received, found, missing,
                         stopwatch.ElapsedMilliseconds, lastAttemptFailed, providerFaulted);
@@ -3229,12 +3547,14 @@ public class MultiProviderNntpClient(
         int Found,
         int Missing,
         long ElapsedMs,
+        long LaneMs,
+        int Lanes,
         bool Success,
         string Status)
     {
         public double Rate => Received == 0
             ? 0
-            : Received * 1000d / Math.Max(1, ElapsedMs);
+            : Received * 1000d / Math.Max(1, LaneMs);
     }
 
     private sealed class BulkStatPlan
@@ -3245,14 +3565,20 @@ public class MultiProviderNntpClient(
         private readonly HashSet<MultiConnectionNntpClient> _quarantined;
         private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatAttemptStats> _attempts = new();
         private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatLaneBackoff> _laneBackoffs = new();
+        private readonly object _laneAdmissionLock = new();
+        private readonly Dictionary<MultiConnectionNntpClient, int> _laneReservations = [];
+        private TaskCompletionSource _laneAvailabilityChanged = NewLaneAvailabilitySignal();
+        private readonly bool _useQualificationMetrics;
         private HealthConnectionAllocation? _connectionAllocation;
 
         public BulkStatPlan(
             MultiProviderNntpClient owner,
             IReadOnlyList<BulkStatProbe> probes,
-            HashSet<MultiConnectionNntpClient> preferred)
+            HashSet<MultiConnectionNntpClient> preferred,
+            bool useQualificationMetrics = true)
         {
             Owner = owner;
+            _useQualificationMetrics = useQualificationMetrics;
             _probes = new ConcurrentDictionary<MultiConnectionNntpClient, BulkStatProbe>(
                 probes.ToDictionary(x => x.Provider));
             _preferred = new HashSet<MultiConnectionNntpClient>(preferred);
@@ -3287,6 +3613,7 @@ public class MultiProviderNntpClient(
                 Log.Information(
                     "health-stat quarantine provider={Provider} reason=bulk-attempt-failures",
                     provider.Host);
+                SignalLaneAvailabilityChanged();
                 Volatile.Read(ref _connectionAllocation)?.Reconcile();
             }
         }
@@ -3299,6 +3626,7 @@ public class MultiProviderNntpClient(
             {
                 Log.Information(
                     "health-stat requalify provider={Provider}", provider.Host);
+                SignalLaneAvailabilityChanged();
                 Volatile.Read(ref _connectionAllocation)?.Reconcile();
             }
         }
@@ -3357,6 +3685,7 @@ public class MultiProviderNntpClient(
                 else _quarantined.Add(probe.Provider);
             }
             Volatile.Read(ref _connectionAllocation)?.Reconcile();
+            SignalLaneAvailabilityChanged();
         }
 
         public (MultiConnectionNntpClient[] Probed, HashSet<MultiConnectionNntpClient> Preferred)
@@ -3374,6 +3703,15 @@ public class MultiProviderNntpClient(
         public bool IsPreferred(MultiConnectionNntpClient provider)
         {
             lock (_preferred) return _preferred.Contains(provider);
+        }
+
+        public bool HasConfirmedZeroCoverage(MultiConnectionNntpClient provider)
+        {
+            if (!_probes.TryGetValue(provider, out var probe)) return false;
+            return ShouldQuiesceHealthPrewarm(
+                probe.Success,
+                probe.Received,
+                probe.Found);
         }
 
         public int ProbeRank(MultiConnectionNntpClient provider) =>
@@ -3407,12 +3745,60 @@ public class MultiProviderNntpClient(
         {
             var capacity = EffectiveLaneCapacity(provider);
             var committed = StatCommittedDemand(provider);
+            if (!_useQualificationMetrics)
+                return (committed + 1d) / capacity;
+
             var rate = EffectiveRate(provider);
             MultiConnectionNntpClient[] preferred;
             lock (_preferred) preferred = _preferred.ToArray();
             var fastestRate = preferred.Select(EffectiveRate).DefaultIfEmpty(1).Max();
             var speedWeight = Math.Clamp(rate / Math.Max(1, fastestRate), 0.01, 1);
-            return (committed + 1d) / (capacity * speedWeight);
+            // Partial coverage still contributes useful parallel work, but its
+            // misses create a second pass on a complete peer. Include that cost
+            // so a fast partial sample supplements rather than overwhelms the
+            // full-coverage providers.
+            var coverageWeight = Math.Clamp(
+                Coverage(provider), PartialStatMinimumCoverage, 1);
+            return (committed + 1d) / (capacity * speedWeight * coverageWeight);
+        }
+
+        public bool TryReserveLane(MultiConnectionNntpClient provider)
+        {
+            lock (_laneAdmissionLock)
+            {
+                var reserved = _laneReservations.GetValueOrDefault(provider);
+                var limit = GetProviderLaneAdmissionLimit(provider);
+                if (reserved >= limit) return false;
+                _laneReservations[provider] = reserved + 1;
+                return true;
+            }
+        }
+
+        public void ReleaseLane(MultiConnectionNntpClient provider)
+        {
+            TaskCompletionSource? signal = null;
+            lock (_laneAdmissionLock)
+            {
+                var reserved = _laneReservations.GetValueOrDefault(provider);
+                if (reserved <= 1)
+                    _laneReservations.Remove(provider);
+                else
+                    _laneReservations[provider] = reserved - 1;
+
+                signal = _laneAvailabilityChanged;
+                _laneAvailabilityChanged = NewLaneAvailabilitySignal();
+            }
+            signal.TrySetResult();
+        }
+
+        public async Task WaitForLaneAvailabilityAsync(CancellationToken cancellationToken)
+        {
+            Task signal;
+            lock (_laneAdmissionLock) signal = _laneAvailabilityChanged.Task;
+            var poll = Task.Delay(
+                HealthProviderLaneAdmissionPollInterval, cancellationToken);
+            await Task.WhenAny(signal, poll).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         public void RecordAttempt(
@@ -3475,6 +3861,31 @@ public class MultiProviderNntpClient(
                 : live;
         }
 
+        private int GetProviderLaneAdmissionLimit(MultiConnectionNntpClient provider)
+        {
+            var backoffLimit = _laneBackoffs.TryGetValue(provider, out var backoff)
+                ? backoff.LaneLimit
+                : null;
+            return ResolveHealthProviderLaneAdmissionLimit(
+                provider.LiveConnections,
+                provider.LowPriorityConnectionLimit,
+                backoffLimit);
+        }
+
+        private void SignalLaneAvailabilityChanged()
+        {
+            TaskCompletionSource signal;
+            lock (_laneAdmissionLock)
+            {
+                signal = _laneAvailabilityChanged;
+                _laneAvailabilityChanged = NewLaneAvailabilitySignal();
+            }
+            signal.TrySetResult();
+        }
+
+        private static TaskCompletionSource NewLaneAvailabilitySignal() =>
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private double EffectiveRate(MultiConnectionNntpClient provider)
         {
             var probe = _probes.GetValueOrDefault(provider);
@@ -3504,8 +3915,8 @@ public class MultiProviderNntpClient(
                 var snapshot = attempts?.Snapshot() ?? default;
                 var rate = snapshot.Received > 0 && snapshot.ElapsedMs > 0
                     ? (int)Math.Round(snapshot.Received * 1000d / snapshot.ElapsedMs)
-                    : probe is { Received: > 0, ElapsedMs: > 0 }
-                        ? (int)Math.Round(probe.Received * 1000d / probe.ElapsedMs)
+                    : probe is { Received: > 0, LaneMs: > 0 }
+                        ? (int)Math.Round(probe.Rate)
                         : 0;
                 Log.Information(
                     "health-stat provider-summary provider={Provider} preferred={Preferred} " +
@@ -3715,6 +4126,7 @@ public class MultiProviderNntpClient(
                              .OrderByDescending(provider => provider.IdleConnections))
                 {
                     if (_suspensions.ContainsKey(provider)) continue;
+                    var quiesce = plan.HasConfirmedZeroCoverage(provider);
                     try
                     {
                         // A provider quarantined after a zero-response probe is
@@ -3729,12 +4141,13 @@ public class MultiProviderNntpClient(
                         var reclaimable = Math.Max(
                             0, provider.IdleConnections - retainedFloor);
                         var requested = Math.Min(reclaimNeeded, reclaimable);
-                        // Suspending is not free: it blocks warm-floor refresh and
-                        // prewarm publishing on that pool for the whole operation.
-                        // When there is nothing to reclaim it buys no capacity for
-                        // the preferred providers, so leave the pool alone — it is
-                        // still serving prep and playback.
-                        if (requested == 0) continue;
+                        // A successful 0/N probe proves this release cannot use the
+                        // provider. Stop its speculative setup even when no sockets
+                        // need reclaiming so the bounded handshake quota turns over
+                        // to providers that actually carry the release. Failed or
+                        // partial probes remain eligible for recovery and are only
+                        // suspended when capacity must be reclaimed.
+                        if (requested == 0 && !quiesce) continue;
 
                         var retained = provider.IdleConnections - requested;
                         var suspension = provider.SuspendPrewarming(retained, out var reclaimed);
@@ -3742,9 +4155,10 @@ public class MultiProviderNntpClient(
                         _reclaimed += reclaimed;
                         reclaimNeeded = Math.Max(0, reclaimNeeded - reclaimed);
                         Log.Information(
-                            "health-stat allocation provider={Provider} action=reclaim retained={Retained} " +
+                            "health-stat allocation provider={Provider} action={Action} retained={Retained} " +
                             "reclaimed={Reclaimed} remainingDemand={RemainingDemand} live={Live} idle={Idle}",
-                            provider.Host, retained, reclaimed, reclaimNeeded,
+                            provider.Host, quiesce ? "quiesce" : "reclaim",
+                            retained, reclaimed, reclaimNeeded,
                             provider.LiveConnections, provider.IdleConnections);
                     }
                     catch (ObjectDisposedException)

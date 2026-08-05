@@ -4,23 +4,34 @@
 FROM --platform=$BUILDPLATFORM node:alpine AS frontend-build
 
 WORKDIR /frontend
+COPY ./frontend/package.json ./frontend/package-lock.json ./
+
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
 COPY ./frontend ./
 
-RUN npm install
 RUN npm run build
 RUN npm run build:server
-RUN npm prune --omit=dev
+RUN --mount=type=cache,target=/root/.npm \
+    npm prune --omit=dev
 
 # -------- Stage 2: Build backend --------
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS backend-build
 
 WORKDIR /backend
-COPY ./backend ./
 
 # Accept build-time architecture as ARG (e.g., x64 or arm64)
 ARG TARGETARCH
-RUN dotnet restore
-RUN dotnet publish -c Release -r linux-musl-${TARGETARCH} -o ./publish
+COPY ./backend/NzbWebDAV.csproj ./
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore -r linux-musl-${TARGETARCH}
+
+COPY ./backend ./
+
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish -c Release -r linux-musl-${TARGETARCH} \
+        --no-restore -o ./publish
 
 # -------- Stage 3: Combined runtime image --------
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine

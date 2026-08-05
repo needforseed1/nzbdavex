@@ -408,7 +408,7 @@ public class MultiConnectionNntpClient(
                 {
                     LogException(() => connectionLock?.Dispose());
                 }
-            
+
                 // body and article
                 else if ((result?.Success ?? false) == false)
                 {
@@ -704,7 +704,7 @@ public class MultiConnectionNntpClient(
         }
     }
 
-    private sealed class ConnectionAcquisitionTimeoutException(
+    internal sealed class ConnectionAcquisitionTimeoutException(
         string message,
         Exception innerException) : TimeoutException(message, innerException);
 

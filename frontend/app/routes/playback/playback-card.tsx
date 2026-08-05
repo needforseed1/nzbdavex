@@ -20,8 +20,8 @@ import {
     plexAttributionBadge,
     plexAttributionTitle,
     plexClientLabel,
-    plexPurposeLabel,
     shouldShowPlexAttribution,
+    shouldShowNzbName,
     summarizeDelays,
     summarizeRetrieval,
     submissionSourceLabel,
@@ -208,6 +208,7 @@ function PlaybackDetail({
     const mountLabel = mountPurposeLabel(play.mountPurpose, play.submissionSource);
     const mountTitle = mountPurposeTitle(play);
     const submissionSource = submissionSourceLabel(play.submissionSource);
+    const showNzbName = shouldShowNzbName(play.title, play.nzbName);
     const showPlexAttribution = shouldShowPlexAttribution(
         play.plexPurpose,
         play.plexConfidence,
@@ -256,12 +257,8 @@ function PlaybackDetail({
                     </DetailBlock>
                 )}
 
-                <DetailBlock title="Source">
-                    <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>File</span>
-                        <span className={styles.detailValue} title={play.path}>{play.title}</span>
-                    </div>
-                    {play.nzbName && (
+                <DetailBlock title="Details">
+                    {showNzbName && play.nzbName && (
                         <div className={styles.detailRow}>
                             <span className={styles.detailLabel}>NZB</span>
                             <span className={styles.detailValue} title={play.nzbName}>{play.nzbName}</span>
@@ -269,24 +266,13 @@ function PlaybackDetail({
                     )}
                     {submissionSource && (
                         <div className={styles.detailRow}>
-                            <span className={styles.detailLabel}>NZB submitted by</span>
+                            <span className={styles.detailLabel}>Added by</span>
                             <span className={styles.detailValue}>{submissionSource}</span>
                         </div>
                     )}
                     <div className={styles.detailRow}>
                         <span className={styles.detailLabel}>Size</span>
                         <span className={styles.detailValue}>{formatBytes(play.fileSize)}</span>
-                    </div>
-                    <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>Fetched from usenet</span>
-                        <span className={styles.detailValue}>{formatBytes(play.bytesFetched)}</span>
-                    </div>
-                    <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>Client</span>
-                        <span className={styles.detailValue} title={play.clientUserAgent ?? undefined}>
-                            {describeClient(play.clientUserAgent, play.clientIp)}
-                            {play.clientIp ? ` · ${play.clientIp}` : ""}
-                        </span>
                     </div>
                     {mountLabel && (
                         <>
@@ -300,56 +286,14 @@ function PlaybackDetail({
                             </div>
                         </>
                     )}
-                    {showPlexAttribution && play.plexPurpose && (
-                        <>
-                            <div className={styles.detailRow}>
-                                <span className={styles.detailLabel}>Plex purpose</span>
-                                <span className={styles.detailValue}>
-                                    {plexPurposeLabel(play.plexPurpose)}
-                                    {play.plexIsTranscode ? " · transcoding" : ""}
-                                </span>
-                            </div>
-                            <div className={styles.detailRow}>
-                                <span className={styles.detailLabel}>Plex match</span>
-                                <span
-                                    className={styles.detailValue}
-                                    title={plexAttributionTitle(
-                                        play.plexPurpose,
-                                        play.plexConfidence)}>
-                                    {play.plexConfidence === "exact-path"
-                                        ? "Exact media path + time"
-                                        : play.plexPurpose === "playback"
-                                            ? "Time only · probable source"
-                                            : "Time only · possible, not proven"}
-                                </span>
-                            </div>
-                            {plexClientLabel(
-                                play.plexProduct,
-                                play.plexPlatform,
-                                play.plexPlayer) && (
-                                <div className={styles.detailRow}>
-                                    <span className={styles.detailLabel}>Plex client</span>
-                                    <span className={styles.detailValue}>
-                                        {plexClientLabel(
-                                            play.plexProduct,
-                                            play.plexPlatform,
-                                            play.plexPlayer)}
-                                    </span>
-                                </div>
-                            )}
-                            {play.plexDetail && (
-                                <div className={styles.detailRow}>
-                                    <span className={styles.detailLabel}>Plex detail</span>
-                                    <span className={styles.detailValue}>{play.plexDetail}</span>
-                                </div>
-                            )}
-                            {play.plexRatingKey && (
-                                <div className={styles.detailRow}>
-                                    <span className={styles.detailLabel}>Plex rating key</span>
-                                    <span className={styles.detailValue}>{play.plexRatingKey}</span>
-                                </div>
-                            )}
-                        </>
+                    {showPlexAttribution && (play.plexDetail || play.plexIsTranscode) && (
+                        <div className={styles.detailRow}>
+                            <span className={styles.detailLabel}>Plex media</span>
+                            <span className={styles.detailValue}>
+                                {play.plexDetail ?? "Transcoding"}
+                                {play.plexDetail && play.plexIsTranscode ? " · transcoding" : ""}
+                            </span>
+                        </div>
                     )}
                     {/* Off the collapsed row: it is a detail about how the play
                         was served, not part of identifying it. */}

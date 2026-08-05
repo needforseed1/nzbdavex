@@ -762,6 +762,28 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                     <div className={styles["form-checkbox-wrapper"]}>
                         <input
                             type="checkbox"
+                            id="health-provider-qualification-enabled"
+                            className={`${styles["form-checkbox"]} toggle-switch`}
+                            checked={config["usenet.pipelining.health.provider-qualification.enabled"] !== "false"}
+                            onChange={(e) => setNewConfig({
+                                ...config,
+                                "usenet.pipelining.health.provider-qualification.enabled": e.target.checked ? "true" : "false",
+                            })}
+                        />
+                        <label htmlFor="health-provider-qualification-enabled" className={styles["form-checkbox-label"]}>
+                            Qualify providers before bulk health checks
+                        </label>
+                    </div>
+                    <div className={styles["form-hint"]}>
+                        Samples 32 articles per eligible provider to prioritize providers that carry the release.
+                        Disable this to skip sampling while still distributing the bulk check across all
+                        health-capable providers.
+                    </div>
+                </div>
+                <div className={styles["form-group"]} style={{ marginTop: 12 }}>
+                    <div className={styles["form-checkbox-wrapper"]}>
+                        <input
+                            type="checkbox"
                             id="playback-pipelining-enabled"
                             className={`${styles["form-checkbox"]} toggle-switch`}
                             checked={config["usenet.pipelining.playback.enabled"] === "true"}

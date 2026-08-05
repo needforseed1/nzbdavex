@@ -45,6 +45,15 @@ public class ConfigManagerTests
     }
 
     [Fact]
+    public void HealthProviderQualificationDefaultsOnAndAllowsOverride()
+    {
+        Assert.True(new ConfigManager().IsHealthProviderQualificationEnabled());
+        Assert.False(WithValues(
+            ("usenet.pipelining.health.provider-qualification.enabled", "false"))
+            .IsHealthProviderQualificationEnabled());
+    }
+
+    [Fact]
     public void WarmValidationBudgetUsesProviderCapacityAndAllowsOverride()
     {
         Assert.Equal(360, ConfigManager.CalculateAvailableHealthWarmConnections(

@@ -615,6 +615,70 @@ public class PrepProviderRoutingTests
     }
 
     [Fact]
+    public async Task PlaybackReservesAnAttemptWindowForBackupOnlyProvider()
+    {
+        var primaryTransport = new BodyClient(articleFound: false);
+        await using var primaryPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(primaryTransport));
+        await primaryPool.PrewarmAsync(1);
+        using var primary = CreateProvider(primaryPool, "primary", 0);
+
+        var firstStalledTransport = new BodyClient(stall: true);
+        await using var firstStalledPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(firstStalledTransport));
+        await firstStalledPool.PrewarmAsync(1);
+        using var firstStalled = CreateProvider(
+            firstStalledPool, "backup-and-stats-1", 1,
+            type: ProviderType.BackupAndStats);
+
+        var secondStalledTransport = new BodyClient(stall: true);
+        await using var secondStalledPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(secondStalledTransport));
+        await secondStalledPool.PrewarmAsync(1);
+        using var secondStalled = CreateProvider(
+            secondStalledPool, "backup-and-stats-2", 2,
+            type: ProviderType.BackupAndStats);
+
+        var thirdStalledTransport = new BodyClient(stall: true);
+        await using var thirdStalledPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(thirdStalledTransport));
+        await thirdStalledPool.PrewarmAsync(1);
+        using var thirdStalled = CreateProvider(
+            thirdStalledPool, "backup-and-stats-3", 3,
+            type: ProviderType.BackupAndStats);
+
+        var hitnewsTransport = new BodyClient();
+        await using var hitnewsPool = new ConnectionPool<INntpClient>(
+            1, _ => ValueTask.FromResult<INntpClient>(hitnewsTransport));
+        await hitnewsPool.PrewarmAsync(1);
+        using var hitnews = CreateProvider(
+            hitnewsPool, "hitnews", 4, type: ProviderType.BackupOnly);
+
+        using var client = new MultiProviderNntpClient(
+            [primary, firstStalled, secondStalled, thirdStalled, hitnews],
+            new ProviderUsageTracker(),
+            providerAttemptTimeout: TimeSpan.FromMilliseconds(50),
+            providerOperationTimeout: TimeSpan.FromMilliseconds(140));
+        var diagnostics = new PlaybackRequestDiagnostics(
+            Guid.NewGuid(), "/media/test.mkv", "test.mkv", requestedRange: null);
+
+        UsenetDecodedBodyResponse response;
+        using (PlaybackDiagnosticContext.Begin(diagnostics))
+        {
+            response = await client.DecodedBodyAsync(
+                    "missing-on-primary", CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        await response.Stream.DisposeAsync();
+
+        Assert.Equal(1, primaryTransport.BodyCalls);
+        Assert.Equal(1, firstStalledTransport.BodyCalls);
+        Assert.Equal(1, secondStalledTransport.BodyCalls);
+        Assert.Equal(1, hitnewsTransport.BodyCalls);
+        Assert.Contains("hitnews:attempts=1", diagnostics.Snapshot().BackupSummary);
+    }
+
+    [Fact]
     public async Task PrepReturnsRetryableFailureWhenEveryProviderStalls()
     {
         var transport = new BodyClient(stall: true);

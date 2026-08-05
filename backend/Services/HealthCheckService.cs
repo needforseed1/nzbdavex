@@ -164,7 +164,8 @@ public class HealthCheckService : BackgroundService
             {
                 var lanes = Math.Min(concurrency, _configManager.GetHealthPipeliningLanes());
                 await _usenetClient.CheckAllSegmentsPipelinedAsync(
-                    segments, _configManager.GetHealthPipeliningDepth(), lanes, progress, ct).ConfigureAwait(false);
+                    segments, _configManager.GetHealthPipeliningDepth(), lanes, progress, ct,
+                    _configManager.IsHealthProviderQualificationEnabled()).ConfigureAwait(false);
             }
             else
             {
