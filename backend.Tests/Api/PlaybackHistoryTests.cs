@@ -166,21 +166,64 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
-    public void DescribeIssues_NeedsMoreThanOneBriefUpstreamWait()
+    public void DescribeIssues_UsesDurationRatherThanAWaitCount()
     {
-        var brief = PlaybackHistory.BuildSession(
-            CreateRow(requestCount: 5, upstreamStalls: 1, maxUpstreamStallMs: 1_100),
+        var longPlayWithDelays = PlaybackHistory.BuildSession(
+            CreateRow(
+                endedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1_786_000,
+                requestCount: 5,
+                upstreamStalls: 25,
+                maxUpstreamStallMs: 7_100,
+                totalUpstreamStallMs: 80_000,
+                upstreamWaitWallMs: 80_000,
+                maxUpstreamWaitWallMs: 7_100),
             Providers());
-        var repeated = PlaybackHistory.BuildSession(
-            CreateRow(requestCount: 5, upstreamStalls: 3, maxUpstreamStallMs: 1_100),
+        var shortPlayWithTheSamePattern = PlaybackHistory.BuildSession(
+            CreateRow(
+                endedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 40_000,
+                requestCount: 5,
+                upstreamStalls: 4,
+                maxUpstreamStallMs: 4_400,
+                totalUpstreamStallMs: 11_000,
+                upstreamWaitWallMs: 11_000,
+                maxUpstreamWaitWallMs: 4_400),
             Providers());
-        var long_ = PlaybackHistory.BuildSession(
-            CreateRow(requestCount: 5, upstreamStalls: 1, maxUpstreamStallMs: 6_500),
+        var continuous = PlaybackHistory.BuildSession(
+            CreateRow(
+                endedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1_786_000,
+                requestCount: 5,
+                upstreamStalls: 1,
+                maxUpstreamStallMs: 12_000,
+                totalUpstreamStallMs: 12_000,
+                upstreamWaitWallMs: 12_000,
+                maxUpstreamWaitWallMs: 12_000),
             Providers());
 
-        Assert.Empty(brief.Issues);
-        Assert.Contains(PlaybackHistory.Issue.Stalled, repeated.Issues);
-        Assert.Contains(PlaybackHistory.Issue.Stalled, long_.Issues);
+        Assert.DoesNotContain(PlaybackHistory.Issue.Stalled, longPlayWithDelays.Issues);
+        Assert.Contains(PlaybackHistory.Issue.Stalled, shortPlayWithTheSamePattern.Issues);
+        Assert.Contains(PlaybackHistory.Issue.Stalled, continuous.Issues);
+    }
+
+    [Fact]
+    public void DescribeIssues_PlexProgressCanConfirmOrClearImpact()
+    {
+        var row = CreateRow(
+            endedAt: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 40_000,
+            requestCount: 5,
+            upstreamStalls: 4,
+            maxUpstreamStallMs: 4_400,
+            totalUpstreamStallMs: 11_000,
+            upstreamWaitWallMs: 11_000,
+            maxUpstreamWaitWallMs: 4_400);
+        row.PlexPlaybackImpact = "progress-continued";
+        var continued = PlaybackHistory.BuildSession(row, Providers());
+        row.PlexPlaybackImpact = "buffering-observed";
+        var buffered = PlaybackHistory.BuildSession(row, Providers());
+
+        Assert.DoesNotContain(PlaybackHistory.Issue.Stalled, continued.Issues);
+        Assert.DoesNotContain(PlaybackHistory.Issue.Buffering, continued.Issues);
+        Assert.Contains(PlaybackHistory.Issue.Buffering, buffered.Issues);
+        Assert.DoesNotContain(PlaybackHistory.Issue.Stalled, buffered.Issues);
     }
 
     [Fact]
@@ -653,14 +696,14 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
-    public void MountPurpose_IdentifiesSymlinkResolutionAndDropsCoincidentalPausedPlex()
+    public void MountPurpose_IdentifiesSymlinkResolutionAndDropsCoincidentalPlexPlayback()
     {
         var row = CreateRow(
-            fileName: "Farscape.S01E01.mkv.rclonelink",
+            fileName: "Pokemon.S01E01.Pokemon.I.Choose.You.mkv.rclonelink",
             clientUserAgent: "rclone/v1.74.3",
-            bytesServed: 76,
+            bytesServed: 152,
             bytesFetched: 0);
-        row.PlexPurpose = "paused";
+        row.PlexPurpose = "playback";
         row.PlexConfidence = "time-only";
         row.PlexDetail = "Unrelated title";
 
@@ -672,7 +715,7 @@ public class PlaybackHistoryTests
         Assert.Equal("symlink-resolution", play.MountPurpose);
         Assert.True(play.IsProbe);
         Assert.True(play.IsLikelyBackgroundActivity);
-        Assert.Null(play.PlexPurpose);
+        Assert.Equal("playback", play.PlexPurpose);
         Assert.False(play.IsPlexPlayback);
         Assert.True(PlaybackHistory.MatchesFilter(play, "mount"));
         Assert.True(PlaybackHistory.MatchesFilter(play, "probes"));
@@ -1067,6 +1110,8 @@ public class PlaybackHistoryTests
         int upstreamStalls = 0,
         int maxUpstreamStallMs = 0,
         long totalUpstreamStallMs = 0,
+        long upstreamWaitWallMs = 0,
+        int maxUpstreamWaitWallMs = 0,
         int downstreamStalls = 0,
         int maxDownstreamStallMs = 0,
         long bytesFetched = -1,
@@ -1112,6 +1157,8 @@ public class PlaybackHistoryTests
             UpstreamStalls = upstreamStalls,
             MaxUpstreamStallMs = maxUpstreamStallMs,
             TotalUpstreamStallMs = totalUpstreamStallMs,
+            UpstreamWaitWallMs = upstreamWaitWallMs,
+            MaxUpstreamWaitWallMs = maxUpstreamWaitWallMs,
             DownstreamStalls = downstreamStalls,
             MaxDownstreamStallMs = maxDownstreamStallMs,
             ProviderRotations = providerRotations,

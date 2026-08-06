@@ -196,13 +196,18 @@ const ISSUE_META: Record<string, { label: string, tone: IssueTone, title: string
         tone: "bad",
         title: "The request timed out waiting for data.",
     },
-    "stalled": {
-        label: "Usenet wait",
+    "buffering": {
+        label: "Buffering observed",
         tone: "warn",
-        title: "During media delivery, Usenet caused at least three waits or one " +
-            "wait of 3 seconds or longer. This can cause buffering if the client " +
-            "runs out of buffered data, but does not prove playback paused. NZB " +
-            "preparation and health-check time are not included.",
+        title: "Plex reported buffering, or its playing progress stopped and later " +
+            "resumed, during a correlated Usenet wait.",
+    },
+    "stalled": {
+        label: "Playback risk",
+        tone: "warn",
+        title: "Source delivery stopped continuously for at least 10 seconds or " +
+            "spent at least 10% of the activity waiting. This could exhaust the " +
+            "player buffer, but Plex did not confirm that it did.",
     },
     "body-stalled": {
         label: "Connection recovered",
@@ -255,7 +260,9 @@ const ISSUE_ORDER = Object.keys(ISSUE_META);
  * retries and recovered connections are useful diagnostics, but a recovery that
  * completed successfully is not itself a bad playback outcome.
  */
-const PLAYBACK_IMPACT_ISSUES = new Set(["corrupted", "error", "timeout", "stalled"]);
+const PLAYBACK_IMPACT_ISSUES = new Set([
+    "corrupted", "error", "timeout", "buffering", "stalled",
+]);
 
 export function describeIssues(issues: readonly string[]): IssueBadge[] {
     return issues
@@ -276,29 +283,48 @@ export function usedBackupProvider(
         || play.providers.some(provider => provider.isBackup && provider.segments > 0);
 }
 
-export function playVerdict(play: Pick<PlaybackPlay, "issues" | "endReason">): IssueTone {
+type VerdictPlay = Pick<
+    PlaybackPlay,
+    "issues" | "endReason" | "counters" | "plexPlaybackImpact"
+>;
+
+export function playVerdict(play: VerdictPlay): IssueTone {
     if (play.endReason === "error" || play.endReason === "timeout") return "bad";
     if (play.issues.includes("corrupted")) return "bad";
-    return play.issues.includes("stalled") ? "warn" : "info";
+    return play.issues.includes("buffering") || play.issues.includes("stalled")
+        ? "warn"
+        : "info";
 }
 
 /** The word for the verdict pill, given how the play ended and what it hit. */
-export function playVerdictLabel(play: Pick<PlaybackPlay, "issues" | "endReason">): string {
+export function playVerdictLabel(play: VerdictPlay): string {
     if (play.endReason === "error") return "Failed";
     if (play.endReason === "timeout") return "Timed out";
     if (play.issues.includes("corrupted")) return "Damaged";
-    if (play.issues.includes("stalled")) return "Usenet wait";
+    if (play.issues.includes("buffering")) return "Buffering observed";
+    if (play.issues.includes("stalled")) return "Playback risk";
+    if (play.counters.upstreamStalls > 0) return "Source delays";
     return "Source OK";
 }
 
 /** Explains what the headline does — and deliberately does not — claim. */
-export function playVerdictTitle(play: Pick<PlaybackPlay, "issues" | "endReason">): string {
+export function playVerdictTitle(play: VerdictPlay): string {
     if (play.endReason === "error") return "The request ended with a server error.";
     if (play.endReason === "timeout") return "The request timed out waiting for data.";
     if (play.issues.includes("corrupted")) {
         return "Some articles could not be fetched and were delivered as zeros.";
     }
+    if (play.issues.includes("buffering")) {
+        return play.plexPlaybackImpact === "buffering-observed"
+            ? "Plex explicitly reported buffering during a correlated Usenet wait."
+            : "Plex playing progress stopped during a correlated Usenet wait and later resumed. Some clients report progress coarsely, so this is strong evidence rather than certainty.";
+    }
     if (play.issues.includes("stalled")) return ISSUE_META.stalled.title;
+    if (play.counters.upstreamStalls > 0) {
+        return play.plexPlaybackImpact === "progress-continued"
+            ? "Usenet waits occurred, but Plex playback progress continued across them. The delays remain available in diagnostics."
+            : "Usenet waits occurred, but they did not cross the duration-aware playback-risk threshold. The player may have absorbed them in its buffer.";
+    }
     return "No failed, timed-out, damaged, or materially delayed source request was detected. " +
         "Expand the play to see provider and recovery details.";
 }
@@ -322,6 +348,21 @@ export function matchesFilter(play: FilterablePlay, filter: FilterKey): boolean 
                 || hasPlaybackImpact(play.issues);
         case "failed": return play.endReason === "error" || play.endReason === "timeout";
     }
+}
+
+/**
+ * Playback can be loaded from retained history without making old mount reads,
+ * probes, and issues leak into their deliberately recent activity views.
+ */
+export function playsForFilter(
+    recentPlays: PlaybackPlay[],
+    retainedPlayback: PlaybackPlay[] | null,
+    filter: FilterKey,
+): PlaybackPlay[] {
+    const source = filter === "playback" && retainedPlayback !== null
+        ? retainedPlayback
+        : recentPlays;
+    return source.filter(play => matchesFilter(play, filter));
 }
 
 export function computeStats(plays: readonly PlaybackPlay[]) {

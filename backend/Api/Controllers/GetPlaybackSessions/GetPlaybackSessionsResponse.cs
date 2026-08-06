@@ -20,8 +20,9 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
     public required int SampledSessions { get; init; }
 
     /// <summary>
-    /// True when the sample hit its limit, so older reads exist that are not
-    /// represented and the oldest play shown may be missing its earlier parts.
+    /// For the recent activity view, true when the raw sample hit its limit, so
+    /// older reads are not represented. For deep playback history, true when
+    /// the retained history contains more matching grouped plays than requested.
     /// </summary>
     [JsonPropertyName("truncated")]
     public required bool Truncated { get; init; }
@@ -115,6 +116,10 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("plexDetail")] public string? PlexDetail { get; init; }
         [JsonPropertyName("plexIsTranscode")] public bool? PlexIsTranscode { get; init; }
         /// <summary>
+        /// Compact correlation result. Raw Plex offsets and timelines are not stored.
+        /// </summary>
+        [JsonPropertyName("plexPlaybackImpact")] public string? PlexPlaybackImpact { get; init; }
+        /// <summary>
         /// True for an exact media match or a unique time-only Plex session
         /// observed playing. It identifies likely source/purpose, not watch time.
         /// </summary>
@@ -177,6 +182,7 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("plexRatingKey")] public string? PlexRatingKey { get; init; }
         [JsonPropertyName("plexDetail")] public string? PlexDetail { get; init; }
         [JsonPropertyName("plexIsTranscode")] public bool? PlexIsTranscode { get; init; }
+        [JsonPropertyName("plexPlaybackImpact")] public string? PlexPlaybackImpact { get; init; }
         [JsonPropertyName("issues")] public required List<string> Issues { get; init; }
         [JsonPropertyName("counters")] public required CountersDto Counters { get; init; }
         [JsonPropertyName("providers")] public required List<ProviderDto> Providers { get; init; }
@@ -187,6 +193,8 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("upstreamStalls")] public required int UpstreamStalls { get; init; }
         [JsonPropertyName("maxUpstreamStallMs")] public required int MaxUpstreamStallMs { get; init; }
         [JsonPropertyName("totalUpstreamStallMs")] public required long TotalUpstreamStallMs { get; init; }
+        [JsonPropertyName("upstreamWaitWallMs")] public required long UpstreamWaitWallMs { get; init; }
+        [JsonPropertyName("maxUpstreamWaitWallMs")] public required int MaxUpstreamWaitWallMs { get; init; }
         /// <summary>
         /// Waits where downloaded segments sat behind the one the reader needed:
         /// the source kept up, one slow article did not. The remainder of

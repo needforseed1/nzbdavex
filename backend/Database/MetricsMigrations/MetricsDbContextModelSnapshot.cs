@@ -284,6 +284,9 @@ namespace NzbWebDAV.Database.MetricsMigrations
                     b.Property<int>("MaxUpstreamStallMs")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("MaxUpstreamWaitWallMs")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Path")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -298,6 +301,10 @@ namespace NzbWebDAV.Database.MetricsMigrations
 
                     b.Property<bool?>("PlexIsTranscode")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("PlexPlaybackImpact")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("PlexPlatform")
                         .HasMaxLength(255)
@@ -344,6 +351,9 @@ namespace NzbWebDAV.Database.MetricsMigrations
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("UpstreamStalls")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("UpstreamWaitWallMs")
                         .HasColumnType("INTEGER");
 
                     b.Property<long>("ZeroFilledBytes")

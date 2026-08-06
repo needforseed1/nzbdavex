@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Clients.Plex;
 using NzbWebDAV.Config;
+using NzbWebDAV.Services;
 using Serilog;
 
 namespace NzbWebDAV.Services.Plex;
@@ -32,6 +33,7 @@ public sealed record PlexReadAttribution
     public string? RatingKey { get; init; }
     public string? Detail { get; init; }
     public bool IsTranscode { get; init; }
+    public string? PlaybackImpact { get; init; }
 }
 
 /// <summary>
@@ -47,6 +49,8 @@ public sealed class PlexReadAttributionMonitor(
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SampleRetention = TimeSpan.FromMinutes(30);
     private const long MatchGraceMs = 10_000;
+    private const long ImpactSampleGraceMs = 2_500;
+    private const long ProgressStallMinMs = 6_000;
 
     private readonly object _gate = new();
     private readonly List<AttributionSample> _samples = [];
@@ -71,18 +75,21 @@ public sealed class PlexReadAttributionMonitor(
         DateTimeOffset startedAt,
         DateTimeOffset endedAt,
         Guid? davItemId,
-        string? clientUserAgent) =>
+        string? clientUserAgent,
+        IReadOnlyList<PlaybackWaitWindow>? upstreamWaitWindows = null) =>
         Match(
             startedAt.ToUnixTimeMilliseconds(),
             endedAt.ToUnixTimeMilliseconds(),
             davItemId,
-            clientUserAgent);
+            clientUserAgent,
+            upstreamWaitWindows);
 
     internal PlexReadAttribution? Match(
         long startedAt,
         long endedAt,
         Guid? davItemId,
-        string? clientUserAgent)
+        string? clientUserAgent,
+        IReadOnlyList<PlaybackWaitWindow>? upstreamWaitWindows = null)
     {
         if (!IsRclone(clientUserAgent)) return null;
 
@@ -101,7 +108,10 @@ public sealed class PlexReadAttributionMonitor(
             var exact = overlapping.Where(sample =>
                     sample.Source == "session" && sample.DavItemId == exactId)
                 .ToList();
-            var exactMatch = BuildUniqueAttribution(exact, "exact-path");
+            var exactMatch = BuildUniqueAttribution(
+                exact,
+                "exact-path",
+                upstreamWaitWindows);
             if (exactMatch is not null) return exactMatch;
         }
 
@@ -113,7 +123,7 @@ public sealed class PlexReadAttributionMonitor(
                 sample.DavItemId is null &&
                 (sample.Source == "activity" || sample.Purpose == "playback"))
             .ToList();
-        return BuildUniqueAttribution(timeOnly, "time-only");
+        return BuildUniqueAttribution(timeOnly, "time-only", upstreamWaitWindows);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -381,6 +391,7 @@ public sealed class PlexReadAttributionMonitor(
             Source = "session",
             Purpose = ClassifySession(session),
             DavItemId = ResolvePath(session.MediaPartPath),
+            ViewOffsetMs = session.ViewOffsetMs,
             Product = CombineVersion(session.Product, session.PlayerVersion),
             Player = session.PlayerTitle,
             Platform = CombineVersion(session.Platform, session.PlatformVersion),
@@ -490,7 +501,8 @@ public sealed class PlexReadAttributionMonitor(
 
     private static PlexReadAttribution? BuildUniqueAttribution(
         IReadOnlyList<AttributionSample> samples,
-        string confidence)
+        string confidence,
+        IReadOnlyList<PlaybackWaitWindow>? upstreamWaitWindows)
     {
         var keys = samples.Select(sample => sample.CorrelationKey)
             .Distinct(StringComparer.Ordinal)
@@ -526,8 +538,97 @@ public sealed class PlexReadAttributionMonitor(
             RatingKey = representative.RatingKey,
             Detail = representative.Detail,
             IsTranscode = representative.IsTranscode,
+            PlaybackImpact = ClassifyPlaybackImpact(
+                samples,
+                confidence,
+                upstreamWaitWindows),
         };
     }
+
+    private static string? ClassifyPlaybackImpact(
+        IReadOnlyList<AttributionSample> samples,
+        string confidence,
+        IReadOnlyList<PlaybackWaitWindow>? upstreamWaitWindows)
+    {
+        // A time-only session is enough to label probable Plex playback, but
+        // not enough to claim that its player stalled on this particular file.
+        if (confidence != "exact-path" || upstreamWaitWindows is not { Count: > 0 })
+            return null;
+
+        var sessionSamples = samples
+            .Where(sample => sample.Source == "session")
+            .OrderBy(sample => sample.At)
+            .ToList();
+        if (sessionSamples.Count == 0) return null;
+
+        if (upstreamWaitWindows.Any(wait => sessionSamples.Any(buffering =>
+                buffering.Purpose == "prebuffering"
+                && IsNear(wait, buffering.At)
+                // A buffering state before playback begins is startup or
+                // prefetching, not evidence that viewing was interrupted.
+                && sessionSamples.Any(sample =>
+                    sample.Purpose == "playback"
+                    && sample.At < buffering.At
+                    && sample.At >= buffering.At - 10_000)
+                && sessionSamples.Any(sample =>
+                    sample.Purpose == "playback"
+                    && sample.At > buffering.At
+                    && sample.At <= buffering.At + 10_000))))
+            return "buffering-observed";
+
+        foreach (var wait in upstreamWaitWindows)
+        {
+            var playing = SamplesNear(sessionSamples, wait)
+                .Where(sample => sample.Purpose == "playback"
+                                 && sample.ViewOffsetMs.HasValue)
+                .ToList();
+            if (playing.Count < 3 ||
+                playing[^1].At - playing[0].At < ProgressStallMinMs ||
+                sessionSamples.Any(sample =>
+                    sample.At > playing[0].At
+                    && sample.At < playing[^1].At
+                    && sample.Purpose != "playback") ||
+                playing[^1].ViewOffsetMs!.Value - playing[0].ViewOffsetMs!.Value >= 1_000)
+                continue;
+
+            var resumed = sessionSamples.Any(sample =>
+                sample.At > playing[^1].At
+                && sample.At <= playing[^1].At + 10_000
+                && sample.Purpose == "playback"
+                && sample.ViewOffsetMs is { } offset
+                && offset - playing[^1].ViewOffsetMs!.Value >= 1_000);
+            if (resumed) return "progress-stalled";
+        }
+
+        var materialWaits = upstreamWaitWindows
+            .Where(wait => wait.EndedAtMs - wait.StartedAtMs >= 2_000)
+            .ToList();
+        if (materialWaits.Count == 0) return null;
+        var progressContinued = materialWaits.All(wait =>
+        {
+            var nearby = SamplesNear(sessionSamples, wait).ToList();
+            if (nearby.Any(sample => sample.Purpose != "playback")) return false;
+            var playing = nearby
+                .Where(sample => sample.Purpose == "playback"
+                                 && sample.ViewOffsetMs.HasValue)
+                .ToList();
+            if (playing.Count < 2) return false;
+            var elapsed = playing[^1].At - playing[0].At;
+            var progress = playing[^1].ViewOffsetMs!.Value
+                           - playing[0].ViewOffsetMs!.Value;
+            return elapsed >= 2_000 && progress >= elapsed / 2;
+        });
+        return progressContinued ? "progress-continued" : null;
+    }
+
+    private static IEnumerable<AttributionSample> SamplesNear(
+        IEnumerable<AttributionSample> samples,
+        PlaybackWaitWindow wait) =>
+        samples.Where(sample => IsNear(wait, sample.At));
+
+    private static bool IsNear(PlaybackWaitWindow wait, long at) =>
+        at >= wait.StartedAtMs - ImpactSampleGraceMs
+        && at <= wait.EndedAtMs + ImpactSampleGraceMs;
 
     private void RecordActivityFailure(string message)
     {
@@ -592,6 +693,7 @@ public sealed class PlexReadAttributionMonitor(
         public required string Source { get; init; }
         public required string Purpose { get; init; }
         public Guid? DavItemId { get; init; }
+        public long? ViewOffsetMs { get; init; }
         public string? Product { get; init; }
         public string? Player { get; init; }
         public string? Platform { get; init; }

@@ -107,6 +107,30 @@ public class PlaybackSessionStatsTests
     }
 
     [Fact]
+    public void ConcurrentUpstreamWaits_CountWallClockOnce()
+    {
+        var stats = new PlaybackSessionStats();
+        var sessionId = Guid.NewGuid();
+
+        stats.BeginWait(sessionId, isUpstream: true, elapsedMs: 1_000);
+        stats.BeginWait(sessionId, isUpstream: true, elapsedMs: 1_000);
+
+        var active = stats.Peek(sessionId)!;
+        Assert.Equal(2, active.ActiveUpstreamWaits);
+        Assert.InRange(active.UpstreamWaitWallMs, 900, 1_500);
+
+        stats.EndWait(sessionId, isUpstream: true);
+        Assert.Equal(1, stats.Peek(sessionId)!.ActiveUpstreamWaits);
+        stats.EndWait(sessionId, isUpstream: true);
+
+        var ended = stats.Peek(sessionId)!;
+        Assert.Equal(0, ended.ActiveUpstreamWaits);
+        Assert.InRange(ended.UpstreamWaitWallMs, 900, 1_500);
+        Assert.InRange(ended.MaxUpstreamWaitWallMs, 900, 1_500);
+        Assert.Single(ended.UpstreamWaitWindows);
+    }
+
+    [Fact]
     public void Diagnostics_CarryZeroFillsAndBodyStallsOntoTheSession()
     {
         var stats = new PlaybackSessionStats();

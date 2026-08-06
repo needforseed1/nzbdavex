@@ -29,6 +29,12 @@ public sealed record PlaybackBackupProviderStat(
     long Errors);
 
 /// <summary>
+/// One wall-clock interval where at least one upstream read belonging to the
+/// session was waiting. Concurrent waits are merged before these leave memory.
+/// </summary>
+public sealed record PlaybackWaitWindow(long StartedAtMs, long EndedAtMs);
+
+/// <summary>
 /// What a single finished HTTP playback request contributes to its session.
 /// Stalls are absent by design: they are reported through
 /// <see cref="PlaybackSessionStats.RecordStall"/> as they happen, so a live
@@ -62,6 +68,9 @@ public sealed record PlaybackSessionTotals(
     int UpstreamStalls,
     long MaxUpstreamStallMs,
     long TotalUpstreamStallMs,
+    long UpstreamWaitWallMs,
+    long MaxUpstreamWaitWallMs,
+    IReadOnlyList<PlaybackWaitWindow> UpstreamWaitWindows,
     /// <summary>
     /// Upstream waits that had already-downloaded segments queued behind the one
     /// the reader needed. Distinguishes "the source is too slow" from "one slow

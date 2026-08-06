@@ -93,6 +93,7 @@ public sealed class PlexClient : IDisposable
                 Title = title,
                 MediaPartPath = GetString(part, "file"),
                 State = GetString(player, "state")?.Trim().ToLowerInvariant() ?? "unknown",
+                ViewOffsetMs = GetLong(item, "viewOffset"),
                 PlayerMachineIdentifier = GetString(player, "machineIdentifier"),
                 PlayerTitle = GetString(player, "title"),
                 Product = GetString(player, "product"),
@@ -313,6 +314,12 @@ public sealed class PlexClient : IDisposable
             JsonValueKind.Number => child.GetRawText(),
             _ => null,
         };
+    }
+
+    private static long? GetLong(JsonElement? parent, string property)
+    {
+        var raw = GetString(parent, property);
+        return long.TryParse(raw, out var value) ? value : null;
     }
 
     private static string BuildFallbackSessionKey(JsonElement item, JsonElement? player) =>

@@ -3,16 +3,18 @@ import type { Route } from "./+types/route";
 import styles from "./playback-layout.module.css";
 import {
     backendClient,
+    type PlaybackHistoryPage,
     type PlaybackPlay,
     type PlexStatus,
 } from "~/clients/backend-client.server";
 import { ActivePlays, useActiveReads } from "./active-plays";
 import {
+    DEEP_PLAYBACK_HISTORY_LIMIT,
     PLAYBACK_DATA_ROUTE,
     PLAYBACK_HISTORY_LIMIT,
 } from "./playback-api";
 import { PlaybackHistory } from "./playback-history";
-import { playsEqual } from "./playback-view";
+import { playsEqual, type FilterKey } from "./playback-view";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -24,6 +26,11 @@ export async function loader() {
 
 export default function Playback({ loaderData }: Route.ComponentProps) {
     const [plays, setPlays] = useState<PlaybackPlay[]>(loaderData.page.plays);
+    const [filter, setFilter] = useState<FilterKey>("mount");
+    const [retainedPlayback, setRetainedPlayback] =
+        useState<PlaybackHistoryPage | null>(null);
+    const [retainedPlaybackRefreshing, setRetainedPlaybackRefreshing] = useState(false);
+    const [retainedPlaybackError, setRetainedPlaybackError] = useState<string | null>(null);
     const [plexStatus, setPlexStatus] = useState<PlexStatus>(loaderData.page.plexStatus);
     const [sample, setSample] = useState({
         sampledSessions: loaderData.page.sampledSessions,
@@ -59,6 +66,32 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
         }
     }, []);
 
+    const refreshRetainedPlayback = useCallback(async () => {
+        setRetainedPlaybackRefreshing(true);
+        try {
+            const params = new URLSearchParams({
+                limit: String(DEEP_PLAYBACK_HISTORY_LIMIT),
+                filter: "playback",
+                deep: "true",
+            });
+            const response = await fetch(`${PLAYBACK_DATA_ROUTE}?${params}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            setRetainedPlayback({
+                plays: Array.isArray(data?.plays) ? data.plays : [],
+                plexStatus: data?.plexStatus ?? { enabled: false, connected: false },
+                sampledSessions: data?.sampledSessions ?? 0,
+                truncated: data?.truncated ?? false,
+                limit: data?.limit ?? DEEP_PLAYBACK_HISTORY_LIMIT,
+            });
+            setRetainedPlaybackError(null);
+        } catch (e: any) {
+            setRetainedPlaybackError(e?.message ?? String(e));
+        } finally {
+            setRetainedPlaybackRefreshing(false);
+        }
+    }, []);
+
     const clearAll = useCallback(async () => {
         const confirmed = window.confirm(
             "Delete all playback history?\n\n" +
@@ -70,6 +103,8 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
             const response = await fetch(PLAYBACK_DATA_ROUTE, { method: "POST" });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             setPlays([]);
+            setRetainedPlayback(null);
+            setRetainedPlaybackError(null);
             setError(null);
         } catch (e: any) {
             setError(e?.message ?? String(e));
@@ -77,6 +112,11 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
             setClearing(false);
         }
     }, []);
+
+    useEffect(() => {
+        if (filter !== "playback") return;
+        void refreshRetainedPlayback();
+    }, [filter, refreshRetainedPlayback]);
 
     useEffect(() => {
         if (!autoRefresh) return;
@@ -96,21 +136,37 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
     }, [autoRefresh, refresh]);
 
     const activeReads = useActiveReads();
+    const refreshVisible = useCallback(() => {
+        void refresh();
+        if (filter === "playback") void refreshRetainedPlayback();
+    }, [filter, refresh, refreshRetainedPlayback]);
+    const visibleError = filter === "playback" && retainedPlaybackError
+        ? retainedPlaybackError
+        : error;
 
     return (
         <div className={styles.page}>
             <ActivePlays reads={activeReads} />
             <PlaybackHistory
                 plays={plays}
+                filter={filter}
+                retainedPlayback={retainedPlayback}
+                retainedPlaybackLoading={
+                    filter === "playback" && retainedPlaybackRefreshing
+                }
                 plexStatus={plexStatus}
                 sampledSessions={sample.sampledSessions}
                 truncated={sample.truncated}
                 autoRefresh={autoRefresh}
-                refreshing={refreshing}
+                refreshing={
+                    refreshing
+                    || (filter === "playback" && retainedPlaybackRefreshing)
+                }
                 clearing={clearing}
-                error={error}
+                error={visibleError}
+                onFilterChange={setFilter}
                 onToggleAutoRefresh={() => setAutoRefresh(value => !value)}
-                onRefresh={() => { void refresh(); }}
+                onRefresh={refreshVisible}
                 onClear={() => { void clearAll(); }}
             />
         </div>

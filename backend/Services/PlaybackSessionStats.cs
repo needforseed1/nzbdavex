@@ -30,8 +30,14 @@ public class PlaybackSessionStats
     /// </summary>
     public void RecordStall(Guid sessionId, bool isUpstream, long elapsedMs)
     {
-        RecordWait(sessionId, isUpstream, elapsedMs, elapsedMs, isNewWait: true, headOfLine: false);
-        EndWait(sessionId, isUpstream);
+        var accumulator = _sessions.GetOrAdd(sessionId, _ => new Accumulator());
+        accumulator.RecordWait(
+            isUpstream,
+            elapsedMs,
+            elapsedMs,
+            isNewWait: true,
+            headOfLine: false);
+        if (isUpstream) accumulator.RecordCompletedUpstreamWait(elapsedMs);
     }
 
     /// <summary>
@@ -52,10 +58,10 @@ public class PlaybackSessionStats
         accumulator.RecordWait(isUpstream, deltaMs, totalElapsedMs, isNewWait, headOfLine);
     }
 
-    public void BeginWait(Guid sessionId, bool isUpstream)
+    public void BeginWait(Guid sessionId, bool isUpstream, long elapsedMs = 0)
     {
         var accumulator = _sessions.GetOrAdd(sessionId, _ => new Accumulator());
-        accumulator.BeginWait(isUpstream);
+        accumulator.BeginWait(isUpstream, elapsedMs);
     }
 
     public void EndWait(Guid sessionId, bool isUpstream)
@@ -113,6 +119,9 @@ public class PlaybackSessionStats
         private long _maxOffset;
         private DateTimeOffset? _firstRequestStartedAt;
         private string? _errorNote;
+        private int _activeUpstreamWallWaits;
+        private long? _upstreamWallWaitStartedAtMs;
+        private readonly List<PlaybackWaitWindow> _upstreamWaitWindows = [];
 
         public DateTimeOffset LastFoldAt { get; private set; } = DateTimeOffset.UtcNow;
 
@@ -141,12 +150,21 @@ public class PlaybackSessionStats
             }
         }
 
-        public void BeginWait(bool isUpstream)
+        public void BeginWait(bool isUpstream, long elapsedMs)
         {
             lock (_lock)
             {
                 LastFoldAt = DateTimeOffset.UtcNow;
                 _metrics.BeginWait(isUpstream);
+                if (!isUpstream) return;
+
+                var startedAt = LastFoldAt.ToUnixTimeMilliseconds()
+                                - Math.Max(0, elapsedMs);
+                if (_activeUpstreamWallWaits == 0)
+                    _upstreamWallWaitStartedAtMs = startedAt;
+                else if (_upstreamWallWaitStartedAtMs is { } current)
+                    _upstreamWallWaitStartedAtMs = Math.Min(current, startedAt);
+                _activeUpstreamWallWaits++;
             }
         }
 
@@ -156,6 +174,25 @@ public class PlaybackSessionStats
             {
                 LastFoldAt = DateTimeOffset.UtcNow;
                 _metrics.EndWait(isUpstream);
+                if (!isUpstream || _activeUpstreamWallWaits <= 0) return;
+
+                _activeUpstreamWallWaits--;
+                if (_activeUpstreamWallWaits > 0) return;
+                AddUpstreamWaitWindow(
+                    _upstreamWallWaitStartedAtMs
+                    ?? LastFoldAt.ToUnixTimeMilliseconds(),
+                    LastFoldAt.ToUnixTimeMilliseconds());
+                _upstreamWallWaitStartedAtMs = null;
+            }
+        }
+
+        public void RecordCompletedUpstreamWait(long elapsedMs)
+        {
+            lock (_lock)
+            {
+                LastFoldAt = DateTimeOffset.UtcNow;
+                var endedAt = LastFoldAt.ToUnixTimeMilliseconds();
+                AddUpstreamWaitWindow(endedAt - Math.Max(0, elapsedMs), endedAt);
             }
         }
 
@@ -210,6 +247,7 @@ public class PlaybackSessionStats
             lock (_lock)
             {
                 var metrics = _metrics.Snapshot();
+                var waitWindows = SnapshotUpstreamWaitWindows();
                 return new PlaybackSessionTotals(
                     _requestCount,
                     _firstByteMs,
@@ -217,6 +255,11 @@ public class PlaybackSessionStats
                     metrics.UpstreamStalls,
                     metrics.MaxUpstreamStallMs,
                     metrics.TotalUpstreamStallMs,
+                    waitWindows.Sum(window => window.EndedAtMs - window.StartedAtMs),
+                    waitWindows.Count == 0
+                        ? 0
+                        : waitWindows.Max(window => window.EndedAtMs - window.StartedAtMs),
+                    waitWindows,
                     metrics.HeadOfLineStalls,
                     metrics.TotalHeadOfLineStallMs,
                     metrics.ActiveUpstreamWaits,
@@ -239,6 +282,44 @@ public class PlaybackSessionStats
                     metrics.BackupProviders,
                     _errorNote);
             }
+        }
+
+        private List<PlaybackWaitWindow> SnapshotUpstreamWaitWindows()
+        {
+            var windows = _upstreamWaitWindows.ToList();
+            if (_activeUpstreamWallWaits <= 0 ||
+                _upstreamWallWaitStartedAtMs is not { } startedAt)
+                return windows;
+
+            AddOrMerge(
+                windows,
+                new PlaybackWaitWindow(
+                    startedAt,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            return windows;
+        }
+
+        private void AddUpstreamWaitWindow(long startedAt, long endedAt) =>
+            AddOrMerge(
+                _upstreamWaitWindows,
+                new PlaybackWaitWindow(
+                    Math.Min(startedAt, endedAt),
+                    Math.Max(startedAt, endedAt)));
+
+        private static void AddOrMerge(
+            List<PlaybackWaitWindow> windows,
+            PlaybackWaitWindow next)
+        {
+            if (windows.Count == 0 || next.StartedAtMs > windows[^1].EndedAtMs)
+            {
+                windows.Add(next);
+                return;
+            }
+
+            var previous = windows[^1];
+            windows[^1] = new PlaybackWaitWindow(
+                Math.Min(previous.StartedAtMs, next.StartedAtMs),
+                Math.Max(previous.EndedAtMs, next.EndedAtMs));
         }
     }
 }

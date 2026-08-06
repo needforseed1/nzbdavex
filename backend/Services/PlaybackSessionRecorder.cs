@@ -37,7 +37,8 @@ public sealed class PlaybackSessionRecorder(
             entry.StartedAt,
             entry.LastActivityAt,
             entry.DavItemId,
-            entry.ClientUserAgent);
+            entry.ClientUserAgent,
+            totals?.UpstreamWaitWindows);
         if (plex is not null)
         {
             session.PlexPurpose = plex.Purpose;
@@ -48,6 +49,7 @@ public sealed class PlaybackSessionRecorder(
             session.PlexRatingKey = plex.RatingKey;
             session.PlexDetail = plex.Detail;
             session.PlexIsTranscode = plex.IsTranscode;
+            session.PlexPlaybackImpact = plex.PlaybackImpact;
         }
         metricsWriter.RecordSession(session);
     }
@@ -85,6 +87,9 @@ public sealed class PlaybackSessionRecorder(
             UpstreamStalls = totals?.UpstreamStalls ?? 0,
             MaxUpstreamStallMs = ToInt(totals?.MaxUpstreamStallMs) ?? 0,
             TotalUpstreamStallMs = totals?.TotalUpstreamStallMs ?? 0,
+            UpstreamWaitWallMs = totals?.UpstreamWaitWallMs ?? 0,
+            MaxUpstreamWaitWallMs =
+                ToInt(totals?.MaxUpstreamWaitWallMs) ?? 0,
             HeadOfLineStalls = totals?.HeadOfLineStalls ?? 0,
             TotalHeadOfLineStallMs = totals?.TotalHeadOfLineStallMs ?? 0,
             DownstreamStalls = totals?.DownstreamStalls ?? 0,

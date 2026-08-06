@@ -105,7 +105,7 @@ internal sealed class PlaybackRequestDiagnostics
     {
         if (elapsedMs < _stallThreshold.TotalMilliseconds) return reportedMs;
         if (reportedMs <= 0)
-            _sessionStats?.BeginWait(SessionId, isUpstream);
+            _sessionStats?.BeginWait(SessionId, isUpstream, elapsedMs);
         RecordWait(isUpstream ? "upstream-read" : "downstream-write", elapsedMs, reportedMs, offset, onset);
         return elapsedMs;
     }

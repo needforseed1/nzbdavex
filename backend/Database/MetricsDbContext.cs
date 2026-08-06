@@ -72,6 +72,8 @@ public sealed class MetricsDbContext() : DbContext(Options.Value)
             e.Property(x => x.UpstreamStalls).IsRequired();
             e.Property(x => x.MaxUpstreamStallMs).IsRequired();
             e.Property(x => x.TotalUpstreamStallMs).IsRequired();
+            e.Property(x => x.UpstreamWaitWallMs).IsRequired();
+            e.Property(x => x.MaxUpstreamWaitWallMs).IsRequired();
             e.Property(x => x.HeadOfLineStalls).IsRequired();
             e.Property(x => x.TotalHeadOfLineStallMs).IsRequired();
             e.Property(x => x.DownstreamStalls).IsRequired();
@@ -96,6 +98,7 @@ public sealed class MetricsDbContext() : DbContext(Options.Value)
             e.Property(x => x.PlexPlatform).HasMaxLength(255);
             e.Property(x => x.PlexRatingKey).HasMaxLength(255);
             e.Property(x => x.PlexDetail).HasMaxLength(512);
+            e.Property(x => x.PlexPlaybackImpact).HasMaxLength(32);
 
             e.HasIndex(x => x.StartedAt);
             e.HasIndex(x => x.Path);

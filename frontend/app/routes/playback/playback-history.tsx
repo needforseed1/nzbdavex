@@ -1,5 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type {
+    PlaybackHistoryPage,
     PlaybackPlay,
     PlexStatus,
 } from "~/clients/backend-client.server";
@@ -10,12 +11,15 @@ import {
     computeStats,
     formatBytes,
     formatCount,
-    matchesFilter,
+    playsForFilter,
     type FilterKey,
 } from "./playback-view";
 
 export function PlaybackHistory({
     plays,
+    filter,
+    retainedPlayback,
+    retainedPlaybackLoading,
     plexStatus,
     sampledSessions,
     truncated,
@@ -23,11 +27,15 @@ export function PlaybackHistory({
     refreshing,
     clearing,
     error,
+    onFilterChange,
     onToggleAutoRefresh,
     onRefresh,
     onClear,
 }: {
     plays: PlaybackPlay[],
+    filter: FilterKey,
+    retainedPlayback: PlaybackHistoryPage | null,
+    retainedPlaybackLoading: boolean,
     plexStatus: PlexStatus,
     sampledSessions: number,
     truncated: boolean,
@@ -35,17 +43,20 @@ export function PlaybackHistory({
     refreshing: boolean,
     clearing: boolean,
     error: string | null,
+    onFilterChange: (filter: FilterKey) => void,
     onToggleAutoRefresh: () => void,
     onRefresh: () => void,
     onClear: () => void,
 }) {
-    const [filter, setFilter] = useState<FilterKey>("mount");
     const stats = useMemo(() => computeStats(plays), [plays]);
+    const retainedPlaybackPlays = retainedPlayback?.plays ?? null;
     const visiblePlays = useMemo(
-        () => plays.filter(play => matchesFilter(play, filter)),
-        [plays, filter]);
+        () => playsForFilter(plays, retainedPlaybackPlays, filter),
+        [plays, retainedPlaybackPlays, filter]);
+    const playbackCount = retainedPlayback?.plays.length ?? stats.playback;
     const nothingVisible = visiblePlays.length === 0;
-    const noActivity = plays.length === 0;
+    const noActivity = plays.length === 0
+        && (retainedPlayback?.plays.length ?? 0) === 0;
 
     return (
         <div className={styles.group}>
@@ -100,29 +111,29 @@ export function PlaybackHistory({
             <div className={styles.filterBar}>
                 <FilterChip
                     active={filter === "mount"}
-                    onClick={() => setFilter("mount")}
+                    onClick={() => onFilterChange("mount")}
                     count={stats.mount}
                     title="Every request made through rclone, including symlink resolution, import inspection, Plex activity, probes, scans, and unattributed mount reads.">
                     All mount activity
                 </FilterChip>
                 <FilterChip
                     active={filter === "playback"}
-                    onClick={() => setFilter("playback")}
-                    count={stats.playback}
+                    onClick={() => onFilterChange("playback")}
+                    count={playbackCount}
                     title="Substantial direct reads plus exact or uniquely correlated Plex sessions reported playing. Probable time-only matches retain an uncertainty badge.">
                     Playback
                 </FilterChip>
                 <FilterChip
                     active={filter === "probes"}
-                    onClick={() => setFilter("probes")}
+                    onClick={() => onFilterChange("probes")}
                     count={stats.probes}
                     title="Tiny successful reads from direct clients or rclone. Known .rclonelink reads are identified as symlink resolution rather than guessed from size.">
                     Probes
                 </FilterChip>
-                <FilterChip active={filter === "issues"} onClick={() => setFilter("issues")} count={stats.issues}>
+                <FilterChip active={filter === "issues"} onClick={() => onFilterChange("issues")} count={stats.issues}>
                     Source issues
                 </FilterChip>
-                <FilterChip active={filter === "failed"} onClick={() => setFilter("failed")} count={stats.failed}>
+                <FilterChip active={filter === "failed"} onClick={() => onFilterChange("failed")} count={stats.failed}>
                     Failed
                 </FilterChip>
             </div>
@@ -162,7 +173,7 @@ export function PlaybackHistory({
             {/* Plays are grouped after the sample is taken, so these counts
                 are counts over the sample. Saying so is the difference
                 between "no failures" and "none in the last N reads". */}
-            {truncated && (
+            {filter !== "playback" && truncated && (
                 <div className={`${cardStyles.notice} ${cardStyles.noticeBar}`}>
                     Counts cover the most recent {formatCount(sampledSessions)} reads.
                     Older history exists and is not shown, and the oldest play here may be
@@ -170,12 +181,29 @@ export function PlaybackHistory({
                 </div>
             )}
 
+            {filter === "playback" && retainedPlayback?.truncated && (
+                <div className={`${cardStyles.notice} ${cardStyles.noticeBar}`}>
+                    Showing the most recent {formatCount(retainedPlayback.limit)} playbacks
+                    from retained history.
+                </div>
+            )}
+
+            {filter === "playback" && retainedPlaybackLoading && !retainedPlayback && (
+                <div className={`${cardStyles.notice} ${cardStyles.noticeBar}`}>
+                    Loading retained playback history…
+                </div>
+            )}
+
             {error && <div className={styles.errorBox}>Could not load: {error}</div>}
 
             {nothingVisible ? (
                 <div className={styles.emptyState}>
-                    {noActivity
+                    {filter === "playback" && retainedPlaybackLoading
+                        ? "Loading playback history…"
+                        : noActivity
                         ? "No file activity recorded yet."
+                        : filter === "playback" && retainedPlayback
+                            ? "No reliable playback in retained history."
                         : filter === "playback" &&
                           stats.probes + stats.mount > 0
                             ? "No reliable playback in this sample. Mount activity and small probes remain available in their filters."

@@ -301,8 +301,14 @@ class BackendClient {
         return data.deleted ?? 0;
     }
 
-    public async getPlaybackSessions(limit: number = 500): Promise<PlaybackHistoryPage> {
-        const url = BACKEND_URL + `/api/get-playback-sessions?limit=${limit}`;
+    public async getPlaybackSessions(
+        limit: number = 500,
+        options?: { filter?: string, deep?: boolean },
+    ): Promise<PlaybackHistoryPage> {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (options?.filter) params.set("filter", options.filter);
+        if (options?.deep) params.set("deep", "true");
+        const url = BACKEND_URL + `/api/get-playback-sessions?${params}`;
         const apiKey = FRONTEND_BACKEND_API_KEY;
         const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
         if (!response.ok) {
@@ -642,6 +648,8 @@ export type PlaybackPlay = {
     plexRatingKey?: string | null,
     plexDetail?: string | null,
     plexIsTranscode?: boolean | null,
+    /** Compact Plex/source correlation; raw offsets and timelines are not stored. */
+    plexPlaybackImpact?: "buffering-observed" | "progress-stalled" | "progress-continued" | string | null,
     /** Exact or uniquely correlated time-only Plex playing read; not watch progress. */
     isPlexPlayback?: boolean,
     issues: string[],
@@ -693,6 +701,7 @@ export type PlaybackSession = {
     plexRatingKey?: string | null,
     plexDetail?: string | null,
     plexIsTranscode?: boolean | null,
+    plexPlaybackImpact?: "buffering-observed" | "progress-stalled" | "progress-continued" | string | null,
     issues: string[],
     counters: PlaybackCounters,
     providers: PlaybackProvider[],
@@ -702,6 +711,9 @@ export type PlaybackCounters = {
     upstreamStalls: number,
     maxUpstreamStallMs: number,
     totalUpstreamStallMs: number,
+    /** Non-overlapping wall-clock time with one or more upstream waits. */
+    upstreamWaitWallMs: number,
+    maxUpstreamWaitWallMs: number,
     /** Waits where ready segments sat behind one slow article. */
     headOfLineStalls: number,
     totalHeadOfLineStallMs: number,

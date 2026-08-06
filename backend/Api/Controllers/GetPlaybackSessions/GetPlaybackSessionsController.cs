@@ -21,6 +21,8 @@ public class GetPlaybackSessionsController(
 {
     private const int DefaultLimit = 500;
     private const int MaxLimit = 2000;
+    private const int DefaultDeepPlaybackLimit = 200;
+    private const int MaxDeepPlaybackLimit = 500;
 
     /// <summary>
     /// One raw session is not one play: a play is many sessions, and tiny probes
@@ -33,13 +35,17 @@ public class GetPlaybackSessionsController(
     {
         var ct = HttpContext.RequestAborted;
         var query = HttpContext.Request.Query;
-        var limit = int.TryParse(query["limit"].ToString(), out var parsedLimit)
-            ? Math.Clamp(parsedLimit, MinSampleForGrouping, MaxLimit)
-            : DefaultLimit;
+        var filter = query["filter"].ToString();
+        var deepPlayback = IsDeepPlaybackHistory(filter, query["deep"].ToString());
+        var requestedLimit = int.TryParse(query["limit"].ToString(), out var parsedLimit)
+            ? parsedLimit
+            : deepPlayback ? DefaultDeepPlaybackLimit : DefaultLimit;
+        var limit = deepPlayback
+            ? Math.Clamp(requestedLimit, 1, MaxDeepPlaybackLimit)
+            : Math.Clamp(requestedLimit, MinSampleForGrouping, MaxLimit);
         var sinceMs = long.TryParse(query["sinceUnix"].ToString(), out var sinceUnix)
             ? sinceUnix * 1000
             : (long?)null;
-        var filter = query["filter"].ToString();
 
         var providersById = configManager.GetUsenetProviderConfig().Providers
             .Where(provider => !string.IsNullOrWhiteSpace(provider.Id))
@@ -51,10 +57,10 @@ public class GetPlaybackSessionsController(
         var rowQuery = metrics.ReadSessions.AsNoTracking();
         if (sinceMs is { } cutoff)
             rowQuery = rowQuery.Where(row => row.EndedAt >= cutoff);
-        var rows = await rowQuery
+        var orderedRows = rowQuery
             .OrderByDescending(row => row.StartedAt)
-            .ThenByDescending(row => row.EndedAt)
-            .Take(limit)
+            .ThenByDescending(row => row.EndedAt);
+        var rows = await ApplyRawSessionLimit(orderedRows, deepPlayback, limit)
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
@@ -62,10 +68,13 @@ public class GetPlaybackSessionsController(
             .Select(row => PlaybackHistory.BuildSession(row, providersById))
             .ToList();
         var content = await ResolveContentAsync(rows, ct).ConfigureAwait(false);
-        var plays = PlaybackHistory
+        var matchingPlays = PlaybackHistory
             .GroupIntoPlays(sessions, session => LookupContent(session, content))
             .Where(play => PlaybackHistory.MatchesFilter(play, filter))
             .ToList();
+        var plays = deepPlayback
+            ? matchingPlays.Take(limit).ToList()
+            : matchingPlays;
         var plexStatus = plexMonitor.GetStatus();
 
         return Ok(new GetPlaybackSessionsResponse
@@ -86,10 +95,24 @@ public class GetPlaybackSessionsController(
                 ActivitiesError = plexStatus.ActivitiesError,
             },
             SampledSessions = rows.Count,
-            Truncated = rows.Count >= limit,
+            Truncated = deepPlayback
+                ? matchingPlays.Count > limit
+                : rows.Count >= limit,
             Limit = limit,
         });
     }
+
+    internal static bool IsDeepPlaybackHistory(string? filter, string? deep) =>
+        string.Equals(deep, "true", StringComparison.OrdinalIgnoreCase)
+        && filter is not null
+        && (filter.Equals("playback", StringComparison.OrdinalIgnoreCase)
+            || filter.Equals("plays", StringComparison.OrdinalIgnoreCase));
+
+    internal static IQueryable<T> ApplyRawSessionLimit<T>(
+        IQueryable<T> orderedRows,
+        bool deepPlayback,
+        int limit) =>
+        deepPlayback ? orderedRows : orderedRows.Take(limit);
 
     private static PlaybackContentInfo? LookupContent(
         GetPlaybackSessionsResponse.SessionDto session,

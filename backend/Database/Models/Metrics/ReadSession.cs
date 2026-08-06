@@ -30,6 +30,10 @@ public class ReadSession
     public int MaxUpstreamStallMs { get; set; }
     // Time actually spent waiting, which count and max together cannot express.
     public long TotalUpstreamStallMs { get; set; }
+    // Wall-clock union of upstream waits. Unlike TotalUpstreamStallMs, concurrent
+    // range requests cannot count the same second more than once.
+    public long UpstreamWaitWallMs { get; set; }
+    public int MaxUpstreamWaitWallMs { get; set; }
 
     /// <summary>
     /// The subset of <see cref="UpstreamStalls"/> where segments had already been
@@ -89,6 +93,8 @@ public class ReadSession
     public string? PlexRatingKey { get; set; }
     public string? PlexDetail { get; set; }
     public bool? PlexIsTranscode { get; set; }
+    // Compact result only; raw Plex offsets and timelines are never persisted.
+    public string? PlexPlaybackImpact { get; set; }
 
     public enum EndReasonCode
     {

@@ -96,6 +96,8 @@ public class PlaybackSessionRecorderTests
         Assert.Equal(3, session.UpstreamStalls);
         Assert.Equal(4_000, session.MaxUpstreamStallMs);
         Assert.Equal(5_400, session.TotalUpstreamStallMs);
+        Assert.Equal(4_500, session.UpstreamWaitWallMs);
+        Assert.Equal(4_000, session.MaxUpstreamWaitWallMs);
         Assert.Equal(1, session.HeadOfLineStalls);
         Assert.Equal(900, session.TotalHeadOfLineStallMs);
         Assert.Equal(1, session.ZeroFilledSegments);
@@ -121,6 +123,12 @@ public class PlaybackSessionRecorderTests
             UpstreamStalls: 3,
             MaxUpstreamStallMs: 4_000,
             TotalUpstreamStallMs: 5_400,
+            UpstreamWaitWallMs: 4_500,
+            MaxUpstreamWaitWallMs: 4_000,
+            UpstreamWaitWindows:
+            [
+                new PlaybackWaitWindow(1_000, 5_500),
+            ],
             HeadOfLineStalls: 1,
             TotalHeadOfLineStallMs: 900,
             ActiveUpstreamWaits: 0,

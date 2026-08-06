@@ -13,6 +13,7 @@ public sealed record PlexSessionObservation
     public string? Title { get; init; }
     public string? MediaPartPath { get; init; }
     public string State { get; init; } = "unknown";
+    public long? ViewOffsetMs { get; init; }
     public string? PlayerMachineIdentifier { get; init; }
     public string? PlayerTitle { get; init; }
     public string? Product { get; init; }

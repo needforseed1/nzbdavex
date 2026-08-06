@@ -1,10 +1,10 @@
 namespace NzbWebDAV.Services;
 
 /// <summary>
-/// When a wait is large enough to be a plausible playback risk. Shared by the
-/// Warning log level and the playback page's source-health status so the two
-/// surfaces use the same threshold without claiming the player definitely
-/// buffered.
+/// Thresholds for actionable source pressure. Request logs use counts and the
+/// worst wait because an in-flight request has no final duration. Completed
+/// playback history can be more selective by comparing non-overlapping wait
+/// time with the duration of the activity.
 ///
 /// Only the wait thresholds are shared; the two surfaces do not agree on
 /// everything, by design. The page answers "did the viewer suffer", so
@@ -33,9 +33,28 @@ public static class PlaybackIssueThresholds
 
     public const int WaitMinMs = 3_000;
 
+    /// <summary>
+    /// Completed history distinguishes a source delay from a plausible playback
+    /// interruption. A count alone is deliberately insufficient: three waits in
+    /// thirty seconds and three waits in a two-hour film are not equivalent.
+    /// </summary>
+    public const int PlaybackRiskMinContinuousWaitMs = 10_000;
+    public const int PlaybackRiskMinWallWaitMs = 3_000;
+    public const int PlaybackRiskMinWaitPercent = 10;
+
     public static bool StallsMatter(int count, long maxMs) =>
         count >= StallMinCount || maxMs >= StallMinMs;
 
     public static bool WaitsMatter(int count, long maxMs) =>
         count >= WaitMinCount || maxMs >= WaitMinMs;
+
+    public static bool PlaybackRisk(
+        long activeMs,
+        long upstreamWaitWallMs,
+        long maxUpstreamWaitWallMs) =>
+        maxUpstreamWaitWallMs >= PlaybackRiskMinContinuousWaitMs
+        || (activeMs > 0
+            && upstreamWaitWallMs >= PlaybackRiskMinWallWaitMs
+            && upstreamWaitWallMs * 100
+            >= activeMs * PlaybackRiskMinWaitPercent);
 }

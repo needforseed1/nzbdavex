@@ -1,5 +1,6 @@
 using NzbWebDAV.Clients.Plex;
 using NzbWebDAV.Config;
+using NzbWebDAV.Services;
 using NzbWebDAV.Services.Plex;
 
 namespace NzbWebDAV.Tests.Services;
@@ -166,6 +167,140 @@ public class PlexReadAttributionMonitorTests
         Assert.NotNull(attribution);
         Assert.Equal("paused", attribution.Purpose);
         Assert.Equal("exact-path", attribution.Confidence);
+    }
+
+    [Fact]
+    public void ExplicitBufferingDuringAnUpstreamWaitIsRetainedAsCompactImpact()
+    {
+        var davItemId = Guid.NewGuid();
+        using var client = new PlexClient();
+        var monitor = CreateMonitor(client);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var session = new PlexSessionObservation
+        {
+            SessionKey = "session-key",
+            SessionId = "session-id",
+            State = "playing",
+            ViewOffsetMs = 10_000,
+            MediaPartPath = $"/mount/.ids/{davItemId}",
+        };
+        monitor.RecordSessions([session], new PlexServerInfo("Plex", "1", "server"), now);
+        monitor.RecordSessions(
+            [session with { State = "buffering" }],
+            new PlexServerInfo("Plex", "1", "server"),
+            now + 2_000);
+        monitor.RecordSessions(
+            [session with { ViewOffsetMs = 12_000 }],
+            new PlexServerInfo("Plex", "1", "server"),
+            now + 4_000);
+
+        var attribution = monitor.Match(
+            now,
+            now + 4_000,
+            davItemId,
+            "rclone/v1.70",
+            [new PlaybackWaitWindow(now + 1_000, now + 3_000)]);
+
+        Assert.NotNull(attribution);
+        Assert.Equal("playback", attribution.Purpose);
+        Assert.Equal("buffering-observed", attribution.PlaybackImpact);
+    }
+
+    [Fact]
+    public void StartupPrebufferingDoesNotClaimPlaybackWasInterrupted()
+    {
+        var davItemId = Guid.NewGuid();
+        using var client = new PlexClient();
+        var monitor = CreateMonitor(client);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var session = new PlexSessionObservation
+        {
+            SessionKey = "session-key",
+            SessionId = "session-id",
+            State = "buffering",
+            ViewOffsetMs = 0,
+            MediaPartPath = $"/mount/.ids/{davItemId}",
+        };
+        monitor.RecordSessions([session], new PlexServerInfo("Plex", "1", "server"), now);
+        monitor.RecordSessions(
+            [session with { State = "playing", ViewOffsetMs = 1_000 }],
+            new PlexServerInfo("Plex", "1", "server"),
+            now + 2_000);
+
+        var attribution = monitor.Match(
+            now,
+            now + 2_000,
+            davItemId,
+            "rclone/v1.70",
+            [new PlaybackWaitWindow(now, now + 2_000)]);
+
+        Assert.NotNull(attribution);
+        Assert.Null(attribution.PlaybackImpact);
+    }
+
+    [Fact]
+    public void PlayingProgressThatStopsDuringAWaitAndResumesIsRetained()
+    {
+        var davItemId = Guid.NewGuid();
+        using var client = new PlexClient();
+        var monitor = CreateMonitor(client);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var session = new PlexSessionObservation
+        {
+            SessionKey = "session-key",
+            SessionId = "session-id",
+            State = "playing",
+            ViewOffsetMs = 20_000,
+            MediaPartPath = $"/mount/.ids/{davItemId}",
+        };
+        for (var index = 0; index <= 3; index++)
+            monitor.RecordSessions(
+                [session],
+                new PlexServerInfo("Plex", "1", "server"),
+                now + index * 2_000);
+        monitor.RecordSessions(
+            [session with { ViewOffsetMs = 23_000 }],
+            new PlexServerInfo("Plex", "1", "server"),
+            now + 8_000);
+
+        var attribution = monitor.Match(
+            now,
+            now + 8_000,
+            davItemId,
+            "rclone/v1.70",
+            [new PlaybackWaitWindow(now, now + 4_000)]);
+
+        Assert.Equal("progress-stalled", attribution?.PlaybackImpact);
+    }
+
+    [Fact]
+    public void ProgressAcrossEveryMaterialWaitIsRetainedAsContinued()
+    {
+        var davItemId = Guid.NewGuid();
+        using var client = new PlexClient();
+        var monitor = CreateMonitor(client);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var session = new PlexSessionObservation
+        {
+            SessionKey = "session-key",
+            SessionId = "session-id",
+            State = "playing",
+            MediaPartPath = $"/mount/.ids/{davItemId}",
+        };
+        for (var index = 0; index <= 4; index++)
+            monitor.RecordSessions(
+                [session with { ViewOffsetMs = index * 2_000 }],
+                new PlexServerInfo("Plex", "1", "server"),
+                now + index * 2_000);
+
+        var attribution = monitor.Match(
+            now,
+            now + 8_000,
+            davItemId,
+            "rclone/v1.70",
+            [new PlaybackWaitWindow(now + 2_000, now + 6_000)]);
+
+        Assert.Equal("progress-continued", attribution?.PlaybackImpact);
     }
 
     [Fact]

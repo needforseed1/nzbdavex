@@ -75,11 +75,15 @@ public static class PlaybackHistory
     public static class Issue
     {
         /// <summary>
-        /// The stream waited on usenet. Deliberately *not* raised for downstream
-        /// waits: those are the client refusing more data because its buffer is
-        /// full, which is what healthy playback looks like, not buffering.
+        /// Usenet stopped delivery long enough to pose a plausible playback
+        /// risk. Deliberately *not* raised for downstream waits: those are the
+        /// client refusing more data because its buffer is full, which is what
+        /// healthy playback looks like, not buffering.
         /// </summary>
         public const string Stalled = "stalled";
+
+        /// <summary>Plex reported buffering or stopped progress during a source wait.</summary>
+        public const string Buffering = "buffering";
 
         /// <summary>
         /// Articles that could not be fetched were served as zeros. The only
@@ -112,6 +116,7 @@ public static class PlaybackHistory
     private static readonly string[] PlaybackImpactIssues =
     [
         Issue.Corrupted,
+        Issue.Buffering,
         Issue.Stalled,
         Issue.TimedOut,
         Issue.Errored,
@@ -126,6 +131,8 @@ public static class PlaybackHistory
             UpstreamStalls = row.UpstreamStalls,
             MaxUpstreamStallMs = row.MaxUpstreamStallMs,
             TotalUpstreamStallMs = row.TotalUpstreamStallMs,
+            UpstreamWaitWallMs = row.UpstreamWaitWallMs,
+            MaxUpstreamWaitWallMs = row.MaxUpstreamWaitWallMs,
             HeadOfLineStalls = row.HeadOfLineStalls,
             TotalHeadOfLineStallMs = row.TotalHeadOfLineStallMs,
             DownstreamStalls = row.DownstreamStalls,
@@ -179,7 +186,13 @@ public static class PlaybackHistory
             PlexRatingKey = row.PlexRatingKey,
             PlexDetail = row.PlexDetail,
             PlexIsTranscode = row.PlexIsTranscode,
-            Issues = DescribeIssues(counters, endReason, providers),
+            PlexPlaybackImpact = row.PlexPlaybackImpact,
+            Issues = DescribeIssues(
+                counters,
+                endReason,
+                providers,
+                row.DurationMs,
+                row.PlexPlaybackImpact),
             Counters = counters,
             Providers = providers,
         };
@@ -240,7 +253,9 @@ public static class PlaybackHistory
     public static List<string> DescribeIssues(
         CountersDto counters,
         string endReason,
-        IReadOnlyList<ProviderDto> providers)
+        IReadOnlyList<ProviderDto> providers,
+        long activeMs = 0,
+        string? plexPlaybackImpact = null)
     {
         var issues = new List<string>();
         var pressure = PlaybackOutcomeClassifier.ClassifySourcePressure(
@@ -254,7 +269,31 @@ public static class PlaybackHistory
         // stream being slow, this one is about it being wrong.
         if (counters.ZeroFilledSegments > 0) issues.Add(Issue.Corrupted);
         if (counters.BodyStallRecoveries > 0) issues.Add(Issue.BodyStalled);
-        if (pressure.Stalled) issues.Add(Issue.Stalled);
+        var legacyWaitWallMs = counters.UpstreamStalls > 0
+            ? Math.Min(Math.Max(0, activeMs), counters.TotalUpstreamStallMs)
+            : 0;
+        var waitWallMs = counters.UpstreamWaitWallMs > 0
+            ? counters.UpstreamWaitWallMs
+            : legacyWaitWallMs;
+        var maxWaitWallMs = counters.MaxUpstreamWaitWallMs > 0
+            ? counters.MaxUpstreamWaitWallMs
+            : counters.MaxUpstreamStallMs;
+        var hasNoRecordedWaitDuration = counters.UpstreamStalls > 0
+                                        && counters.TotalUpstreamStallMs <= 0
+                                        && counters.UpstreamWaitWallMs <= 0;
+        if (plexPlaybackImpact is "buffering-observed" or "progress-stalled")
+            issues.Add(Issue.Buffering);
+        else if (plexPlaybackImpact != "progress-continued"
+                 && (PlaybackIssueThresholds.PlaybackRisk(
+                         activeMs,
+                         waitWallMs,
+                         maxWaitWallMs)
+                     // Rows written before wait durations were recorded can
+                     // only use the former count/maximum rule. Do not erase a
+                     // warning merely because the migration defaulted their
+                     // new wall-clock columns to zero.
+                     || (hasNoRecordedWaitDuration && pressure.Stalled)))
+            issues.Add(Issue.Stalled);
         if (counters.FallbackRescues > 0 || counters.FailoverSaves > 0 ||
             providers.Any(p => p.Rescued > 0))
             issues.Add(Issue.Rescued);
@@ -378,7 +417,17 @@ public static class PlaybackHistory
         var content = resolveContent?.Invoke(last) ?? resolveContent?.Invoke(first);
         var counters = MergeCounters(group.Select(x => x.Counters));
         var providers = MergeProviders(group.SelectMany(x => x.Providers));
-        var issues = DescribeIssues(counters, last.EndReason, providers);
+        var plexPlaybackImpact = group
+            .Select(session => session.PlexPlaybackImpact)
+            .Where(impact => !string.IsNullOrWhiteSpace(impact))
+            .OrderBy(PlaybackImpactPriority)
+            .FirstOrDefault();
+        var issues = DescribeIssues(
+            counters,
+            last.EndReason,
+            providers,
+            watchedMs,
+            plexPlaybackImpact);
         var isProbe = IsProbe(bytesServed, last.EndReason, issues);
         var isRcloneActivity = IsRcloneUserAgent(first.ClientUserAgent);
         var isSymlinkResolution = isRcloneActivity && group.All(session =>
@@ -465,7 +514,12 @@ public static class PlaybackHistory
             PlexRatingKey = plex?.PlexRatingKey,
             PlexDetail = plex?.PlexDetail,
             PlexIsTranscode = plex?.PlexIsTranscode,
-            IsPlexPlayback = plex?.PlexPurpose == "playback"
+            PlexPlaybackImpact = plexPlaybackImpact,
+            // Reading a .rclonelink descriptor is proven mount metadata. A
+            // playing Plex session that merely happened at the same time must
+            // not promote those few bytes into Playback.
+            IsPlexPlayback = !isSymlinkResolution
+                             && plex?.PlexPurpose == "playback"
                              && plex.PlexConfidence is "exact-path" or "time-only",
             Issues = issues,
             Counters = counters,
@@ -817,6 +871,10 @@ public static class PlaybackHistory
             UpstreamStalls = all.Sum(x => x.UpstreamStalls),
             MaxUpstreamStallMs = all.Count == 0 ? 0 : all.Max(x => x.MaxUpstreamStallMs),
             TotalUpstreamStallMs = all.Sum(x => x.TotalUpstreamStallMs),
+            UpstreamWaitWallMs = all.Sum(x => x.UpstreamWaitWallMs),
+            MaxUpstreamWaitWallMs = all.Count == 0
+                ? 0
+                : all.Max(x => x.MaxUpstreamWaitWallMs),
             HeadOfLineStalls = all.Sum(x => x.HeadOfLineStalls),
             TotalHeadOfLineStallMs = all.Sum(x => x.TotalHeadOfLineStallMs),
             DownstreamStalls = all.Sum(x => x.DownstreamStalls),
@@ -837,6 +895,14 @@ public static class PlaybackHistory
             BodyStallRecoveries = all.Sum(x => x.BodyStallRecoveries),
         };
     }
+
+    private static int PlaybackImpactPriority(string? impact) => impact switch
+    {
+        "buffering-observed" => 0,
+        "progress-stalled" => 1,
+        "progress-continued" => 2,
+        _ => 3,
+    };
 
     private static List<ProviderDto> MergeProviders(IEnumerable<ProviderDto> providers) => providers
         .GroupBy(x => x.ProviderId, StringComparer.OrdinalIgnoreCase)

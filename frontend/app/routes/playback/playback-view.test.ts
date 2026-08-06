@@ -17,6 +17,7 @@ import {
     playVerdictTitle,
     plexAttributionBadge,
     plexAttributionTitle,
+    playsForFilter,
     playsEqual,
     providerShares,
     shortHost,
@@ -26,6 +27,24 @@ import {
     shouldShowNzbName,
     usedBackupProvider,
 } from "./playback-view";
+
+test("retained playback does not expand the recent activity categories", () => {
+    const recentMount = play({
+        key: "recent-mount",
+        isRcloneActivity: true,
+        isReliablePlayback: false,
+    });
+    const olderPlayback = play({ key: "older-playback" });
+
+    assert.deepEqual(
+        playsForFilter([recentMount], [olderPlayback], "playback")
+            .map(item => item.key),
+        ["older-playback"]);
+    assert.deepEqual(
+        playsForFilter([recentMount], [olderPlayback], "mount")
+            .map(item => item.key),
+        ["recent-mount"]);
+});
 
 test("time-only playing sessions are probable while background jobs remain possible", () => {
     assert.equal(
@@ -107,6 +126,8 @@ const emptyCounters: PlaybackCounters = {
     upstreamStalls: 0,
     maxUpstreamStallMs: 0,
     totalUpstreamStallMs: 0,
+    upstreamWaitWallMs: 0,
+    maxUpstreamWaitWallMs: 0,
     headOfLineStalls: 0,
     totalHeadOfLineStallMs: 0,
     downstreamStalls: 0,
@@ -210,7 +231,14 @@ test("a play that served zeros says so instead of reading as clean", () => {
     const damaged = play({ issues: ["corrupted"] });
     assert.equal(playVerdictLabel(damaged), "Damaged");
     assert.equal(playVerdictLabel(play()), "Source OK");
-    assert.equal(playVerdictLabel(play({ issues: ["stalled"] })), "Usenet wait");
+    assert.equal(playVerdictLabel(play({ issues: ["stalled"] })), "Playback risk");
+    assert.equal(playVerdictLabel(play({
+        counters: { ...emptyCounters, upstreamStalls: 25 },
+    })), "Source delays");
+    assert.equal(playVerdictLabel(play({
+        issues: ["buffering"],
+        plexPlaybackImpact: "buffering-observed",
+    })), "Buffering observed");
     assert.equal(
         playVerdictLabel(play({ endReason: "aborted", issues: ["aborted"] })),
         "Source OK");
@@ -393,15 +421,28 @@ test("NZB name is shown only when it adds information beyond the file title", ()
     assert.equal(shouldShowNzbName("movie.mkv", null), false);
 });
 
-test("client pacing is never labelled as buffering", () => {
+test("source risk and Plex buffering use distinct verdicts", () => {
     // The counter exists for diagnostics, but a healthy stream that raced ahead
     // and got throttled by the client must not be badged as a problem.
     assert.equal(hasPlaybackImpact([]), false);
     const badge = describeIssues(["stalled"])[0];
-    assert.equal(badge.label, "Usenet wait");
-    assert.match(badge.title, /three waits/);
-    assert.match(badge.title, /preparation and health-check time are not included/i);
-    assert.match(playVerdictTitle(play({ issues: ["stalled"] })), /does not prove/);
+    assert.equal(badge.label, "Playback risk");
+    assert.match(badge.title, /10 seconds/);
+    assert.match(badge.title, /10%/);
+    assert.match(playVerdictTitle(play({ issues: ["stalled"] })), /did not confirm/i);
+
+    const delayed = play({
+        counters: { ...emptyCounters, upstreamStalls: 25 },
+    });
+    assert.equal(playVerdict(delayed), "info");
+    assert.match(playVerdictTitle(delayed), /player may have absorbed/i);
+
+    const buffered = play({
+        issues: ["buffering"],
+        plexPlaybackImpact: "buffering-observed",
+    });
+    assert.equal(playVerdict(buffered), "warn");
+    assert.match(playVerdictTitle(buffered), /explicitly reported buffering/i);
 });
 
 test("retrieval summary reports rescues and cache ratio", () => {

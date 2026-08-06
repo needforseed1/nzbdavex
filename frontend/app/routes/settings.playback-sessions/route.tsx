@@ -7,10 +7,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     // One route serves both the polling list and the lazily-expanded session
     // detail, so the page never needs a second api-key-bearing entry point.
     if (id) return { detail: await backendClient.getPlaybackSessionDetail(id) };
-    const limit = Number(url.searchParams.get("limit") ?? "500");
+    const filter = url.searchParams.get("filter") ?? undefined;
+    const deep = url.searchParams.get("deep") === "true";
+    const limit = Number(url.searchParams.get("limit") ?? (deep ? "200" : "500"));
     // Returned flat, not wrapped: the page reads plays, sampledSessions and
     // truncated off the top level of this response.
-    return await backendClient.getPlaybackSessions(limit);
+    return await backendClient.getPlaybackSessions(limit, { filter, deep });
 }
 
 export async function action({ request }: Route.ActionArgs) {

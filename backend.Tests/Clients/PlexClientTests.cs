@@ -45,6 +45,7 @@ public class PlexClientTests
         Assert.Equal("42", session.RatingKey);
         Assert.Equal("/media/Movies/Example.mkv", session.MediaPartPath);
         Assert.Equal("paused", session.State);
+        Assert.Equal(844_000, session.ViewOffsetMs);
         Assert.Equal("Plex Web", session.Product);
         Assert.True(session.IsTranscode);
         Assert.Equal("activity-id", activity.Key);
