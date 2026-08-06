@@ -62,7 +62,7 @@ export function PlaybackHistory({
         <div className={styles.group}>
             <div className={styles.groupHeader}>
                 <div className={styles.groupHeading}>
-                    <h2 className={styles.title}>Playback &amp; file activity</h2>
+                    <h2 className={styles.title}>Read activity</h2>
                     <div className={styles.subtitle}>
                         Mount labels explain symlink and import reads; Plex labels identify
                         correlated Plex activity.

@@ -57,12 +57,12 @@ export function PlaybackCard({ play }: { play: PlaybackPlay }) {
             <div
                 className={`${styles.playRow} ${styles.playRowClickable} ${open ? styles.playRowOpen : ""}`}
                 onClick={toggle}>
-                <span
-                    className={`${styles.verdictPill} ${styles[`verdict-${verdict}`]}`}
-                    title={playVerdictTitle(play)}>
-                    {verdictLabel}
-                </span>
                 <div className={styles.playIdent}>
+                    <span
+                        className={`${styles.verdictPill} ${styles[`verdict-${verdict}`]}`}
+                        title={playVerdictTitle(play)}>
+                        {verdictLabel}
+                    </span>
                     <div className={styles.playTitle} title={play.nzbName ?? play.title}>{play.title}</div>
                     <div className={styles.playMeta}>
                         {mountLabel && (

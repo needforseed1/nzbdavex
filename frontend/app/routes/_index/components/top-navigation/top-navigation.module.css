@@ -38,6 +38,49 @@
     border-radius: 8px;
 }
 
+.repo-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: inherit;
+    text-decoration: none;
+    transition: color 120ms ease;
+}
+
+@media not (pointer: coarse), (min-width: 900px) {
+    .github-link:hover {
+        color: var(--text-primary);
+    }
+}
+
+.github-link:active {
+    color: var(--text-faint);
+}
+
+.github-icon {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2371717a' d='M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5c.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34c-.46-1.16-1.11-1.47-1.11-1.47c-.91-.62.07-.6.07-.6c1 .07 1.53 1.03 1.53 1.03c.87 1.52 2.34 1.07 2.91.83c.09-.65.35-1.09.63-1.34c-2.22-.25-4.55-1.11-4.55-4.92c0-1.11.38-2 1.03-2.71c-.1-.25-.45-1.29.1-2.64c0 0 .84-.27 2.75 1.02c.79-.22 1.65-.33 2.5-.33s1.71.11 2.5.33c1.91-1.29 2.75-1.02 2.75-1.02c.55 1.35.2 2.39.1 2.64c.65.71 1.03 1.6 1.03 2.71c0 3.82-2.34 4.66-4.57 4.91c.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2'/%3E%3C/svg%3E");
+}
+
+.version {
+    font-variant-numeric: tabular-nums;
+}
+
 @media (min-width: 900px) {
     .title-container {
         display: none;
@@ -48,6 +91,16 @@
 @media (max-width: calc(899.999px)) {
     .container {
         justify-content: space-between;
+    }
+}
+
+@media (max-width: 420px) {
+    .repo-meta {
+        gap: 10px;
+    }
+
+    .github-label {
+        display: none;
     }
 }
 

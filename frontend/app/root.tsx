@@ -84,10 +84,10 @@ export default function App({ loaderData }: Route.ComponentProps) {
     return (
       <PageLayout
         topNavComponent={TopNavigation}
+        version={version}
         bodyChild={showLoading ? <Loading /> : <Outlet />}
         leftNavChild={
           <LeftNavigation
-            version={version}
             isFrontendAuthDisabled={isFrontendAuthDisabled}
             isWatchdogEnabled={isWatchdogEnabled} />
         } />

@@ -6,12 +6,11 @@ import { LiveUsenetConnections } from "../live-usenet-connections/live-usenet-co
 import { LiveReads } from "../live-reads/live-reads";
 
 export type LeftNavigationProps = {
-    version?: string,
     isFrontendAuthDisabled?: boolean,
     isWatchdogEnabled?: boolean,
 }
 
-export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnabled }: LeftNavigationProps) {
+export function LeftNavigation({ isFrontendAuthDisabled, isWatchdogEnabled }: LeftNavigationProps) {
     return (
         <div className={styles.container}>
             <Link to="/" className={styles.brand}>
@@ -34,7 +33,7 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
             )}
             <Item target="/playback">
                 <div className={styles["playback-icon"]} />
-                <div className={styles.title}>Playback</div>
+                <div className={styles.title}>Activity</div>
             </Item>
             <Item target="/watchtower">
                 <div className={styles["watchtower-icon"]} />
@@ -63,23 +62,8 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
             <LiveUsenetConnections />
             <LiveReads />
 
-            <div className={styles.footer}>
-                <div className={styles["footer-item"]}>
-                    <Link to="https://github.com/qooode/nzbdavex" className={styles["github-link"]}>
-                        github
-                    </Link>
-                    <div className={styles["github-icon"]} />
-                </div>
-                <div className={styles["footer-item"]}>
-                    <Link to="https://github.com/qooode/nzbdavex/blob/main/CHANGELOG.md" className={styles["github-link"]}>
-                        changelog
-                    </Link>
-                </div>
-                <div className={styles["footer-item"]}>
-                    version: {version || 'unknown'}
-                </div>
-                {!isFrontendAuthDisabled && <>
-                    <hr />
+            {!isFrontendAuthDisabled && (
+                <div className={styles.footer}>
                     <Form method="post" action="/logout">
                         <input name="confirm" value="true" type="hidden" />
                         <button className={styles.unstyled + ' ' + styles.item} type="submit">
@@ -87,8 +71,8 @@ export function LeftNavigation({ version, isFrontendAuthDisabled, isWatchdogEnab
                             <div className={styles.title}>Logout</div>
                         </button>
                     </Form>
-                </>}
-            </div>
+                </div>
+            )}
         </div>
     );
 }

@@ -4,6 +4,7 @@ import { useNavigation } from "react-router";
 
 export type PageLayoutProps = {
     topNavComponent: (props: RequiredTopNavProps) => React.ReactNode,
+    version?: string,
     leftNavChild: React.ReactNode,
     bodyChild: React.ReactNode,
 }
@@ -11,6 +12,7 @@ export type PageLayoutProps = {
 export type RequiredTopNavProps = {
     isHamburgerMenuOpen: boolean,
     onHamburgerMenuClick: () => void,
+    version?: string,
 }
 
 export function PageLayout(props: PageLayoutProps) {
@@ -41,7 +43,8 @@ export function PageLayout(props: PageLayoutProps) {
                 <div className={styles["top-navigation"]}>
                     <props.topNavComponent
                         isHamburgerMenuOpen={isHamburgerMenuOpen}
-                        onHamburgerMenuClick={onHamburgerMenuClick} />
+                        onHamburgerMenuClick={onHamburgerMenuClick}
+                        version={props.version} />
                 </div>
                 <div className={styles["page"]}>
                     <div className={styles["left-navigation"]}>

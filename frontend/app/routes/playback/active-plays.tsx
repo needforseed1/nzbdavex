@@ -7,6 +7,7 @@ import { PlaybackStat } from "./playback-stat";
 import { formatBytes, formatMs, formatPct, formatRate, formatWatchTime } from "./playback-view";
 
 const activeReadsTopic = { ar: "state" };
+const sourceWaitWarningDelayMs = 2_000;
 
 /**
  * A read that is happening right now. Sent by the same broadcaster the
@@ -107,18 +108,34 @@ function ActiveReadCard({ read }: { read: ActiveRead }) {
     // permanently looking unhealthy.
     const damaged = read.zeroFilledSegments > 0;
     const waiting = read.upstreamWaitsInProgress > 0;
+    const [showSourceWaitWarning, setShowSourceWaitWarning] = useState(false);
     const recovered = read.bodyStallRecoveries > 0;
+
+    useEffect(() => {
+        if (!waiting) {
+            setShowSourceWaitWarning(false);
+            return;
+        }
+
+        // Active wait telemetry begins after one second. Delay the warning by
+        // another two seconds so short, routine waits remain visible in the
+        // detail without making the live stream look unhealthy.
+        const timer = window.setTimeout(
+            () => setShowSourceWaitWarning(true),
+            sourceWaitWarningDelayMs);
+        return () => window.clearTimeout(timer);
+    }, [waiting]);
 
     return (
         <div className={cardStyles.playCard}>
             <div className={cardStyles.playRow}>
-                <span className={`${cardStyles.verdictPill} ${
-                    damaged ? cardStyles["verdict-bad"]
-                        : waiting ? cardStyles["verdict-warn"]
-                        : cardStyles["verdict-info"]}`}>
-                    {damaged ? "Damaged" : waiting ? "Waiting on source" : "Streaming"}
-                </span>
                 <div className={cardStyles.playIdent}>
+                    <span className={`${cardStyles.verdictPill} ${
+                        damaged ? cardStyles["verdict-bad"]
+                            : showSourceWaitWarning ? cardStyles["verdict-warn"]
+                            : cardStyles["verdict-info"]}`}>
+                        {damaged ? "Damaged" : showSourceWaitWarning ? "Waiting on source" : "Streaming"}
+                    </span>
                     <div className={cardStyles.playTitle} title={read.path}>{read.fileName}</div>
                     <div className={cardStyles.playMeta}>
                         {providers && <span className={cardStyles.metaText}>{providers}</span>}

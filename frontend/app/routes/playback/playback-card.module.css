@@ -37,21 +37,15 @@
 .playIdent {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 5px;
     min-width: 0;
-    flex: 1 1 280px;
+    flex: 1 0 100%;
 }
 
 @media not (min-width: 720px) {
     .playRow {
         gap: 10px 12px;
         padding: 12px 12px;
-    }
-
-    /* Small enough a basis that the verdict pill keeps the name company on the
-       first line instead of sitting alone on one of its own. */
-    .playIdent {
-        flex: 1 1 140px;
     }
 
     /* The stat track owns a full row of its own down here, so the toggle lands
@@ -77,6 +71,7 @@
     line-clamp: 2;
     overflow: hidden;
     overflow-wrap: anywhere;
+    padding-left: 9px;
 }
 
 .playMeta {
@@ -97,7 +92,7 @@
 }
 
 .metaBadge {
-    padding: 2px 7px;
+    padding: 2px 9px;
     border-radius: 999px;
     font-size: 11px;
     color: var(--text-muted);
@@ -117,6 +112,7 @@
 }
 
 .verdictPill {
+    align-self: flex-start;
     flex: 0 0 auto;
     padding: 3px 9px;
     border-radius: 999px;
@@ -156,6 +152,7 @@
     gap: 2px 20px;
     flex: 0 0 auto;
     width: min(100%, 540px);
+    padding-left: 9px;
 }
 
 @media not (min-width: 720px) {
