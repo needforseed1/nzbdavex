@@ -43,8 +43,14 @@ public class LazyRarProcessor(
 
     public override async Task<BaseProcessor.Result?> ProcessAsync()
     {
-        var sorted = SortByFilename(fileInfos);
-        if (sorted is null || sorted.Count == 0) return null;
+        var sorted = SortByFilename(fileInfos, out var filenameOrderFailure);
+        if (sorted is null || sorted.Count == 0)
+        {
+            Log.Information(
+                "LazyRarProcessor: filename ordering unavailable ({Reason}), falling back to eager",
+                filenameOrderFailure ?? "no RAR volumes");
+            return null;
+        }
 
         var firstInfo = sorted[0];
         var firstFileSize = firstInfo.FileSize
@@ -197,11 +203,31 @@ public class LazyRarProcessor(
     // Returns null if filenames don't all match the same RAR naming
     // convention (mixed schemes are too unusual to support lazily; eager
     // path handles them via the existing header-derived part numbers).
-    private static List<GetFileInfosStep.FileInfo>? SortByFilename(List<GetFileInfosStep.FileInfo> infos)
+    private static List<GetFileInfosStep.FileInfo>? SortByFilename(
+        List<GetFileInfosStep.FileInfo> infos,
+        out string? failureReason)
     {
         var ranks = infos.Select(x => (Info: x, Part: ParsePartNumberFromFilename(x.FileName))).ToList();
-        if (ranks.Any(r => r.Part is null)) return null;
-        if (ranks.Select(r => r.Part!.Value).Distinct().Count() != ranks.Count) return null;
+        var unknown = ranks.Where(r => r.Part is null).ToList();
+        if (unknown.Count > 0)
+        {
+            failureReason = $"{unknown.Count} filename(s) do not match a supported RAR volume pattern; " +
+                            $"examples: {string.Join(", ", unknown.Take(3).Select(x => x.Info.FileName))}";
+            return null;
+        }
+
+        var duplicates = ranks
+            .GroupBy(r => r.Part!.Value)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToList();
+        if (duplicates.Count > 0)
+        {
+            failureReason = $"duplicate inferred volume number(s): {string.Join(", ", duplicates.Take(5))}";
+            return null;
+        }
+
+        failureReason = null;
         return ranks.OrderBy(r => r.Part!.Value).Select(r => r.Info).ToList();
     }
 

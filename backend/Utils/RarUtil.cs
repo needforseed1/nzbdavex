@@ -1,6 +1,7 @@
 ﻿using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Streams;
+using SharpCompress.Common;
 using SharpCompress.Common.Rar.Headers;
 using SharpCompress.IO;
 using SharpCompress.Readers;
@@ -54,9 +55,13 @@ public static class RarUtil
             }
             return null;
         }
-        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException missingArticleException))
+        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? missingArticleException))
         {
-            throw missingArticleException;
+            throw missingArticleException!;
+        }
+        catch (InvalidFormatException e)
+        {
+            throw AddStreamPosition(e, stream);
         }
     }
 
@@ -97,9 +102,13 @@ public static class RarUtil
             }
             return headers;
         }
-        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException missingArticleException))
+        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? missingArticleException))
         {
-            throw missingArticleException;
+            throw missingArticleException!;
+        }
+        catch (InvalidFormatException e)
+        {
+            throw AddStreamPosition(e, stream);
         }
     }
 
@@ -150,9 +159,26 @@ public static class RarUtil
 
             return headers;
         }
-        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException missingArticleException))
+        catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException? missingArticleException))
         {
-            throw missingArticleException;
+            throw missingArticleException!;
+        }
+        catch (InvalidFormatException e)
+        {
+            throw AddStreamPosition(e, stream);
+        }
+    }
+
+    private static InvalidFormatException AddStreamPosition(InvalidFormatException exception, Stream stream)
+    {
+        try
+        {
+            return new InvalidFormatException(
+                $"{exception.Message} (byte offset {stream.Position}).", exception);
+        }
+        catch (NotSupportedException)
+        {
+            return exception;
         }
     }
 }

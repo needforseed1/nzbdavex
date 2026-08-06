@@ -1,11 +1,13 @@
 ﻿using System.Text.RegularExpressions;
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Queue.DeobfuscationSteps._3.GetFileInfos;
 using NzbWebDAV.Streams;
 using NzbWebDAV.Utils;
+using SharpCompress.Common;
 using SharpCompress.Common.Rar.Headers;
 
 namespace NzbWebDAV.Queue.FileProcessors;
@@ -19,7 +21,18 @@ public class RarProcessor(
 {
     public override async Task<BaseProcessor.Result?> ProcessAsync()
     {
-        var (headers, partSize) = await GetRequiredHeadersAsync().ConfigureAwait(false);
+        List<IRarHeader> headers;
+        long partSize;
+        try
+        {
+            (headers, partSize) = await GetRequiredHeadersAsync().ConfigureAwait(false);
+        }
+        catch (InvalidFormatException e)
+        {
+            throw new NonRetryableDownloadException(
+                $"Invalid RAR header in '{fileInfo.FileName}': {e.Message}", e);
+        }
+
         var archiveName = GetArchiveName();
         var partNumber = GetPartNumber(headers);
         return new Result()
@@ -48,7 +61,7 @@ public class RarProcessor(
     {
         if (fileInfo.First16KB is { Length: > 0 } firstBytes)
         {
-            await using var prefix = new MemoryStream(firstBytes, writable: false);
+            await using var prefix = new LongSeekablePrefixStream(firstBytes);
             var firstHeaders = await RarUtil.ReadHeadersUntilFirstFileAsync(prefix, password, ct)
                 .ConfigureAwait(false);
             var firstFileHeader = firstHeaders.FirstOrDefault(x => x.HeaderType == HeaderType.File);
@@ -90,7 +103,10 @@ public class RarProcessor(
         };
 
         if (partNumber.PartNumberFromHeader == null && partNumber.PartNumberFromFilename == null)
-            throw new Exception("Could not determine part number for RAR file.");
+            throw new NonRetryableDownloadException(
+                $"Could not determine RAR volume number for '{fileInfo.FileName}': " +
+                "the RAR header has no volume number and the filename does not match " +
+                ".partNN.rar, .rNN, or .rar.");
 
         return partNumber;
     }
@@ -111,7 +127,7 @@ public class RarProcessor(
         return null;
     }
 
-    private static int? GetPartNumberFromFilename(string filename)
+    internal static int? GetPartNumberFromFilename(string filename)
     {
         // handle the `.partXXX.rar` format
         var partMatch = Regex.Match(filename, @"\.part(\d+)\.rar$", RegexOptions.IgnoreCase);

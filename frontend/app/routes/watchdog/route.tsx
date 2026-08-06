@@ -193,7 +193,8 @@ function ClickCard({ group }: { group: ClickGroup }) {
             detailsAttempt.healthWaitDurationMs);
     const totalSummaryDurationMs = selectTotalSummaryTiming(
         detailsAttempt?.prepDurationMs,
-        healthSummary);
+        detailsAttempt?.healthDurationMs,
+        detailsAttempt?.healthWaitDurationMs);
     // Direct queue adds carry no indexer (recorded as a literal em dash), so the
     // "via <indexer>" clause and the Indexer column are pure noise for them.
     const detailsIndexer = knownIndexer(detailsAttempt?.indexerName);

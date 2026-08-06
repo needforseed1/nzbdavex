@@ -52,12 +52,8 @@ public static class GetFileInfosStep
         var subjectFileName = file.NzbFile.GetSubjectFileName();
         var headerFileName = file.Header?.FileName ?? "";
         var par2FileName = fileDesc?.FileName ?? "";
-        var filename = new List<(string? FileName, int Priority)>
-        {
-            (FileName: par2FileName, Priority: GetFilenamePriority(par2FileName, 3)),
-            (FileName: subjectFileName, Priority: GetFilenamePriority(subjectFileName, 2)),
-            (FileName: headerFileName, Priority: GetFilenamePriority(headerFileName, 1)),
-        }.Where(x => x.FileName is not null).MaxBy(x => x.Priority).FileName ?? "";
+        var isRar = file.HasRar4Magic() || file.HasRar5Magic();
+        var filename = SelectFilename(par2FileName, subjectFileName, headerFileName, isRar);
 
         return new FileInfo()
         {
@@ -66,8 +62,38 @@ public static class GetFileInfosStep
             First16KB = file.First16KB,
             ReleaseDate = file.ReleaseDate,
             FileSize = (long?)fileDesc?.FileLength,
-            IsRar = file.HasRar4Magic() || file.HasRar5Magic(),
+            IsRar = isRar,
         };
+    }
+
+    internal static string SelectFilename(
+        string? par2FileName,
+        string? subjectFileName,
+        string? headerFileName,
+        bool isRar)
+    {
+        var candidates = new List<(string? FileName, int Priority)>
+        {
+            (FileName: par2FileName, Priority: GetFilenamePriority(par2FileName, 3)),
+            (FileName: subjectFileName, Priority: GetFilenamePriority(subjectFileName, 2)),
+            (FileName: headerFileName, Priority: GetFilenamePriority(headerFileName, 1)),
+        }.Where(x => x.FileName is not null).ToList();
+
+        // The first bytes are stronger evidence than an NZB subject. Some
+        // indexers label every posted file with the final MKV name even though
+        // the yEnc/PAR2 filename contains the real RAR volume name. Retaining
+        // that misleading subject leaves the RAR processor with no part number.
+        // When the payload is definitively RAR, prefer any candidate that can
+        // identify a RAR volume before applying the normal priorities.
+        if (isRar)
+        {
+            var rarCandidates = candidates
+                .Where(x => FilenameUtil.IsRarFile(x.FileName))
+                .ToList();
+            if (rarCandidates.Count > 0) candidates = rarCandidates;
+        }
+
+        return candidates.MaxBy(x => x.Priority).FileName ?? "";
     }
 
     private static int GetFilenamePriority(string? filename, int startingPriority)
