@@ -13,7 +13,7 @@ public static class SettingsRegistry
       "usenet.providers":"","usenet.max-download-connections":"15","usenet.playback-reserved-connections":"",
       "usenet.max-queue-connections":"","usenet.warm-validation-concurrency":"",
       "usenet.ready-connections.primary":"5","usenet.ready-connections.health":"10","usenet.streaming-priority":"80",
-      "usenet.article-buffer-size":"40","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
+      "usenet.read-ahead-mb":"64","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
       "usenet.segment-cache.max-gb":"10","usenet.pipelining.playback.enabled":"false","usenet.pipelining.health.enabled":"true",
       "usenet.pipelining.health.provider-qualification.enabled":"true",
       "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64",
@@ -55,6 +55,9 @@ public static class SettingsRegistry
         {
             ["api.strm-key"] = "",
             ["api.lazy-rar-parsing"] = "true",
+            // Accepted for older clients and used as a runtime fallback until
+            // the replacement MiB setting has been saved.
+            ["usenet.article-buffer-size"] = "40",
             ["watchtower.resolve-concurrency"] = "3",
             ["warden.max-source-entries"] = "2000000",
         };
@@ -69,6 +72,7 @@ public static class SettingsRegistry
         ["usenet.ready-connections.primary"] = (0, int.MaxValue),
         ["usenet.ready-connections.health"] = (0, int.MaxValue),
         ["usenet.streaming-priority"] = (0, 100),
+        ["usenet.read-ahead-mb"] = (1, 1024),
         ["usenet.article-buffer-size"] = (1, int.MaxValue),
         ["usenet.segment-cache.max-gb"] = (1, long.MaxValue / (1024L * 1024L * 1024L)),
         ["usenet.pipelining.depth"] = (1, UsenetProviderConfig.MaximumPipeliningDepth),

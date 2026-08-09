@@ -53,10 +53,13 @@ public class QueueItemProcessor(
     // They must never cycle through the 20-attempt PauseUntil loop.
     private const int MaxUnverifiableAttempts = 2;
     private static readonly TimeSpan UnverifiableRetryBackoff = TimeSpan.FromSeconds(60);
+    internal const int HealthQualificationProgress = -1;
+    private const int HealthAdmissionSegmentCount = 128;
     private const int HealthPrimeSegmentCount = 16;
     private static readonly TimeSpan DefaultHealthWarmupHandoffGrace = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan HealthWarmupCleanupGrace = TimeSpan.FromSeconds(1);
     private int? _prepDurationMs;
+    private int? _healthQualificationDurationMs;
     private int? _healthDurationMs;
     private int? _healthWaitDurationMs;
     private bool _preparationCompleted;
@@ -246,19 +249,89 @@ public class QueueItemProcessor(
         // https://github.com/nzbdav-dev/nzbdav/issues/101
         var articlesToPrecheck = nzbFiles.SelectMany(x => x.Segments).Select(x => x.MessageId);
         HealthCheckService.CheckCachedMissingSegmentIds(articlesToPrecheck);
-        var healthPrimeSegmentIds = shouldCheckHealth && configManager.IsHealthPipeliningEnabled()
-            ? SelectHealthPrimeSegmentIds(nzbFiles, HealthPrimeSegmentCount)
+        IReadOnlyList<string> healthAdmissionSegmentIds = shouldCheckHealth &&
+                                                            configManager.IsHealthPipeliningEnabled() &&
+                                                            configManager.IsHealthProviderQualificationEnabled()
+            ? SelectHealthPrimeSegmentIds(nzbFiles, HealthAdmissionSegmentCount)
             : [];
+        IReadOnlyList<string> healthPrimeSegmentIds = healthAdmissionSegmentIds.Count > 0
+            ? healthAdmissionSegmentIds.Take(HealthPrimeSegmentCount).ToArray()
+            : shouldCheckHealth && configManager.IsHealthPipeliningEnabled()
+                ? SelectHealthPrimeSegmentIds(nzbFiles, HealthPrimeSegmentCount)
+                : [];
         var healthPrimeDepth = Math.Min(
             HealthPrimeSegmentCount, configManager.GetHealthPipeliningDepth());
-        if (connectionWarmer is not null && healthPrimeSegmentIds.Count > 0)
-            healthConnectionWarmupTask = PrimeHealthConnectionsDuringPrepAsync(
-                connectionWarmer,
-                healthConnectionWarmupTask,
-                healthPrimeSegmentIds,
-                healthPrimeDepth,
-                queueItem,
-                healthConnectionWarmupCts.Token);
+        QueueHealthQualification? healthQualification = null;
+        if (connectionWarmer is not null && healthAdmissionSegmentIds.Count > 0)
+        {
+            // Qualification has no meaningful percentage: every provider probes
+            // the same bounded sample and completion order is intentionally
+            // dynamic. Publish a sentinel so the queue can show an indeterminate
+            // "Probing" phase instead of sitting at an unexplained 0%.
+            healthProgress.Report(HealthQualificationProgress);
+            var qualificationTimer = Stopwatch.StartNew();
+            try
+            {
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health-qualification start " +
+                    "sample={Sample} order=before-prep",
+                    queueItem.Id, queueItem.JobName, healthAdmissionSegmentIds.Count);
+                if (!healthConnectionWarmupTask.IsCompleted)
+                {
+                    var graceTask = Task.Delay(DefaultHealthWarmupHandoffGrace, ct);
+                    if (await Task.WhenAny(healthConnectionWarmupTask, graceTask).ConfigureAwait(false) !=
+                        healthConnectionWarmupTask)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        Log.Information(
+                            "queue-stage nzo={NzoId} job={JobName} " +
+                            "stage=health-qualification-warmup handoff=concurrent graceMs={GraceMs}",
+                            queueItem.Id, queueItem.JobName,
+                            DefaultHealthWarmupHandoffGrace.TotalMilliseconds);
+                    }
+                }
+
+                if (healthConnectionWarmupTask.IsCompleted)
+                    await healthConnectionWarmupTask.ConfigureAwait(false);
+
+                var healthPipelineDepth = configManager.GetHealthPipeliningDepth();
+                var healthPipelineLanes = Math.Min(
+                    configManager.GetHealthCheckConnections(),
+                    configManager.GetHealthPipeliningLanes());
+                healthQualification = await connectionWarmer.QualifyHealthCheckAsync(
+                        healthAdmissionSegmentIds,
+                        healthPipelineDepth,
+                        healthPipelineLanes,
+                        ct)
+                    .ConfigureAwait(false);
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=health-qualification done " +
+                    "sample={Sample} ms={ElapsedMs}",
+                    queueItem.Id, queueItem.JobName, healthAdmissionSegmentIds.Count,
+                    qualificationTimer.ElapsedMilliseconds);
+            }
+            finally
+            {
+                _healthQualificationDurationMs = ToDurationMs(qualificationTimer.ElapsedMilliseconds);
+                // Establish a snapshot before prep begins so qualification
+                // failures still retain their exact probe time in Watchdog.
+                // Normal prep progress replaces this baseline moments later.
+                providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
+                    FileCount: 0,
+                    Connections: 0,
+                    QueueWaitMs: 0,
+                    FirstSegmentsMs: 0,
+                    Par2Ms: 0,
+                    RarMs: 0,
+                    ProcessorsMs: 0,
+                    LazyRarMounted: false,
+                    FirstSegmentFallbacks: 0,
+                    Providers: [],
+                    LastStage: "probing",
+                    HealthQualificationMs: _healthQualificationDurationMs.Value));
+                healthProgress.Report(null);
+            }
+        }
 
         List<string> articlesToCheck = [];
         var checkedFullHealth = false;
@@ -319,9 +392,18 @@ public class QueueItemProcessor(
                 healthConnectionWarmupCts,
                 ct,
                 () => configManager.IsHealthPipeliningEnabled()
-                    ? usenetClient.CheckAllSegmentsPipelinedAsync(articlesToCheck, healthPipelineDepth,
-                        healthPipelineLanes, currentHealthProgress, healthCts.Token,
-                        configManager.IsHealthProviderQualificationEnabled())
+                    ? healthQualification is not null && connectionWarmer is not null
+                        ? connectionWarmer.CheckAllSegmentsPipelinedAfterQualificationAsync(
+                            healthQualification,
+                            articlesToCheck,
+                            healthPipelineDepth,
+                            healthPipelineLanes,
+                            currentHealthProgress,
+                            healthCts.Token)
+                        : usenetClient.CheckAllSegmentsPipelinedAsync(
+                            articlesToCheck, healthPipelineDepth,
+                            healthPipelineLanes, currentHealthProgress, healthCts.Token,
+                            configManager.IsHealthProviderQualificationEnabled())
                     : usenetClient.CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency,
                         currentHealthProgress, healthCts.Token),
                 () => Log.Information(
@@ -335,19 +417,23 @@ public class QueueItemProcessor(
 
         // step 1 -- get name and size of each nzb file
         var stepTimer = Stopwatch.StartNew();
+        var prepFiles = FetchFirstSegmentsStep.SelectFilesForPrep(
+            nzbFiles, configManager.GetBlocklistedFiles());
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
         var prepConnections = FetchFirstSegmentsStep.ResolveConcurrency(
-            nzbFiles.Count, configManager.GetMaxQueueConnections());
+            prepFiles.Count, configManager.GetMaxQueueConnections());
         var queuedMs = Math.Max(0, (long)(DateTime.Now - queueItem.CreatedAt).TotalMilliseconds);
         var usageBeforeFirstSegments = providerUsageTracker.Snapshot(queueItem.Id);
         var bytesBeforeFirstSegments = providerUsageTracker.SnapshotBytes(queueItem.Id);
         var attemptsBeforeFirstSegments = providerUsageTracker.SnapshotPrepAttempts(queueItem.Id);
         var failoversBeforeFirstSegments = providerUsageTracker.GetFailoverSaves(queueItem.Id);
         Log.Information(
-            "queue-stage nzo={NzoId} job={JobName} stage=first-segments start files={Files} connections={Connections} queuedMs={QueuedMs}",
-            queueItem.Id, queueItem.JobName, nzbFiles.Count, prepConnections, queuedMs);
+            "queue-stage nzo={NzoId} job={JobName} stage=first-segments start " +
+            "files={Files} skipped={Skipped} connections={Connections} queuedMs={QueuedMs}",
+            queueItem.Id, queueItem.JobName, prepFiles.Count,
+            nzbFiles.Count - prepFiles.Count, prepConnections, queuedMs);
         List<FetchFirstSegmentsStep.NzbFileWithFirstSegment> segments;
         using (providerUsageTracker.BeginByteCapture())
         using (providerUsageTracker.BeginPrepAttemptCapture())
@@ -371,8 +457,9 @@ public class QueueItemProcessor(
                     providerUsageTracker.GetFailoverSaves(queueItem.Id) - failoversBeforeFirstSegments);
                 _prepDurationMs = ToDurationMs(elapsedMs);
                 providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
-                    nzbFiles.Count, prepConnections, queuedMs, elapsedMs, 0, 0, 0,
-                    false, partialFallbacks, partialProviders, "first-segments"));
+                    prepFiles.Count, prepConnections, queuedMs, elapsedMs, 0, 0, 0,
+                    false, partialFallbacks, partialProviders, "first-segments",
+                    _healthQualificationDurationMs ?? 0));
                 throw;
             }
             finally
@@ -407,8 +494,9 @@ public class QueueItemProcessor(
         {
             _prepDurationMs = ToDurationMs(msFirstSeg + par2Ms + rarMs + processorsMs);
             providerUsageTracker.RecordPrepStats(new PrepUsageSnapshot(
-                nzbFiles.Count, prepConnections, queuedMs, msFirstSeg, par2Ms, rarMs, processorsMs,
-                lazyRarMounted, firstSegmentFallbacks, firstSegmentProviders, lastStage));
+                prepFiles.Count, prepConnections, queuedMs, msFirstSeg, par2Ms, rarMs, processorsMs,
+                lazyRarMounted, firstSegmentFallbacks, firstSegmentProviders, lastStage,
+                _healthQualificationDurationMs ?? 0));
         }
         RecordPrepProgress("first-segments");
         Log.Information("queue-stage nzo={NzoId} job={JobName} stage=first-segments done ms={ElapsedMs}",
@@ -720,38 +808,6 @@ public class QueueItemProcessor(
         catch (Exception e)
         {
             Log.Debug(e, "Health connection prewarm failed for {JobName}.", queueItem.JobName);
-        }
-    }
-
-    private static async Task PrimeHealthConnectionsDuringPrepAsync(
-        IQueueConnectionWarmer connectionWarmer,
-        Task prewarmTask,
-        IReadOnlyList<string> segmentIds,
-        int depth,
-        QueueItem queueItem,
-        CancellationToken cancellationToken)
-    {
-        await prewarmTask.ConfigureAwait(false);
-        if (cancellationToken.IsCancellationRequested) return;
-        var timer = Stopwatch.StartNew();
-        Log.Information(
-            "queue-stage nzo={NzoId} job={JobName} stage=health-prime start segments={Segments} depth={Depth}",
-            queueItem.Id, queueItem.JobName, segmentIds.Count, depth);
-        try
-        {
-            await connectionWarmer.PrimeHealthCheckAsync(segmentIds, depth, cancellationToken)
-                .ConfigureAwait(false);
-            Log.Information(
-                "queue-stage nzo={NzoId} job={JobName} stage=health-prime done ms={ElapsedMs}",
-                queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            Log.Debug("Health connection prime cancelled for {JobName}.", queueItem.JobName);
-        }
-        catch (Exception e)
-        {
-            Log.Debug(e, "Health connection prime failed for {JobName}.", queueItem.JobName);
         }
     }
 

@@ -345,9 +345,32 @@ public class ConfigManager
             .Sum(x => x.MaxConnections));
     }
 
-    public int GetArticleBufferSize()
+    public long GetReadAheadBytes()
     {
-        return GetInteger("usenet.article-buffer-size", 40, 1, int.MaxValue);
+        const long bytesPerMiB = 1024L * 1024L;
+        const int defaultMiB = 64;
+        const int maxMiB = 1024;
+
+        var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.read-ahead-mb"));
+        if (configured != null)
+        {
+            var mib = int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? Math.Clamp(value, 1, maxMiB)
+                : defaultMiB;
+            return mib * bytesPerMiB;
+        }
+
+        // Older installations stored a count of articles. There is no exact
+        // byte equivalent without opening a particular NZB, so treat one old
+        // unit as one MiB until the new setting is saved. This keeps custom
+        // values in the same rough operating range without retaining two
+        // buffering modes.
+        var legacy = StringUtil.EmptyToNull(GetConfigValue("usenet.article-buffer-size"));
+        if (legacy != null
+            && int.TryParse(legacy, NumberStyles.Integer, CultureInfo.InvariantCulture, out var legacyValue))
+            return Math.Clamp(legacyValue, 1, maxMiB) * bytesPerMiB;
+
+        return defaultMiB * bytesPerMiB;
     }
 
     public bool IsSegmentCacheEnabled()

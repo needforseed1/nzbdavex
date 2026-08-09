@@ -28,7 +28,7 @@ public class NzbFileStreamTests
                          ["segment-1"],
                          segmentSize,
                          client,
-                         articleBufferSize: 1))
+                         readAheadBytes: segmentSize))
         {
             stream.Position = 64;
             var buffer = new byte[32];
@@ -44,6 +44,21 @@ public class NzbFileStreamTests
         Assert.Equal(1, client.PipelineCalls);
         Assert.Equal(1, diagnostics.Snapshot().BodyStallRecoveries);
         Assert.Equal(0, diagnostics.Snapshot().ZeroFilledSegments);
+    }
+
+    [Theory]
+    [InlineData(0L, 768_000L, 0)]
+    [InlineData(64L * 1024 * 1024, 1024L * 1024, 64)]
+    [InlineData(64L * 1024 * 1024, 768L * 1024, 86)]
+    [InlineData(1L, 0L, 1)]
+    [InlineData(long.MaxValue, 1L, NzbFileStream.MaxBufferedArticles)]
+    public void ReadAheadBytesBecomeABoundedPerFileArticleCapacity(
+        long targetBytes,
+        long expectedSegmentSize,
+        int expectedCapacity)
+    {
+        Assert.Equal(expectedCapacity,
+            NzbFileStream.CalculateBufferedArticleCapacity(targetBytes, expectedSegmentSize));
     }
 
     private sealed class RecoveringSeekClient(int segmentSize) : NntpClient

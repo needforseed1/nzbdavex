@@ -124,6 +124,7 @@ function QueueStatus(props: Pick<PageRowProps,
     const notice = props.recoveryNotice
         ? presentQueueRecoveryNotice(props.recoveryNotice)
         : null;
+    const probing = props.healthPercentage != null && Number(props.healthPercentage) < 0;
     return (
         <div className={styles.statusWithNotice}>
             <div className={styles.progressBadges}>
@@ -131,8 +132,10 @@ function QueueStatus(props: Pick<PageRowProps,
                 {props.status?.toLowerCase() === "downloading" && props.healthPercentage != null && (
                     <div
                         className={styles.liveHealthProgress}
-                        title="Health check"
-                        aria-label={`Health check ${props.healthPercentage}%`}>
+                        title={probing ? "Probing providers" : "Health check"}
+                        aria-label={probing
+                            ? "Probing providers"
+                            : `Health check ${props.healthPercentage}%`}>
                         <StatusBadge status="health-checking" percentage={props.healthPercentage} />
                     </div>
                 )}

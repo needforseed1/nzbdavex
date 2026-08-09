@@ -159,7 +159,7 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             ?? throw new InvalidOperationException("Lazy RAR meta missing PathInArchive.");
 
         await using var stream = usenetClient.GetFileStream(
-            pending.SegmentIds, pending.SegmentIdByteRange.Count, articleBufferSize: 0);
+            pending.SegmentIds, pending.SegmentIdByteRange.Count, readAheadBytes: 0);
 
         // Find-and-stop so SharpCompress never seeks past the matched header.
         // The seek would force NzbFileStream to fire InterpolationSearch

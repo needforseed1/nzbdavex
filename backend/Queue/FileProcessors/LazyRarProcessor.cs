@@ -60,7 +60,7 @@ public class LazyRarProcessor(
         try
         {
             await using var firstStream = usenetClient.GetFileStream(
-                firstInfo.NzbFile, firstFileSize, articleBufferSize: 0);
+                firstInfo.NzbFile, firstFileSize, readAheadBytes: 0);
             // Stop as soon as the first file header lands. Walking further
             // forces SharpCompress to seek past the file data, which on
             // NzbFileStream triggers InterpolationSearch (~7 STAT calls)

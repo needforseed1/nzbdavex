@@ -7,6 +7,7 @@ using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
 using NzbWebDAV.Par2Recovery;
+using NzbWebDAV.Queue.PostProcessors;
 using Serilog;
 using UsenetSharp.Models;
 
@@ -50,7 +51,9 @@ public static class FetchFirstSegmentsStep
         var probeClient = usenetClient is ArticleCachingNntpClient cachingClient
             ? cachingClient.FirstSegmentProbeClient
             : usenetClient;
-        var concurrency = ResolveConcurrency(files.Count, configManager.GetMaxQueueConnections());
+        var blocklistedFiles = configManager.GetBlocklistedFiles();
+        var prepFiles = SelectFilesForPrep(files, blocklistedFiles).ToHashSet();
+        var concurrency = ResolveConcurrency(prepFiles.Count, configManager.GetMaxQueueConnections());
         using var prepCts =
             ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         prepCts.CancelAfter(prepRunTimeout);
@@ -59,7 +62,9 @@ public static class FetchFirstSegmentsStep
         try
         {
             return await files
-                .Select(x => FetchFirstSegment(x, probeClient, prepCts.Token))
+                .Select(x => prepFiles.Contains(x)
+                    ? FetchFirstSegment(x, probeClient, prepCts.Token)
+                    : Task.FromResult(BuildMissingFirstSegment(x)))
                 .WithConcurrencyAsync(
                     concurrency,
                     drainOnFailure: true,
@@ -84,6 +89,25 @@ public static class FetchFirstSegmentsStep
             fileCount,
             Math.Min(MaxConcurrentFirstSegmentFetches, configuredConnections + 5)));
 
+    internal static IReadOnlyList<NzbFile> SelectFilesForPrep(
+        IReadOnlyList<NzbFile> files,
+        HashSet<string> blocklistedFiles) =>
+        files.Where(file => RequiresFirstSegment(file, blocklistedFiles)).ToList();
+
+    private static bool RequiresFirstSegment(
+        NzbFile file,
+        HashSet<string> blocklistedFiles)
+    {
+        var fileName = file.GetSubjectFileName();
+        if (Par2.IsRecoveryVolumeFileName(fileName)) return false;
+
+        // The base PAR2 index supplies deobfuscation descriptors even when PAR2
+        // files are hidden from the final mount. Everything else that the user
+        // has configured to discard cannot contribute useful prep metadata.
+        if (fileName.EndsWith(".par2", StringComparison.OrdinalIgnoreCase)) return true;
+        return !BlocklistedFilePostProcessor.MatchesAnyPattern(fileName, blocklistedFiles);
+    }
+
     private static NzbFileWithFirstSegment BuildMissingFirstSegment(NzbFile nzbFile) => new()
     {
         NzbFile = nzbFile,
@@ -100,14 +124,6 @@ public static class FetchFirstSegmentsStep
         CancellationToken cancellationToken
     )
     {
-        // Recovery volumes contain repair blocks, not metadata needed by prep.
-        // Keep the NZB file entry intact so it can still be exposed or fetched
-        // later, but do not spend a connection downloading its first article.
-        // The base/index .par2 is deliberately not skipped: it supplies the
-        // file descriptors used to recover obfuscated filenames and sizes.
-        if (Par2.IsRecoveryVolumeFileName(nzbFile.GetSubjectFileName()))
-            return BuildMissingFirstSegment(nzbFile);
-
         try
         {
             // A single attempt already walks the configured primary and backup

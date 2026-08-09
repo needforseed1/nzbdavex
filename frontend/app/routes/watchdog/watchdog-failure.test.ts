@@ -8,7 +8,6 @@ import {
     deriveFailurePhase,
     formatPrepFailures,
     selectFailedDetailsAttempt,
-    summarizeFailure,
 } from "./watchdog-failure";
 
 test("selects the failed attempt with the most useful captured statistics", () => {
@@ -34,18 +33,6 @@ test("selects the failed attempt with the most useful captured statistics", () =
     assert.equal(selectFailedDetailsAttempt([earlyFailure, queueFailure]), queueFailure);
 });
 
-test("summarizes common failures while preserving useful unknown messages", () => {
-    assert.equal(summarizeFailure("Article with message-id x was not found"), "Missing articles");
-    assert.equal(
-        summarizeFailure("Preparation could not verify a required article: provider checks returned no result"),
-        "Article availability unverified",
-    );
-    assert.equal(summarizeFailure("Provider timed out after 5 seconds"), "Provider or operation timeout");
-    assert.equal(summarizeFailure("No viable provider connections"), "Provider unavailable");
-    assert.equal(summarizeFailure("Unexpected archive structure"), "Unexpected archive structure");
-    assert.equal(summarizeFailure(null), "Run failed");
-});
-
 test("presents prep timeouts as unanswered checks while retaining other counts", () => {
     const provider: WatchdogPrepStats["providers"][number] = {
         providerId: "provider",
@@ -65,6 +52,7 @@ test("presents prep timeouts as unanswered checks while retaining other counts",
 });
 
 test("shows only explicitly captured failure phases", () => {
+    assert.equal(deriveFailurePhase(prepStats("probing")), "Provider probing");
     assert.equal(deriveFailurePhase(prepStats("first-segments")), "Prep · first segments");
     assert.equal(deriveFailurePhase(prepStats("health")), "Health check");
     assert.equal(deriveFailurePhase(prepStats("import")), "Import");

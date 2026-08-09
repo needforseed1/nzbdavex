@@ -97,21 +97,21 @@ public abstract class NntpClient : INntpClient
         return headers!.PartOffset + headers!.PartSize;
     }
 
-    public virtual async Task<NzbFileStream> GetFileStream(NzbFile nzbFile, int articleBufferSize, CancellationToken ct)
+    public virtual async Task<NzbFileStream> GetFileStream(NzbFile nzbFile, long readAheadBytes, CancellationToken ct)
     {
         var segmentIds = nzbFile.GetSegmentIds();
         var fileSize = await GetFileSizeAsync(nzbFile, ct).ConfigureAwait(false);
-        return new NzbFileStream(segmentIds, fileSize, this, articleBufferSize);
+        return new NzbFileStream(segmentIds, fileSize, this, readAheadBytes);
     }
 
-    public virtual NzbFileStream GetFileStream(NzbFile nzbFile, long fileSize, int articleBufferSize)
+    public virtual NzbFileStream GetFileStream(NzbFile nzbFile, long fileSize, long readAheadBytes)
     {
-        return new NzbFileStream(nzbFile.GetSegmentIds(), fileSize, this, articleBufferSize);
+        return new NzbFileStream(nzbFile.GetSegmentIds(), fileSize, this, readAheadBytes);
     }
 
-    public virtual NzbFileStream GetFileStream(string[] segmentIds, long fileSize, int articleBufferSize)
+    public virtual NzbFileStream GetFileStream(string[] segmentIds, long fileSize, long readAheadBytes)
     {
-        return new NzbFileStream(segmentIds, fileSize, this, articleBufferSize);
+        return new NzbFileStream(segmentIds, fileSize, this, readAheadBytes);
     }
 
     public virtual async Task CheckAllSegmentsAsync

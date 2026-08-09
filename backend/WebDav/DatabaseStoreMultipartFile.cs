@@ -50,7 +50,7 @@ public class DatabaseStoreMultipartFile(
         var packedStream = new DavMultipartFileStream(
             multipartFile,
             usenetClient,
-            configManager.GetArticleBufferSize(),
+            configManager.GetReadAheadBytes(),
             lazyRarResolver
         );
 

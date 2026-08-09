@@ -39,11 +39,9 @@ public class MultiProviderNntpClient(
 ) : NntpClient, IQueueConnectionWarmer
 {
     private const int HealthPrimeConnectionLimitPerProvider = 4;
-    private const int BulkStatProbeSize = 32;
-    private const int BulkStatProbeThreshold = 256;
-    private const int SuspiciousBulkStatCanarySize = 256;
-    private const int SuspiciousBulkStatCanaryLanes = 4;
-    private const int SuspiciousBulkStatCanaryDepth = 16;
+    private const int BulkStatProbeSize = 128;
+    private const int BulkStatProbeThreshold = 128;
+    private const int BulkStatProbeLaneLimit = 4;
     private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
     private const int HealthReclamationIdleFloor = 4;
     private const int HealthQuarantinedRecoveryIdleFloor = 8;
@@ -51,26 +49,15 @@ public class MultiProviderNntpClient(
     private const int HealthRecoveryMaxConnectionsPerProvider = 8;
     private const int HealthRecoverySegmentsPerConnection = 512;
     private const int HealthSequentialRecoverySegmentLimit = 8;
-    // Deliberately loose. The qualification probe samples only 32 articles, so
-    // its coverage estimate carries several percentage points of error: a
-    // provider holding 75% of a release commonly samples near 69%. A tighter
-    // bar here would reject useful partial accounts on sampling noise alone.
+    // Deliberately loose. The qualification probe samples a limited subset, so
+    // its coverage estimate carries sampling error. A tighter bar here would
+    // reject useful partial accounts on sampling noise alone.
     // Live coverage measured over the real batches is the sound signal for
     // demoting a provider mid-run; see BulkStatPlan.RecordAttempt.
     private const double PartialStatMinimumCoverage = 0.50;
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.Zero;
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan SuspiciousBulkStatCanaryBudget = TimeSpan.FromSeconds(12);
-    private static readonly TimeSpan SuspiciousBulkStatCanaryAcquisitionTimeout =
-        TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan SuspiciousBulkStatCanaryCommandTimeout =
-        TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan SuspiciousBulkStatCanaryInactivityTimeout =
-        TimeSpan.FromSeconds(2);
-    private const long SuspiciousBulkStatProbeElapsedMs = 750;
-    private const long SuspiciousBulkStatProbeFirstResponseMs = 500;
-    private const long SuspiciousBulkStatProbeResponseGapMs = 500;
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
     // Silence, not slowness. A body that keeps delivering bytes is left alone
     // however slow it runs, because refetching costs more than finishing.
@@ -1866,21 +1853,28 @@ public class MultiProviderNntpClient(
         return replacement;
     }
 
-    public override async Task CheckAllSegmentsPipelinedAsync(
+    public override Task CheckAllSegmentsPipelinedAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
         CancellationToken cancellationToken,
-        bool qualifyProviders = true)
+        bool qualifyProviders = true) =>
+        RunTrackedHealthCheckAsync(
+            segmentIds.Count,
+            () => CheckAllSegmentsPipelinedCoreAsync(
+                segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
+                qualifyProviders, reusablePlan: null));
+
+    private async Task RunTrackedHealthCheckAsync(
+        int segmentCount,
+        Func<Task> healthCheck)
     {
-        usageTracker.BeginHealthCheck(segmentIds.Count);
+        usageTracker.BeginHealthCheck(segmentCount);
         try
         {
-            await CheckAllSegmentsPipelinedCoreAsync(
-                segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
-                qualifyProviders).ConfigureAwait(false);
-            usageTracker.CompleteHealthCheck(segmentIds.Count, 0);
+            await healthCheck().ConfigureAwait(false);
+            usageTracker.CompleteHealthCheck(segmentCount, 0);
         }
         catch (UsenetArticleNotFoundException)
         {
@@ -1899,20 +1893,59 @@ public class MultiProviderNntpClient(
         }
         catch (UsenetHealthQualificationException)
         {
-            // Admission and canary failures are deliberately not missing
-            // verdicts. Preserve that distinction in health telemetry.
+            // Admission failures are deliberately not missing verdicts.
+            // Preserve that distinction in health telemetry.
             usageTracker.CompleteHealthCheck(null, 0);
             throw;
         }
     }
 
-    private async Task CheckAllSegmentsPipelinedCoreAsync(
+    public async Task<QueueHealthQualification> QualifyHealthCheckAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        CancellationToken cancellationToken)
+    {
+        var plan = await CheckAllSegmentsPipelinedCoreAsync(
+                segmentIds,
+                depth,
+                fallbackConcurrency,
+                progress: null,
+                cancellationToken,
+                qualifyProviders: true,
+                reusablePlan: null)
+            .ConfigureAwait(false);
+        return plan is null
+            ? QueueHealthQualification.None
+            : new QueueHealthQualification(plan);
+    }
+
+    public Task CheckAllSegmentsPipelinedAfterQualificationAsync(
+        QueueHealthQualification qualification,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken) =>
+        RunTrackedHealthCheckAsync(
+            segmentIds.Count,
+            () => CheckAllSegmentsPipelinedCoreAsync(
+                segmentIds,
+                depth,
+                fallbackConcurrency,
+                progress,
+                cancellationToken,
+                qualifyProviders: true,
+                reusablePlan: qualification.State as BulkStatPlan));
+
+    private async Task<BulkStatPlan?> CheckAllSegmentsPipelinedCoreAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
         CancellationToken cancellationToken,
-        bool qualifyProviders)
+        bool qualifyProviders,
+        BulkStatPlan? reusablePlan)
     {
         // One verdict collector per operation: a segment may only be confirmed
         // missing when every provider in this snapshot answered "missing".
@@ -1921,9 +1954,9 @@ public class MultiProviderNntpClient(
             this, SelectStatEligibleProviders(cancellationToken));
         try
         {
-            await CheckAllSegmentsPipelinedWithCollectorAsync(
+            return await CheckAllSegmentsPipelinedWithCollectorAsync(
                 segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
-                qualifyProviders).ConfigureAwait(false);
+                qualifyProviders, reusablePlan).ConfigureAwait(false);
         }
         finally
         {
@@ -1931,19 +1964,20 @@ public class MultiProviderNntpClient(
         }
     }
 
-    private async Task CheckAllSegmentsPipelinedWithCollectorAsync(
+    private async Task<BulkStatPlan?> CheckAllSegmentsPipelinedWithCollectorAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
         int fallbackConcurrency,
         IProgress<int>? progress,
         CancellationToken cancellationToken,
-        bool qualifyProviders)
+        bool qualifyProviders,
+        BulkStatPlan? reusablePlan)
     {
         if (segmentIds.Count < BulkStatProbeThreshold || fallbackConcurrency <= 1)
         {
             await base.CheckAllSegmentsPipelinedAsync(
                 segmentIds, depth, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
-            return;
+            return null;
         }
 
         var connectionPeaks = new HealthConnectionPeakTracker(this);
@@ -1952,15 +1986,30 @@ public class MultiProviderNntpClient(
         var connectionPeakTask = connectionPeaks.SampleAsync(connectionPeakCts.Token);
         try
         {
-            var qualification = qualifyProviders
-                ? await QualifyBulkStatProvidersAsync(
-                    segmentIds, depth, fallbackConcurrency, cancellationToken).ConfigureAwait(false)
-                : CreateUnqualifiedBulkStatPlan(segmentIds.Count, cancellationToken);
+            BulkStatQualification qualification;
+            if (qualifyProviders && reusablePlan is { Owner: var owner } &&
+                ReferenceEquals(owner, this))
+            {
+                qualification = new BulkStatQualification(
+                    reusablePlan.CreateReusablePlan(), []);
+                Log.Information(
+                    "health-stat qualification action=reused sample={Sample} " +
+                    "reason=pre-prep-admission",
+                    BulkStatProbeSize);
+            }
+            else
+            {
+                qualification = qualifyProviders
+                    ? await QualifyBulkStatProvidersAsync(
+                            segmentIds, depth, fallbackConcurrency, cancellationToken)
+                        .ConfigureAwait(false)
+                    : CreateUnqualifiedBulkStatPlan(segmentIds.Count, cancellationToken);
+            }
             if (qualification.Plan is null)
             {
                 await base.CheckAllSegmentsPipelinedAsync(
                     segmentIds, depth, fallbackConcurrency, progress, cancellationToken).ConfigureAwait(false);
-                return;
+                return null;
             }
 
             var remaining = segmentIds
@@ -1974,7 +2023,7 @@ public class MultiProviderNntpClient(
             using var connectionAllocation = qualification.Plan.BeginConnectionAllocation(fallbackConcurrency);
             try
             {
-                if (remaining.Length == 0) return;
+                if (remaining.Length == 0) return qualification.Plan;
                 var laneAdmission = qualification.Plan.GetLaneAdmission(fallbackConcurrency);
                 Log.Information(
                     "health-stat lane-admission requested={Requested} initial={Initial} " +
@@ -1986,6 +2035,7 @@ public class MultiProviderNntpClient(
                 var remainingProgress = progress is null ? null : new OffsetProgress(progress, verifiedCount);
                 await base.CheckAllSegmentsPipelinedAsync(
                     remaining, depth, fallbackConcurrency, remainingProgress, cancellationToken).ConfigureAwait(false);
+                return qualification.Plan;
             }
             finally
             {
@@ -2101,11 +2151,11 @@ public class MultiProviderNntpClient(
             var completedProbe = await completedTask.ConfigureAwait(false);
             probes.Add(completedProbe);
 
-            var hasCompletePrimary = completedProbe.Success &&
-                                     completedProbe.Found == sample.Length;
+            var hasCompletePrimary = GetAggregateCoverage(
+                probes.Where(probe => probe.Success), sample.Length) == sample.Length;
             if (!hasCompletePrimary) continue;
 
-            // A full-coverage result cannot be beaten. Give similarly fast peers a
+            // Complete collective coverage cannot be beaten. Give similarly fast peers a
             // brief chance to join the plan. If those completed providers cannot
             // supply the requested lane capacity, keep accepting completed probes
             // for a short bounded settle window. This prevents hundreds of lanes
@@ -2161,13 +2211,11 @@ public class MultiProviderNntpClient(
 
         var successful = probes.Where(x => x.Success).ToList();
 
-        // Do not admit a release-wide health sweep unless at least one provider
-        // has demonstrated complete sample coverage. Partial coverage can make
-        // a provider look useful while leaving nearly the entire NZB to cascade
-        // through every fallback (for example, 2/32 led to 95k unresolved IDs).
-        // Give BackupOnly providers the same bounded sample before deciding so
-        // releases held by a rescue account still proceed normally.
-        if (!successful.Any(probe => probe.Found == sample.Length))
+        // Every sampled article must exist somewhere, but no single provider
+        // needs to retain the whole release. This is the same collective
+        // coverage model used by the full health pass.
+        var aggregateCoverage = GetAggregateCoverage(successful, sample.Length);
+        if (aggregateCoverage < sample.Length)
         {
             var backupProbes = await Task.WhenAll(candidates
                     .Where(provider => provider.ProviderType == ProviderType.BackupOnly)
@@ -2180,6 +2228,7 @@ public class MultiProviderNntpClient(
                 LogBulkStatProbe(backupProbe, sample.Length);
             }
             successful = probes.Where(x => x.Success).ToList();
+            aggregateCoverage = GetAggregateCoverage(successful, sample.Length);
         }
 
         var bestCoverage = successful.Count == 0 ? 0 : successful.Max(x => x.Found);
@@ -2188,23 +2237,25 @@ public class MultiProviderNntpClient(
         plan.ObserveLateProbes(pendingProbes, sample.Length, cancellationToken);
 
         Log.Information(
-            "health-stat plan sample={Sample} preferred={Preferred} bestCoverage={BestCoverage}/{Sample} " +
+            "health-stat plan sample={Sample} preferred={Preferred} " +
+            "bestProviderCoverage={BestCoverage}/{Sample} aggregateCoverage={AggregateCoverage}/{Sample} " +
             "preferredCapacity={PreferredCapacity}/{CapacityTarget} " +
             "qualificationMs={QualificationMs} endedEarly={EndedEarly}",
             sample.Length,
             preferred.Count == 0 ? "default-routing" : string.Join(',', preferred.Select(x => x.Host)),
-            bestCoverage, sample.Length,
+            bestCoverage, sample.Length, aggregateCoverage, sample.Length,
             preferred.Sum(provider => provider.MaxConnections), capacityTarget,
             qualificationTimer.ElapsedMilliseconds, endedEarly);
 
-        if (!successful.Any(probe => probe.Found == sample.Length))
+        if (aggregateCoverage < sample.Length)
         {
             Log.Warning(
-                "health-stat fast-fail sample={Sample} reason=no-full-coverage " +
-                "bestCoverage={BestCoverage} successfulProbes={SuccessfulProbes}",
-                sample.Length, bestCoverage, successful.Count);
+                "health-stat fast-fail sample={Sample} reason=incomplete-aggregate-coverage " +
+                "bestProviderCoverage={BestCoverage} aggregateCoverage={AggregateCoverage} " +
+                "successfulProbes={SuccessfulProbes}",
+                sample.Length, bestCoverage, aggregateCoverage, successful.Count);
             plan.LogSummary();
-            throw new UsenetHealthQualificationException(sample.Length, bestCoverage);
+            throw new UsenetHealthQualificationException(sample.Length, aggregateCoverage);
         }
 
         var verified = new HashSet<int>();
@@ -2214,275 +2265,18 @@ public class MultiProviderNntpClient(
                 verified.Add(sampleIndexes[sampleIndex]);
         }
 
-        var canaryReason = GetSuspiciousBulkStatCanaryReason(successful, sample.Length);
-        if (canaryReason is not null)
-        {
-            var canaryIndexes = SelectCanaryIndexes(
-                segmentIds.Count, sampleIndexes, SuspiciousBulkStatCanarySize);
-            if (canaryIndexes.Count > 0)
-            {
-                try
-                {
-                    await RunSuspiciousBulkStatCanaryAsync(
-                            segmentIds,
-                            canaryIndexes,
-                            successful
-                                .Where(probe => probe.Found == sample.Length)
-                                .OrderByDescending(probe => probe.Rate)
-                                .ThenBy(probe => probe.Provider.Priority)
-                                .Select(probe => probe.Provider)
-                                .ToArray(),
-                            canaryReason,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (UsenetHealthQualificationException)
-                {
-                    plan.LogSummary();
-                    throw;
-                }
-            }
-        }
-
         return new BulkStatQualification(plan, verified);
     }
 
-    private string? GetSuspiciousBulkStatCanaryReason(
-        IReadOnlyList<BulkStatProbe> successful,
+    private static int GetAggregateCoverage(
+        IEnumerable<BulkStatProbe> probes,
         int sampleSize)
     {
-        var prep = usageTracker.SnapshotCurrentPrep();
-        if (prep is { FirstSegmentFallbacks: > 0 })
-            return $"prep-fallbacks:{prep.FirstSegmentFallbacks}";
-
-        var fullCoverage = successful
-            .Where(probe => probe.Found == sampleSize)
-            .OrderBy(probe => probe.ElapsedMs)
-            .ToArray();
-        if (fullCoverage.Length == 0) return null;
-
-        var fastest = fullCoverage[0];
-        if (fastest.FirstResponseMs >= SuspiciousBulkStatProbeFirstResponseMs)
-            return $"qualification-first-response-ms:{fastest.FirstResponseMs}";
-        if (fastest.MaxResponseGapMs >= SuspiciousBulkStatProbeResponseGapMs)
-            return $"qualification-response-gap-ms:{fastest.MaxResponseGapMs}";
-        if (fastest.ElapsedMs >= SuspiciousBulkStatProbeElapsedMs)
-            return $"qualification-elapsed-ms:{fastest.ElapsedMs}";
-        return null;
-    }
-
-    private async Task RunSuspiciousBulkStatCanaryAsync(
-        IReadOnlyList<string> segmentIds,
-        IReadOnlyList<int> canaryIndexes,
-        IReadOnlyList<MultiConnectionNntpClient> qualifiedProviders,
-        string reason,
-        CancellationToken cancellationToken)
-    {
-        var canaryIds = canaryIndexes.Select(index => segmentIds[index]).ToArray();
-        var depth = Math.Min(SuspiciousBulkStatCanaryDepth, Math.Max(1, canaryIds.Length));
-        var lanes = Math.Min(SuspiciousBulkStatCanaryLanes, canaryIds.Length);
-        Log.Information(
-            "health-stat canary start reason={Reason} sample={Sample} providers={Providers} " +
-            "lanes={Lanes} depth={Depth} budgetMs={BudgetMs}",
-            reason,
-            canaryIds.Length,
-            string.Join(',', qualifiedProviders.Select(provider => provider.Host)),
-            lanes,
-            depth,
-            SuspiciousBulkStatCanaryBudget.TotalMilliseconds);
-
-        using var canaryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        canaryCts.CancelAfter(SuspiciousBulkStatCanaryBudget);
-        var bestFound = 0;
-        try
-        {
-            foreach (var provider in qualifiedProviders)
-            {
-                var result = await RunSuspiciousBulkStatCanaryProviderAsync(
-                        provider, canaryIds, depth, lanes, canaryCts.Token)
-                    .ConfigureAwait(false);
-                bestFound = Math.Max(bestFound, result.Found);
-                Log.Information(
-                    "health-stat canary provider={Provider} found={Found}/{Sample} " +
-                    "received={Received} missing={Missing} unanswered={Unanswered} " +
-                    "attempts={Attempts} retries={Retries} failures={Failures} " +
-                    "firstResponseMs={FirstResponseMs} maxResponseGapMs={MaxResponseGapMs} " +
-                    "ms={ElapsedMs}",
-                    provider.Host,
-                    result.Found,
-                    canaryIds.Length,
-                    result.Received,
-                    result.Missing,
-                    result.Unanswered,
-                    result.Attempts,
-                    result.Retries,
-                    result.Failures,
-                    result.FirstResponseMs,
-                    result.MaxResponseGapMs,
-                    result.ElapsedMs);
-                if (result.Found != canaryIds.Length) continue;
-
-                Log.Information(
-                    "health-stat canary done provider={Provider} sample={Sample} ms={ElapsedMs}",
-                    provider.Host, canaryIds.Length, result.ElapsedMs);
-                return;
-            }
-        }
-        catch (OperationCanceledException) when (
-            !cancellationToken.IsCancellationRequested && canaryCts.IsCancellationRequested)
-        {
-            Log.Warning(
-                "health-stat canary fast-fail reason=budget-expired sample={Sample} " +
-                "bestCoverage={BestCoverage}/{Sample}",
-                canaryIds.Length, bestFound, canaryIds.Length);
-            throw new UsenetHealthQualificationException(canaryIds.Length, bestFound);
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        Log.Warning(
-            "health-stat canary fast-fail reason=no-full-coverage sample={Sample} " +
-            "bestCoverage={BestCoverage}/{Sample}",
-            canaryIds.Length, bestFound, canaryIds.Length);
-        throw new UsenetHealthQualificationException(canaryIds.Length, bestFound);
-    }
-
-    private async Task<HealthCanaryProviderResult> RunSuspiciousBulkStatCanaryProviderAsync(
-        MultiConnectionNntpClient provider,
-        IReadOnlyList<string> segmentIds,
-        int depth,
-        int lanes,
-        CancellationToken cancellationToken)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        var partitions = Enumerable.Range(0, lanes)
-            .Select(lane => segmentIds
-                .Where((_, index) => index % lanes == lane)
-                .ToArray())
-            .Where(partition => partition.Length > 0)
-            .ToArray();
-        var results = await Task.WhenAll(partitions.Select(partition =>
-                RunSuspiciousBulkStatCanaryLaneAsync(
-                    provider, partition, depth, cancellationToken)))
-            .ConfigureAwait(false);
-        var firstResponseMs = results
-            .Where(result => result.FirstResponseMs >= 0)
-            .Select(result => result.FirstResponseMs)
-            .DefaultIfEmpty(-1)
-            .Min();
-        return new HealthCanaryProviderResult(
-            results.Sum(result => result.Found),
-            results.Sum(result => result.Received),
-            results.Sum(result => result.Missing),
-            results.Sum(result => result.Unanswered),
-            results.Sum(result => result.Attempts),
-            results.Sum(result => result.Retries),
-            results.Sum(result => result.Failures),
-            firstResponseMs,
-            results.Max(result => result.MaxResponseGapMs),
-            stopwatch.ElapsedMilliseconds);
-    }
-
-    private async Task<HealthCanaryLaneResult> RunSuspiciousBulkStatCanaryLaneAsync(
-        MultiConnectionNntpClient provider,
-        IReadOnlyList<string> segmentIds,
-        int depth,
-        CancellationToken cancellationToken)
-    {
-        var unanswered = segmentIds.ToArray();
-        var found = 0;
-        var received = 0;
-        var missing = 0;
-        var attempts = 0;
-        var retries = 0;
-        var failures = 0;
-        var firstResponseMs = -1L;
-        var maxResponseGapMs = 0L;
-
-        for (var attempt = 0; attempt < 2 && unanswered.Length > 0; attempt++)
-        {
-            if (attempt > 0) retries++;
-            attempts++;
-            var attempted = unanswered;
-            var attemptReceived = 0;
-            var attemptTimer = Stopwatch.StartNew();
-            var previousResponseMs = -1L;
-            using var attemptCts =
-                ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            attemptCts.SetContext(new ProviderAttemptContext(
-                SuspiciousBulkStatCanaryAcquisitionTimeout,
-                SuspiciousBulkStatCanaryCommandTimeout,
-                ResponseInactivityTimeout: SuspiciousBulkStatCanaryInactivityTimeout));
-            try
-            {
-                await foreach (var result in provider.StatsPipelinedAsync(
-                                       attempted, depth, attemptCts.Token)
-                                   .WithCancellation(attemptCts.Token).ConfigureAwait(false))
-                {
-                    if (attemptReceived >= attempted.Length ||
-                        !string.Equals(
-                            result.SegmentId,
-                            attempted[attemptReceived],
-                            StringComparison.Ordinal))
-                        throw new InvalidDataException(
-                            $"Provider {provider.Host} returned an invalid health canary response.");
-
-                    var responseMs = attemptTimer.ElapsedMilliseconds;
-                    if (firstResponseMs < 0) firstResponseMs = responseMs;
-                    if (previousResponseMs >= 0)
-                        maxResponseGapMs = Math.Max(
-                            maxResponseGapMs, responseMs - previousResponseMs);
-                    previousResponseMs = responseMs;
-                    if (result.Exists) found++;
-                    else missing++;
-                    received++;
-                    attemptReceived++;
-                }
-
-                if (attemptReceived != attempted.Length)
-                    throw new IOException(
-                        $"Provider {provider.Host} ended a health canary batch after " +
-                        $"{attemptReceived} of {attempted.Length} responses.");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception e) when (!e.IsCancellationException())
-            {
-                failures++;
-                Log.Debug(e,
-                    "health-stat canary batch failed provider={Provider} " +
-                    "received={Received}/{Attempted} retry={Retry}",
-                    provider.Host, attemptReceived, attempted.Length, attempt == 0);
-            }
-
-            unanswered = attempted.Skip(attemptReceived).ToArray();
-        }
-
-        return new HealthCanaryLaneResult(
-            found,
-            received,
-            missing,
-            unanswered.Length,
-            attempts,
-            retries,
-            failures,
-            firstResponseMs,
-            maxResponseGapMs);
-    }
-
-    private static List<int> SelectCanaryIndexes(
-        int count,
-        IReadOnlyCollection<int> excludedIndexes,
-        int targetCount)
-    {
-        var target = Math.Min(targetCount, Math.Max(0, count - excludedIndexes.Count));
-        if (target == 0) return [];
-        var excluded = excludedIndexes.ToHashSet();
-        return SelectProbeIndexes(count, Math.Min(count, target + excluded.Count))
-            .Where(index => !excluded.Contains(index))
-            .Take(target)
-            .ToList();
+        var covered = new bool[sampleSize];
+        foreach (var probe in probes)
+        for (var index = 0; index < Math.Min(sampleSize, probe.Exists.Length); index++)
+            covered[index] |= probe.Exists[index];
+        return covered.Count(exists => exists);
     }
 
     private async Task<BulkStatProbe> ProbeBackupStatProviderAsync(
@@ -2496,16 +2290,14 @@ public class MultiProviderNntpClient(
         var first = await ProbeStatProviderOnceAsync(
                 provider, segmentIds, fallbackDepth, provider.IsTripped, cancellationToken)
             .ConfigureAwait(false);
-        if (first.Success || first.Received > 0)
+        if (first.Success)
             return first;
 
-        // Unlike ordinary qualification, the zero-coverage backup sample is
-        // the final bounded rescue check before failing the release. Rotate one
-        // silent cold socket and retry once so a stale first connection cannot
-        // create a false fast-fail.
+        // BackupOnly is the final bounded rescue check before failing the
+        // release. Rotate one incomplete socket and retry once.
         Log.Debug(
-            "health-stat backup probe retry provider={Provider} reason={Reason} received=0",
-            provider.Host, first.Status);
+            "health-stat backup probe retry provider={Provider} reason={Reason} received={Received}",
+            provider.Host, first.Status, first.Received);
         var retry = await ProbeStatProviderOnceAsync(
                 provider, segmentIds, fallbackDepth, provider.IsTripped, cancellationToken)
             .ConfigureAwait(false);
@@ -2528,18 +2320,12 @@ public class MultiProviderNntpClient(
         var first = await ProbeStatProviderOnceAsync(
                 provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
             .ConfigureAwait(false);
-        var incompleteMultiLaneProbe = first.Lanes > 1 &&
-                                       first.Received < segmentIds.Count;
-        if (first.Success ||
-            (first.Received > 0 && !incompleteMultiLaneProbe) ||
-            !hadEstablishedIdleConnection)
+        if (first.Success || !hadEstablishedIdleConnection)
             return first;
 
-        // A qualification batch uses one or two established sockets. Retry when
-        // none responds or when either half of a two-lane probe is incomplete;
-        // one stale socket must not quarantine a provider whose other lane was
-        // healthy. Do not double the cold-start wait for a zero-live provider:
-        // it can still join via a successful late probe or recovery.
+        // Qualification deliberately uses one socket per provider. A failed or
+        // incomplete batch gets one fresh-socket retry; cold providers do not
+        // get a second acquisition wait.
         Log.Debug(
             "health-stat probe retry provider={Provider} reason={Reason} received={Received}",
             provider.Host, first.Status, first.Received);
@@ -2561,27 +2347,29 @@ public class MultiProviderNntpClient(
         bool recoveryProbe,
         CancellationToken cancellationToken)
     {
-        if (recoveryProbe ||
-            provider.ProviderType == ProviderType.BackupOnly ||
-            segmentIds.Count < 2 ||
-            provider.IdleConnections < 2)
+        var laneCount = recoveryProbe || provider.ProviderType == ProviderType.BackupOnly
+            ? 1
+            : Math.Min(
+                BulkStatProbeLaneLimit,
+                Math.Min(segmentIds.Count, Math.Max(1, provider.IdleConnections)));
+        if (laneCount == 1)
             return await ProbeStatProviderLaneAsync(
                     provider, segmentIds, fallbackDepth, recoveryProbe, cancellationToken)
                 .ConfigureAwait(false);
 
         var stopwatch = Stopwatch.StartNew();
-        var laneIndexes = new[]
-        {
-            Enumerable.Range(0, segmentIds.Count).Where(index => index % 2 == 0).ToArray(),
-            Enumerable.Range(0, segmentIds.Count).Where(index => index % 2 != 0).ToArray(),
-        };
+        var laneIndexes = Enumerable.Range(0, laneCount)
+            .Select(lane => Enumerable.Range(0, segmentIds.Count)
+                .Where(index => index % laneCount == lane)
+                .ToArray())
+            .ToArray();
         var lanes = await Task.WhenAll(laneIndexes.Select(indexes =>
                 ProbeStatProviderLaneAsync(
                     provider,
                     indexes.Select(index => segmentIds[index]).ToArray(),
                     fallbackDepth,
                     recoveryProbe: false,
-                    cancellationToken: cancellationToken)))
+                    cancellationToken)))
             .ConfigureAwait(false);
         var exists = new bool[segmentIds.Count];
         for (var laneIndex = 0; laneIndex < lanes.Length; laneIndex++)
@@ -2611,8 +2399,8 @@ public class MultiProviderNntpClient(
             lanes.Length,
             success,
             success
-                ? "ok-2-lanes"
-                : $"{string.Join(',', lanes.Select(lane => lane.Status))}-2-lanes");
+                ? $"ok-{laneCount}-lanes"
+                : $"{string.Join(',', lanes.Select(lane => lane.Status))}-{laneCount}-lanes");
     }
 
     private async Task<BulkStatProbe> ProbeStatProviderLaneAsync(
@@ -2629,8 +2417,12 @@ public class MultiProviderNntpClient(
         var firstResponseMs = -1L;
         var previousResponseMs = -1L;
         var maxResponseGapMs = 0L;
-        using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        probeCts.CancelAfter(BulkProbeTimeout);
+        using var probeCts =
+            ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        probeCts.SetContext(new ProviderAttemptContext(
+            AcquisitionTimeout: BulkProbeTimeout,
+            CommandTimeout: DefaultProviderOperationTimeout,
+            ResponseInactivityTimeout: BulkProbeTimeout));
         try
         {
             var providerDepth = ResolveHealthDepth(provider, fallbackDepth);
@@ -3867,29 +3659,6 @@ public class MultiProviderNntpClient(
             : Received * 1000d / Math.Max(1, LaneMs);
     }
 
-    private sealed record HealthCanaryProviderResult(
-        int Found,
-        int Received,
-        int Missing,
-        int Unanswered,
-        int Attempts,
-        int Retries,
-        int Failures,
-        long FirstResponseMs,
-        long MaxResponseGapMs,
-        long ElapsedMs);
-
-    private sealed record HealthCanaryLaneResult(
-        int Found,
-        int Received,
-        int Missing,
-        int Unanswered,
-        int Attempts,
-        int Retries,
-        int Failures,
-        long FirstResponseMs,
-        long MaxResponseGapMs);
-
     private sealed class BulkStatPlan
     {
         private readonly ConcurrentDictionary<MultiConnectionNntpClient, BulkStatProbe> _probes;
@@ -3965,6 +3734,16 @@ public class MultiProviderNntpClient(
         }
 
         public MultiProviderNntpClient Owner { get; }
+
+        public BulkStatPlan CreateReusablePlan()
+        {
+            lock (_preferred)
+                return new BulkStatPlan(
+                    Owner,
+                    _probes.Values.ToArray(),
+                    new HashSet<MultiConnectionNntpClient>(_preferred),
+                    _useQualificationMetrics);
+        }
 
         public IDisposable BeginConnectionAllocation(int connectionDemand)
         {

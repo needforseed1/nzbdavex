@@ -150,7 +150,7 @@ public class RarProcessor(
     private async Task<NzbFileStream> GetNzbFileStream()
     {
         var filesize = await GetFileSizeAsync().ConfigureAwait(false);
-        return usenetClient.GetFileStream(fileInfo.NzbFile, filesize, articleBufferSize: 0);
+        return usenetClient.GetFileStream(fileInfo.NzbFile, filesize, readAheadBytes: 0);
     }
 
     private async Task<long> GetFileSizeAsync() => fileInfo.FileSize

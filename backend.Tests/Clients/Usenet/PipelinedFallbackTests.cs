@@ -557,7 +557,7 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
-    public async Task BulkHealthQualificationUsesTwoEstablishedConnectionsPerProvider()
+    public async Task BulkHealthQualificationUsesBoundedEstablishedConnectionsPerProvider()
     {
         var firstClient = new CoveragePipelineClient(_ => true);
         var secondClient = new CoveragePipelineClient(_ => true);
@@ -572,27 +572,27 @@ public class PipelinedFallbackTests
         var progress = new MaximumProgress();
 
         await Task.WhenAll(
-            first.PrewarmAsync(2, CancellationToken.None),
-            second.PrewarmAsync(2, CancellationToken.None));
+            first.PrewarmAsync(4, CancellationToken.None),
+            second.PrewarmAsync(4, CancellationToken.None));
         await wrapped.CheckAllSegmentsPipelinedAsync(
             segments, depth: 8, fallbackConcurrency: 4, progress, CancellationToken.None);
 
-        AssertQualificationUsedTwoLanes(firstClient);
-        AssertQualificationUsedTwoLanes(secondClient);
+        AssertQualificationUsedFourLanes(firstClient);
+        AssertQualificationUsedFourLanes(secondClient);
         Assert.Equal(segments.Length, progress.Maximum);
 
-        static void AssertQualificationUsedTwoLanes(CoveragePipelineClient client)
+        static void AssertQualificationUsedFourLanes(CoveragePipelineClient client)
         {
             var qualificationBatches = client.Batches
-                .Where(batch => batch.Length == 16)
+                .Where(batch => batch.Length == 32)
                 .ToArray();
-            Assert.Equal(2, qualificationBatches.Length);
-            Assert.Equal(32, qualificationBatches.SelectMany(batch => batch).Distinct().Count());
+            Assert.Equal(4, qualificationBatches.Length);
+            Assert.Equal(128, qualificationBatches.SelectMany(batch => batch).Distinct().Count());
         }
     }
 
     [Fact]
-    public async Task BulkHealthFastQualificationDoesNotAddCanaryWork()
+    public async Task PrePrepQualificationIsReusedByFullHealthCheck()
     {
         var firstClient = new CoveragePipelineClient(_ => true);
         var secondClient = new CoveragePipelineClient(_ => true);
@@ -601,122 +601,45 @@ public class PipelinedFallbackTests
             CreateProvider(secondClient, ProviderType.Pooled, "second", 1, maxConnections: 8),
         ], new ProviderUsageTracker());
         var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+        var progress = new MaximumProgress();
 
-        await multiProvider.CheckAllSegmentsPipelinedAsync(
-                segments, depth: 8, fallbackConcurrency: 8,
-                progress: null, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(2));
+        var qualification = await multiProvider.QualifyHealthCheckAsync(
+            segments.Take(128).ToArray(), depth: 8, fallbackConcurrency: 8,
+            CancellationToken.None);
+        await multiProvider.CheckAllSegmentsPipelinedAfterQualificationAsync(
+            qualification, segments, depth: 8, fallbackConcurrency: 8,
+            progress, CancellationToken.None);
 
-        Assert.DoesNotContain(
-            firstClient.Batches.Concat(secondClient.Batches),
-            batch => batch.Length is > 32);
+        Assert.Single(firstClient.Batches, batch => batch.Length == 128);
+        Assert.Single(secondClient.Batches, batch => batch.Length == 128);
+        Assert.Equal(segments.Length, progress.Maximum);
     }
 
     [Fact]
-    public async Task SlowBulkHealthQualificationRunsBoundedCanary()
+    public async Task BulkHealthQualificationAcceptsComplementaryProviderCoverage()
     {
-        var slowClient = new CoveragePipelineClient(
-            _ => true,
-            (batch, cancellationToken) => batch == 1
-                ? Task.Delay(TimeSpan.FromMilliseconds(800), cancellationToken)
-                : Task.CompletedTask);
-        var missingClient = new CoveragePipelineClient(_ => false);
+        static int SegmentNumber(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length));
+
+        var evenClient = new CoveragePipelineClient(
+            segmentId => SegmentNumber(segmentId) % 2 == 0);
+        var oddClient = new CoveragePipelineClient(
+            segmentId => SegmentNumber(segmentId) % 2 != 0);
         using var multiProvider = new MultiProviderNntpClient([
-            CreateProvider(slowClient, ProviderType.Pooled, "slow", 0, maxConnections: 8),
-            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1, maxConnections: 8),
+            CreateProvider(evenClient, ProviderType.Pooled, "even", 0, maxConnections: 8),
+            CreateProvider(oddClient, ProviderType.Pooled, "odd", 1, maxConnections: 8),
         ], new ProviderUsageTracker());
         var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+        var progress = new MaximumProgress();
 
         await multiProvider.CheckAllSegmentsPipelinedAsync(
                 segments, depth: 8, fallbackConcurrency: 8,
-                progress: null, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(3));
-
-        Assert.Equal(4, slowClient.Batches.Count(batch => batch.Length == 64));
-    }
-
-    [Fact]
-    public async Task SuspiciousBulkHealthCanaryRetriesOnlyUnansweredTail()
-    {
-        var tracker = new ProviderUsageTracker();
-        using var scope = tracker.BeginScope(Guid.NewGuid());
-        RecordPrepFallback(tracker);
-        var completeClient = new CoveragePipelineClient(
-            _ => true,
-            responseFailure: (batch, received) => batch == 2 && received == 8
-                ? new UsenetPipelinedStatStalledException(
-                    "Simulated partial canary pipeline stall.", received)
-                : null);
-        var missingClient = new CoveragePipelineClient(_ => false);
-        using var multiProvider = new MultiProviderNntpClient([
-            CreateProvider(completeClient, ProviderType.Pooled, "complete", 0,
-                maxConnections: 8),
-            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1,
-                maxConnections: 8),
-        ], tracker);
-        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
-
-        await multiProvider.CheckAllSegmentsPipelinedAsync(
-                segments, depth: 8, fallbackConcurrency: 8,
-                progress: null, CancellationToken.None)
+                progress, CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(2));
 
-        var stalled = Assert.Single(
-            completeClient.CallBatches, batch => batch.Call == 2);
-        var retry = Assert.Single(
-            completeClient.CallBatches, batch => batch.Segments.Length == 56);
-        Assert.Equal(64, stalled.Segments.Length);
-        Assert.Equal(stalled.Segments.Skip(8), retry.Segments);
-        Assert.DoesNotContain(stalled.Segments.Take(8), retry.Segments.Contains);
-        var canaryCalls = completeClient.CallBatches
-            .Where(batch => batch.Call is >= 2 and <= 6)
-            .ToArray();
-        Assert.Equal(
-            canaryCalls.SelectMany(batch => batch.Segments).Count(),
-            canaryCalls.SelectMany(batch => batch.Segments).Distinct().Count() + 56);
-    }
-
-    [Fact]
-    public async Task SuspiciousBulkHealthCanaryRepeatedStallsFailWithinBoundedAttempts()
-    {
-        var tracker = new ProviderUsageTracker();
-        var queueId = Guid.NewGuid();
-        using var scope = tracker.BeginScope(queueId);
-        RecordPrepFallback(tracker);
-        var stalledClient = new CoveragePipelineClient(
-            _ => true,
-            responseFailure: (batch, received) => batch >= 2 && received == 8
-                ? new UsenetPipelinedStatStalledException(
-                    "Simulated repeated canary pipeline stall.", received)
-                : null);
-        var missingClient = new CoveragePipelineClient(_ => false);
-        using var multiProvider = new MultiProviderNntpClient([
-            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0,
-                maxConnections: 8),
-            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1,
-                maxConnections: 8),
-        ], tracker);
-        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
-
-        var exception = await Assert.ThrowsAsync<
-            NzbWebDAV.Exceptions.UsenetHealthQualificationException>(() =>
-            multiProvider.CheckAllSegmentsPipelinedAsync(
-                    segments, depth: 8, fallbackConcurrency: 8,
-                    progress: null, CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(2)));
-
-        Assert.Equal(256, exception.SampleSize);
-        Assert.Equal(64, exception.BestCoverage);
-        Assert.Equal(9, stalledClient.CallBatches.Count);
-        Assert.Equal(4, stalledClient.CallBatches.Count(batch => batch.Segments.Length == 64));
-        Assert.Equal(4, stalledClient.CallBatches.Count(batch => batch.Segments.Length == 56));
-        Assert.DoesNotContain(
-            stalledClient.CallBatches.Skip(1),
-            batch => batch.Segments.Length <= 8);
-        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
-            tracker.SnapshotHealthCheck(queueId));
-        Assert.Null(snapshot.FoundArticles);
-        Assert.Equal(0, snapshot.MissingArticles);
+        Assert.Single(evenClient.Batches, batch => batch.Length == 128);
+        Assert.Single(oddClient.Batches, batch => batch.Length == 128);
+        Assert.Equal(segments.Length, progress.Maximum);
     }
 
     [Fact]
@@ -743,9 +666,9 @@ public class PipelinedFallbackTests
                 return Task.CompletedTask;
             });
         var firstPool = new ConnectionPool<INntpClient>(
-            8, _ => ValueTask.FromResult<INntpClient>(firstClient));
+            1, _ => ValueTask.FromResult<INntpClient>(firstClient));
         var secondPool = new ConnectionPool<INntpClient>(
-            8, _ => ValueTask.FromResult<INntpClient>(secondClient));
+            1, _ => ValueTask.FromResult<INntpClient>(secondClient));
         using var first = CreateProvider(firstPool, ProviderType.Pooled, "first", 0);
         using var second = CreateProvider(secondPool, ProviderType.HealthChecksOnly, "second", 1);
         using var multiProvider = new MultiProviderNntpClient(
@@ -756,7 +679,7 @@ public class PipelinedFallbackTests
 
         await first.PrewarmAsync(1, CancellationToken.None);
         var check = wrapped.CheckAllSegmentsPipelinedAsync(
-            segments, depth: 8, fallbackConcurrency: 8, progress, CancellationToken.None,
+            segments, depth: 8, fallbackConcurrency: 2, progress, CancellationToken.None,
             qualifyProviders: false);
         try
         {
@@ -798,8 +721,8 @@ public class PipelinedFallbackTests
 
         Assert.Single(firstMissing.Batches);
         Assert.Single(secondMissing.Batches);
-        Assert.Equal(32, firstMissing.Batches.Single().Length);
-        Assert.Equal(32, secondMissing.Batches.Single().Length);
+        Assert.Equal(128, firstMissing.Batches.Single().Length);
+        Assert.Equal(128, secondMissing.Batches.Single().Length);
     }
 
     [Fact]
@@ -822,12 +745,12 @@ public class PipelinedFallbackTests
                 segments, depth: 8, fallbackConcurrency: 8,
                 progress: null, CancellationToken.None));
 
-        Assert.Equal(32, exception.SampleSize);
-        Assert.InRange(exception.BestCoverage, 1, 31);
+        Assert.Equal(128, exception.SampleSize);
+        Assert.InRange(exception.AggregateCoverage, 1, 127);
         Assert.Single(firstPartial.Batches);
         Assert.Single(secondPartial.Batches);
-        Assert.Equal(32, firstPartial.Batches.Single().Length);
-        Assert.Equal(32, secondPartial.Batches.Single().Length);
+        Assert.Equal(128, firstPartial.Batches.Single().Length);
+        Assert.Equal(128, secondPartial.Batches.Single().Length);
     }
 
     [Fact]
@@ -851,8 +774,8 @@ public class PipelinedFallbackTests
                 progress: null, CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.Contains(rescue.Batches, batch => batch.Length == 32);
-        Assert.Contains(rescue.Batches, batch => batch.Length > 32);
+        Assert.Contains(rescue.Batches, batch => batch.Length == 128);
+        Assert.Contains(rescue.Batches, batch => batch.Length > 128);
     }
 
     [Fact]
@@ -873,7 +796,7 @@ public class PipelinedFallbackTests
                 progress: null, CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.Contains(rescue.Batches, batch => batch.Length == 32);
+        Assert.Contains(rescue.Batches, batch => batch.Length == 128);
     }
 
     [Fact]
@@ -979,7 +902,7 @@ public class PipelinedFallbackTests
             _ => true,
             async (batch, cancellationToken) =>
             {
-                if (batch <= 2) return;
+                if (batch <= 4) return;
                 bulkStarted.TrySetResult();
                 await releaseBulk.Task.WaitAsync(cancellationToken);
             });

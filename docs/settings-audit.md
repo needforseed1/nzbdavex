@@ -40,7 +40,7 @@ Verdicts used below:
 | `usenet.playback-reserved-connections` | **Working** | Keeps physical provider capacity available to playback when prep and health work are busy. Blank uses Automatic (up to 20); explicit values support 0–512 and are safely capped to current playback-capable provider capacity. |
 | `usenet.max-queue-connections` | **Fixed** | Blank directly means Automatic and follows pooled capacity; there is no redundant enable toggle. An explicit limit is validated against current pooled capacity instead of being silently clamped. |
 | `usenet.streaming-priority` | **Working / validated** | Integer 0–100 controls playback-vs-prep semaphore odds. |
-| `usenet.article-buffer-size` | **Working** | Positive article look-ahead value is consumed by stream buffering. A very high value is allowed; a memory-based upper-bound policy may be worth adding. |
+| `usenet.read-ahead-mb` | **Working** | Controls approximate decoded MiB kept ahead per stream. Runtime derives and bounds the article capacity from each file's average article size; legacy `usenet.article-buffer-size` values remain a compatibility fallback until the new setting is saved. |
 | `usenet.segment-cache.enabled`, `.path`, `.max-gb` | **Working / fixed** | Blank paths and size overflow are safe; the UI correctly marks restart-required behavior. Enable on fast local SSD/NVMe for Nuvio-style streaming so probes, seeks, retries, and reopened streams can reuse decoded articles; disable for one-pass workloads or slow/network cache storage. Filesystem writability/capacity cannot be proved until runtime. |
 
 ## Indexers

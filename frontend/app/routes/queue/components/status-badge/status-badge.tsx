@@ -99,14 +99,20 @@ export function StatusBadge({ className, status, percentage, error }: StatusBadg
 
     if (statusLower === "health-checking") {
         const percentNum = Number(percentage);
+        const isProbing = percentNum < 0;
         const badgeText = `${percentNum}%`;
         const healthCheckProgressClass = `${styles.progress} ${styles.healthcheckProgress}`;
         const healthCheckProgressStyle = { width: `${Math.min(percentNum, 100)}%` };
 
         return (
-            <div className={classNames([styles.badge, className])}>
-                <div className={healthCheckProgressClass} style={healthCheckProgressStyle} />
-                <div className={styles.badgeText}>{badgeText}</div>
+            <div
+                className={classNames([styles.badge, className])}
+                role="status"
+                aria-label={isProbing ? "Probing providers" : `Health check ${badgeText}`}>
+                {!isProbing && <div className={healthCheckProgressClass} style={healthCheckProgressStyle} />}
+                <div className={classNames([styles.badgeText, isProbing && styles.probingText])}>
+                    {isProbing ? "Probing" : badgeText}
+                </div>
             </div>
         );
     }

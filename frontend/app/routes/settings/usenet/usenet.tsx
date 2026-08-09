@@ -29,6 +29,7 @@ const usenetConnectionsTopic = {'cxs': 'state'};
 const benchmarkTopic = {'bench': 'state'};
 const USAGE_POLL_INTERVAL_MS = 10_000;
 const MAX_INT32 = 2_147_483_647;
+const MAX_READ_AHEAD_MIB = 1024;
 
 // Mirrors the camelCase JSON the backend benchmark endpoint + websocket emit.
 type BenchmarkLatency = { minMs: number; avgMs: number; samples: number };
@@ -1066,19 +1067,20 @@ function StreamingAndCacheSettings({ config, setNewConfig }: PerformanceSettings
                 <div>Streaming &amp; cache</div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
-                <label htmlFor="article-buffer-size-input" className={styles["form-label"]}>
-                    Article buffer size
+                <label htmlFor="read-ahead-mib-input" className={styles["form-label"]}>
+                    Read-ahead per stream (MiB)
                 </label>
                 <input
                     type="text"
                     inputMode="numeric"
-                    id="article-buffer-size-input"
-                    className={`${styles["form-input"]} ${!isValidArticleBufferSize(config["usenet.article-buffer-size"]) ? styles.error : ""}`}
-                    placeholder="40"
-                    value={config["usenet.article-buffer-size"]}
-                    onChange={e => setNewConfig({ ...config, "usenet.article-buffer-size": e.target.value })} />
+                    id="read-ahead-mib-input"
+                    className={`${styles["form-input"]} ${!isValidReadAheadMiB(config["usenet.read-ahead-mb"] ?? "") ? styles.error : ""}`}
+                    placeholder="64"
+                    value={config["usenet.read-ahead-mb"] ?? ""}
+                    onChange={e => setNewConfig({ ...config, "usenet.read-ahead-mb": e.target.value })} />
                 <div className={styles["form-hint"]}>
-                    Articles buffered ahead per stream. Higher values can smooth reads but use more memory.
+                    Approximate decoded data kept ahead of each active stream. The internal article count
+                    adapts to each NZB, so the memory target stays consistent when article sizes differ.
                 </div>
             </div>
             <div className={styles["form-group"]} style={{ marginTop: 12 }}>
@@ -2344,7 +2346,7 @@ export function isUsenetSettingsValid(config: Record<string, string>) {
         && isIntegerInRange(
             config["usenet.ready-connections.health"] ?? "", 0, MAX_INT32)
         && isValidStreamingPriority(config["usenet.streaming-priority"])
-        && isValidArticleBufferSize(config["usenet.article-buffer-size"])
+        && isValidReadAheadMiB(config["usenet.read-ahead-mb"] ?? "")
         && segmentCacheValid
         && isIntegerInRange(config["usenet.pipelining.depth"] ?? "", 1, MAX_PIPELINING_DEPTH)
         && isIntegerInRange(config["usenet.pipelining.health.depth"] ?? "", 1, MAX_PIPELINING_DEPTH)
@@ -2434,8 +2436,8 @@ function isValidStreamingPriority(value: string): boolean {
     return Number.isInteger(num) && num >= 0 && num <= 100;
 }
 
-function isValidArticleBufferSize(value: string): boolean {
-    return isPositiveInteger(value);
+function isValidReadAheadMiB(value: string): boolean {
+    return isIntegerInRange(value, 1, MAX_READ_AHEAD_MIB);
 }
 
 function isIntegerInRange(value: string, min: number, max: number) {

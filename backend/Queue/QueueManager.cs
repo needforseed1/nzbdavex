@@ -299,7 +299,9 @@ public class QueueManager : IDisposable
             {
                 latestHealthProgress = progress is null
                     ? null
-                    : Math.Clamp(progress.Value, 0, 100);
+                    : progress.Value == QueueItemProcessor.HealthQualificationProgress
+                        ? QueueItemProcessor.HealthQualificationProgress
+                        : Math.Clamp(progress.Value, 0, 100);
                 inProgressQueueItem.HealthProgressPercentage = latestHealthProgress;
             }
 

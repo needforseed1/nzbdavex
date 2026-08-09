@@ -76,6 +76,29 @@
     top: -1px;
 }
 
+.probingText::before {
+    content: "";
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    margin-right: 5px;
+    vertical-align: -1px;
+    border: 1.5px solid var(--text-faint);
+    border-top-color: var(--success);
+    border-radius: 50%;
+    animation: probingSpin 700ms linear infinite;
+}
+
+@keyframes probingSpin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .probingText::before {
+        animation-duration: 1.8s;
+    }
+}
+
 @media not (pointer: coarse),
 (min-width: 900px) {
     .failureBadge:hover {

@@ -88,6 +88,7 @@ public partial class GetWatchdogEntriesController(
             Par2Ms = snapshot.Par2Ms,
             RarMs = snapshot.RarMs,
             ProcessorsMs = snapshot.ProcessorsMs,
+            HealthQualificationMs = snapshot.HealthQualificationMs,
             LazyRarMounted = snapshot.LazyRarMounted,
             FirstSegmentFallbacks = snapshot.FirstSegmentFallbacks,
             LastStage = snapshot.LastStage,

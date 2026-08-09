@@ -14,13 +14,13 @@ public class ConfigManagerTests
         var config = WithValues(
             ("api.ensure-importable-video", "not-a-boolean"),
             ("usenet.max-download-connections", "not-an-integer"),
-            ("usenet.article-buffer-size", "not-an-integer"),
+            ("usenet.read-ahead-mb", "not-an-integer"),
             ("usenet.segment-cache.max-gb", "not-a-long"),
             ("usenet.streaming-priority", "not-an-integer"));
 
         Assert.True(config.IsEnsureImportableVideoEnabled());
         Assert.Equal(1, config.GetMaxDownloadConnections());
-        Assert.Equal(40, config.GetArticleBufferSize());
+        Assert.Equal(64L * 1024 * 1024, config.GetReadAheadBytes());
         Assert.Equal(10L * 1024 * 1024 * 1024, config.GetSegmentCacheMaxBytes());
         Assert.Equal(80, config.GetStreamingPriority().HighPriorityOdds);
     }
@@ -30,18 +30,30 @@ public class ConfigManagerTests
     {
         var config = WithValues(
             ("usenet.max-download-connections", "-5"),
-            ("usenet.article-buffer-size", "0"),
+            ("usenet.read-ahead-mb", "0"),
             ("usenet.segment-cache.max-gb", long.MaxValue.ToString()),
             ("usenet.pipelining.depth", "96"),
             ("usenet.pipelining.health.depth", "129"),
             ("usenet.streaming-priority", "500"));
 
         Assert.Equal(1, config.GetMaxDownloadConnections());
-        Assert.Equal(1, config.GetArticleBufferSize());
+        Assert.Equal(1L * 1024 * 1024, config.GetReadAheadBytes());
         Assert.True(config.GetSegmentCacheMaxBytes() > 0);
         Assert.Equal(64, config.GetPipeliningDepth());
         Assert.Equal(64, config.GetHealthPipeliningDepth());
         Assert.Equal(100, config.GetStreamingPriority().HighPriorityOdds);
+    }
+
+    [Fact]
+    public void ReadAheadUsesLegacyArticleValueUntilNewSettingIsSaved()
+    {
+        const long bytesPerMiB = 1024L * 1024L;
+
+        Assert.Equal(40 * bytesPerMiB, WithValues(
+            ("usenet.article-buffer-size", "40")).GetReadAheadBytes());
+        Assert.Equal(96 * bytesPerMiB, WithValues(
+            ("usenet.article-buffer-size", "40"),
+            ("usenet.read-ahead-mb", "96")).GetReadAheadBytes());
     }
 
     [Fact]

@@ -38,6 +38,17 @@ public class GetSettingsMetadataTests
             key, "stored-secret", new ConfigManager()));
     }
 
+    [Fact]
+    public void ReadAheadMetadataReflectsLegacyValueUntilReplacementIsStored()
+    {
+        var config = WithValues(("usenet.article-buffer-size", "40"));
+
+        Assert.Equal("40", GetSettingsMetadataController.ResolveEffectiveValue(
+            "usenet.read-ahead-mb", null, config));
+        Assert.Equal("96", GetSettingsMetadataController.ResolveEffectiveValue(
+            "usenet.read-ahead-mb", "96", config));
+    }
+
     private static ConfigManager WithValues(params (string Key, string Value)[] values)
     {
         var config = new ConfigManager();

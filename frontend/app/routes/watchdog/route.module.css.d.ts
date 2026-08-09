@@ -72,7 +72,6 @@ declare const styles: {
   readonly "healthProviderHost": string;
   readonly "healthProviderCell": string;
   readonly "healthProviderWarning": string;
-  readonly "singleAttemptReason": string;
   readonly "attemptTableWrap": string;
   readonly "attemptTable": string;
   readonly "winnerRow": string;

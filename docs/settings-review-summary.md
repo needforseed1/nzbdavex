@@ -78,7 +78,8 @@ The following controls now live under `Usenet → Advanced performance`:
 - `usenet.playback-reserved-connections` — physical provider capacity protected for playback.
 - `usenet.max-queue-connections` — prep/queue connection budget.
 - `usenet.streaming-priority` — playback-versus-queue semaphore weighting.
-- `usenet.article-buffer-size` — per-stream article look-ahead.
+- `usenet.read-ahead-mb` — approximate decoded MiB kept ahead per stream; the
+  internal article capacity adapts to each NZB's average article size.
 - `usenet.segment-cache.enabled`, `.path`, and `.max-gb` — decoded segment disk cache.
 
 They are grouped into “Concurrency & scheduling” and “Streaming & cache.” Their stored keys are unchanged, and their update detection, validation, and provider-capacity dependency moved with the controls. WebDAV now contains only DAV authentication and presentation behavior.

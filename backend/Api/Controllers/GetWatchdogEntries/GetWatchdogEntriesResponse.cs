@@ -42,6 +42,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("par2Ms")] public required long Par2Ms { get; init; }
         [JsonPropertyName("rarMs")] public required long RarMs { get; init; }
         [JsonPropertyName("processorsMs")] public required long ProcessorsMs { get; init; }
+        [JsonPropertyName("healthQualificationMs")] public required long HealthQualificationMs { get; init; }
         [JsonPropertyName("lazyRarMounted")] public required bool LazyRarMounted { get; init; }
         [JsonPropertyName("firstSegmentFallbacks")] public required long FirstSegmentFallbacks { get; init; }
         [JsonPropertyName("lastStage")] public string? LastStage { get; init; }

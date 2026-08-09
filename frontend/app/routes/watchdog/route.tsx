@@ -17,7 +17,6 @@ import {
     deriveFailurePhase,
     formatPrepFailures,
     selectFailedDetailsAttempt,
-    summarizeFailure,
 } from "./watchdog-failure";
 import { selectHealthSummaryTiming, selectTotalSummaryTiming } from "./watchdog-timing";
 
@@ -192,9 +191,13 @@ function ClickCard({ group }: { group: ClickGroup }) {
             detailsAttempt.healthDurationMs,
             detailsAttempt.healthWaitDurationMs);
     const totalSummaryDurationMs = selectTotalSummaryTiming(
+        detailsAttempt?.durationMs,
         detailsAttempt?.prepDurationMs,
         detailsAttempt?.healthDurationMs,
         detailsAttempt?.healthWaitDurationMs);
+    const failurePhase = showingFailure
+        ? deriveFailurePhase(detailsAttempt?.prepStats)
+        : null;
     // Direct queue adds carry no indexer (recorded as a literal em dash), so the
     // "via <indexer>" clause and the Indexer column are pure noise for them.
     const detailsIndexer = knownIndexer(detailsAttempt?.indexerName);
@@ -239,6 +242,12 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         <span className={styles.winnerVia}>via <span className={styles.winnerIndexer}>{detailsIndexer}</span></span>
                     }
                     <span className={styles.timingBoxes}>
+                        {(detailsAttempt.prepStats?.healthQualificationMs ?? 0) > 0 &&
+                            <TimingBox
+                                label="Probing"
+                                value={formatDuration(detailsAttempt.prepStats?.healthQualificationMs)}
+                            />
+                        }
                         {detailsAttempt.prepDurationMs != null &&
                             <TimingBox label="Prep" value={formatDuration(detailsAttempt.prepDurationMs)} />
                         }
@@ -261,6 +270,15 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         </span>
                     </span>
                 </button>
+                {showingFailure && detailsAttempt.failReason && (
+                    <section className={styles.failureReasonBox}>
+                        <div className={styles.failureReasonHeader}>
+                            <span>Failure</span>
+                            {failurePhase && <span>{failurePhase}</span>}
+                        </div>
+                        <span className={styles.failureReasonRaw}>{detailsAttempt.failReason}</span>
+                    </section>
+                )}
                 {detailsOpen && (
                     <RunStats
                         id={`watchdog-stats-${group.clickId}`}
@@ -268,7 +286,6 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         healthStats={detailsAttempt.healthStats}
                         healthDurationMs={detailsAttempt.healthDurationMs}
                         healthWaitDurationMs={detailsAttempt.healthWaitDurationMs}
-                        failReason={showingFailure ? detailsAttempt.failReason : null}
                         failed={showingFailure}
                         providerHost={detailsAttempt.providerHost}
                         providerNickname={detailsAttempt.providerNickname}
@@ -277,13 +294,7 @@ function ClickCard({ group }: { group: ClickGroup }) {
                 </>
             )}
 
-            {collapsed ? (
-                // Provider shares and end-to-end time live in the Stats panel;
-                // only the failure reason earns space on the main view.
-                detailsAttempt.failReason && !detailsOpen
-                    ? <div className={styles.singleAttemptReason}>{detailsAttempt.failReason}</div>
-                    : null
-            ) : (
+            {!collapsed && (
             <div className={styles.attemptTableWrap}>
                 <table className={styles.attemptTable}>
                     <thead>
@@ -370,7 +381,6 @@ function RunStats({
     healthStats,
     healthDurationMs,
     healthWaitDurationMs,
-    failReason,
     failed,
     providerHost,
     providerNickname,
@@ -380,7 +390,6 @@ function RunStats({
     healthStats?: WatchdogHealthStats | null,
     healthDurationMs?: number | null,
     healthWaitDurationMs?: number | null,
-    failReason?: string | null,
     failed: boolean,
     providerHost?: string | null,
     providerNickname?: string | null,
@@ -394,23 +403,10 @@ function RunStats({
     const healthRate = outcomeKnown && healthDurationMs != null && healthDurationMs > 0
         ? Math.round(foundArticles * 1000 / healthDurationMs)
         : null;
-    const failurePhase = failed ? deriveFailurePhase(prepStats) : null;
     const hasPrepRouting = prepStats != null && prepStats.providers.length > 0;
 
     return (
         <div id={id} className={styles.winnerDetails}>
-            {failed && (
-                <section className={styles.failureReasonBox}>
-                    <div className={styles.failureReasonHeader}>
-                        <span>Failure</span>
-                        {failurePhase && <span>{failurePhase}</span>}
-                    </div>
-                    <span className={styles.detailsSectionTitle}>{summarizeFailure(failReason)}</span>
-                    {failReason && summarizeFailure(failReason) !== failReason && (
-                        <span className={styles.failureReasonRaw}>{failReason}</span>
-                    )}
-                </section>
-            )}
             {failed && !healthStats && !hasPrepRouting && providerHost && (
                 <section className={styles.detailsSection}>
                     <div className={styles.detailsSectionHeader}>

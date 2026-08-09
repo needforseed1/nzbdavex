@@ -56,6 +56,7 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
             "api.user-agent" => config.GetUserAgent(),
             "api.search-user-agent" => config.GetSearchUserAgent(),
             "usenet.max-download-connections" => config.GetMaxDownloadConnections().ToString(),
+            "usenet.read-ahead-mb" => (config.GetReadAheadBytes() / (1024L * 1024L)).ToString(),
             "usenet.segment-cache.path" => config.GetSegmentCachePath(),
             "webdav.user" => config.GetWebdavUser() ?? "",
             "rclone.mount-dir" => config.GetRcloneMountDir(),

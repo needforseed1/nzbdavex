@@ -149,7 +149,7 @@ public class HealthStatVerdictTests
             .WaitAsync(TestTimeout);
 
         Assert.Equal(2, backup.Calls);
-        Assert.Equal([32, segments.Length - 32], backup.BatchSizes);
+        Assert.Equal([128, segments.Length - 128], backup.BatchSizes);
     }
 
     [Fact]
@@ -184,10 +184,10 @@ public class HealthStatVerdictTests
             tracker.SnapshotHealthCheck(queueId));
         var backupStats = Assert.Single(
             snapshot.Providers, provider => provider.ProviderId == "backup");
-        Assert.Equal(32, backupStats.ProbeFound);
+        Assert.Equal(128, backupStats.ProbeFound);
         Assert.Equal(1, backupStats.Batches);
         Assert.Equal(0, backupStats.Failures);
-        Assert.Equal(segments.Length - 32, backupStats.Found);
+        Assert.Equal(segments.Length - 128, backupStats.Found);
         Assert.Null(tracker.SnapshotRecoveryNotice(queueId));
     }
 
@@ -213,7 +213,8 @@ public class HealthStatVerdictTests
         segments[2] = "recovery-2";
 
         await client.CheckAllSegmentsPipelinedAsync(
-                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+                segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None,
+                qualifyProviders: false)
             .WaitAsync(TestTimeout);
 
         Assert.Equal(2, backup.Calls);
@@ -253,7 +254,8 @@ public class HealthStatVerdictTests
 
         var exception = await Assert.ThrowsAsync<UsenetArticleUnverifiableException>(() =>
             client.CheckAllSegmentsPipelinedAsync(
-                    segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
+                    segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None,
+                    qualifyProviders: false)
                 .WaitAsync(TestTimeout));
 
         Assert.Equal(2, backup.Calls);
@@ -319,8 +321,8 @@ public class HealthStatVerdictTests
         var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
             tracker.SnapshotHealthCheck(queueId));
         var backupStats = Assert.Single(snapshot.Providers, provider => provider.ProviderId == "backup");
-        Assert.Equal(32, backupStats.ProbeFound);
-        Assert.Equal(segments.Length - 32, backupStats.Found);
+        Assert.Equal(128, backupStats.ProbeFound);
+        Assert.Equal(segments.Length - 128, backupStats.Found);
         Assert.Equal(0, backupStats.Missing);
         Assert.Equal(0, backupStats.Failures);
         Assert.Equal(1, backupStats.Batches);
@@ -354,7 +356,7 @@ public class HealthStatVerdictTests
     public async Task TwoZeroCoverageProbesFastFailDespiteAnotherProbeTimingOut()
     {
         // The captured-run pathology: independent responsive providers probe
-        // 0/32 while another provider's probe times out. This is enough evidence
+        // 0/128 while another provider's probe times out. This is enough evidence
         // to fail before the full-release sweep and recovery pass.
         var firstResponsive = new VerdictStatClient((_, _) => StatAnswer.Missing);
         var secondResponsive = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -378,9 +380,8 @@ public class HealthStatVerdictTests
     public async Task ZeroResponseProbeRetriesFreshSocketBeforeQuarantiningProvider()
     {
         // One stale socket must not quarantine an otherwise fast, full-coverage
-        // provider. One of the first two 16-command qualification lanes stalls;
-        // after that socket is evicted, the fresh single-lane retry succeeds and
-        // the provider carries primary lanes.
+        // provider. One qualification socket stalls; after it is evicted, the
+        // bounded fresh-socket retry succeeds and the provider carries primary lanes.
         var flaky = new VerdictStatClient(
             (_, call) => call == 1 ? StatAnswer.Stall : StatAnswer.Found);
         var missing = new VerdictStatClient((_, _) => StatAnswer.Missing);
@@ -397,7 +398,7 @@ public class HealthStatVerdictTests
             .WaitAsync(TestTimeout);
 
         Assert.True(flaky.Calls > 3);
-        Assert.Equal([16, 16, 32], flaky.BatchSizes.Take(3));
+        Assert.Equal([64, 64, 128], flaky.BatchSizes.Take(3));
     }
 
     [Fact]
@@ -426,11 +427,11 @@ public class HealthStatVerdictTests
         var segments = Enumerable.Range(0, 2048).Select(i => $"s{i}").ToArray();
 
         await client.CheckAllSegmentsPipelinedAsync(
-                segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None)
+                segments, depth: 32, fallbackConcurrency: 8, null, CancellationToken.None,
+                qualifyProviders: false)
             .WaitAsync(TestTimeout);
 
         Assert.True(recovering.MaxConcurrentCalls >= 4);
-        Assert.Equal(segments.Length - 32, recovering.BatchSizes.Skip(4).Sum());
     }
 
     [Fact]

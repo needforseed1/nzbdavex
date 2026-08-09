@@ -12,7 +12,7 @@ Health STAT pipelining is enabled by default. Playback pipelining is optional.
 | Path | Before | With pipelining |
 |------|--------|-----------------|
 | Health check (100→200%) | one `STAT` per article | `STAT`s pipelined, falling back to per-segment failover on a miss |
-| Streaming playback | up to `article-buffer-size` connections, one segment each | one connection streaming consecutive segments with no round-trip gaps |
+| Streaming playback | article concurrency derived from the per-stream MiB read-ahead target | one connection streaming consecutive segments with no round-trip gaps |
 
 Queue first-segment preparation deliberately uses bounded parallel `ARTICLE`
 requests. The former single-connection queue pipeline serialized large imports

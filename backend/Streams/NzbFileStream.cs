@@ -15,9 +15,11 @@ public class NzbFileStream(
     string[] fileSegmentIds,
     long fileSize,
     INntpClient usenetClient,
-    int articleBufferSize
+    long readAheadBytes
 ) : FastReadOnlyStream
 {
+    internal const int MaxBufferedArticles = 512;
+
     private long _position;
     private bool _disposed;
     private Stream? _innerStream;
@@ -94,7 +96,7 @@ public class NzbFileStream(
                     var end = Math.Min(fileSize, start + avg);
                     return new LongRange(start, end);
                 }
-                catch (Exception e) when (articleBufferSize > 0 && !ct.IsCancellationRequested)
+                catch (Exception e) when (readAheadBytes > 0 && !ct.IsCancellationRequested)
                 {
                     Log.Warning(e,
                         "Seek probe transient failure on segment index {Index}. Using estimated range.", guess);
@@ -217,8 +219,19 @@ public class NzbFileStream(
         CancellationToken cancellationToken)
     {
         var segmentIds = fileSegmentIds.AsMemory()[firstSegmentIndex..];
-        return MultiSegmentStream.Create(segmentIds, usenetClient, articleBufferSize, ExpectedSegmentSize,
+        var bufferedArticleCapacity = CalculateBufferedArticleCapacity(readAheadBytes, ExpectedSegmentSize);
+        return MultiSegmentStream.Create(segmentIds, usenetClient, bufferedArticleCapacity, ExpectedSegmentSize,
             failFastOnFirstSegment, cancellationToken);
+    }
+
+    internal static int CalculateBufferedArticleCapacity(long targetBytes, long expectedSegmentSize)
+    {
+        if (targetBytes <= 0) return 0;
+        if (expectedSegmentSize <= 0) return 1;
+
+        var articles = targetBytes / expectedSegmentSize;
+        if (targetBytes % expectedSegmentSize != 0) articles++;
+        return (int)Math.Clamp(articles, 1, MaxBufferedArticles);
     }
 
     protected override void Dispose(bool disposing)

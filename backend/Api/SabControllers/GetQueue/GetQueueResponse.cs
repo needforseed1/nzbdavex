@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.SabControllers.GetQueue;
@@ -95,7 +96,8 @@ public class GetQueueResponse : SabBaseResponse
                 TruePercentage = visibleProgress.ToString(),
                 HealthPercentage = healthProgressPercentage is null
                     ? null
-                    : Math.Clamp(healthProgressPercentage.Value, 0, 100).ToString(),
+                    : Math.Clamp(healthProgressPercentage.Value,
+                        QueueItemProcessor.HealthQualificationProgress, 100).ToString(),
                 Status = status,
                 TimeLeft = TimeSpan.Zero,
                 SizeInMB = FormatSizeMB(queueItem.TotalSegmentBytes),

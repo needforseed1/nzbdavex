@@ -49,7 +49,7 @@ public class DatabaseStoreRarFile(
         (
             transient,
             usenetClient,
-            configManager.GetArticleBufferSize(),
+            configManager.GetReadAheadBytes(),
             resolver: null
         );
     }

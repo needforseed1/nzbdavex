@@ -118,7 +118,8 @@ public class ProviderUsageTrackerTests
                 new PrepProviderStat("newshosting-id", 924, 15_138_816),
                 new PrepProviderStat("eweka-id", 500, 8_192_000),
             ],
-            "processors");
+            "processors",
+            1_237);
 
         using (tracker.BeginScope(queueId))
             tracker.RecordPrepStats(expected);
@@ -131,6 +132,22 @@ public class ProviderUsageTrackerTests
         Assert.Equal(1_424, snapshot.Providers.Sum(x => x.Articles));
         Assert.Equal(23_330_816, snapshot.Providers.Sum(x => x.Bytes));
         Assert.Equal("processors", snapshot.LastStage);
+        Assert.Equal(1_237, snapshot.HealthQualificationMs);
+    }
+
+    [Fact]
+    public void PrepSnapshot_OlderJsonDefaultsQualificationTimingToZero()
+    {
+        const string json = """
+            {"FileCount":1,"Connections":1,"QueueWaitMs":0,"FirstSegmentsMs":10,
+             "Par2Ms":0,"RarMs":0,"ProcessorsMs":0,"LazyRarMounted":false,
+             "FirstSegmentFallbacks":0,"Providers":[],"LastStage":"first-segments"}
+            """;
+
+        var snapshot = JsonSerializer.Deserialize<PrepUsageSnapshot>(json);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(0, snapshot.HealthQualificationMs);
     }
 
     [Fact]

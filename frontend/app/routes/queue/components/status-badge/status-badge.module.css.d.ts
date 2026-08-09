@@ -8,6 +8,6 @@ declare const styles: {
   readonly "failureBadge": string;
   readonly "gray": string;
   readonly "uploadIcon": string;
+  readonly "probingText": string;
 };
 export = styles;
-

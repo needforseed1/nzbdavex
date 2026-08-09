@@ -11,7 +11,7 @@ public class DavMultipartFileStream : Stream
 {
     private readonly DavMultipartFile _mpf;
     private readonly INntpClient _usenetClient;
-    private readonly int _articleBufferSize;
+    private readonly long _readAheadBytes;
     private readonly LazyRarResolver? _resolver;
     private readonly long _length;
 
@@ -22,12 +22,12 @@ public class DavMultipartFileStream : Stream
     public DavMultipartFileStream(
         DavMultipartFile mpf,
         INntpClient usenetClient,
-        int articleBufferSize,
+        long readAheadBytes,
         LazyRarResolver? resolver)
     {
         _mpf = mpf;
         _usenetClient = usenetClient;
-        _articleBufferSize = articleBufferSize;
+        _readAheadBytes = readAheadBytes;
         _resolver = resolver;
         _length = ComputeLength(mpf.Metadata);
 
@@ -215,7 +215,7 @@ public class DavMultipartFileStream : Stream
 
     private Stream OpenPart(DavMultipartFile.FilePart part, long extraOffset)
     {
-        var stream = _usenetClient.GetFileStream(part.SegmentIds, part.SegmentIdByteRange.Count, _articleBufferSize);
+        var stream = _usenetClient.GetFileStream(part.SegmentIds, part.SegmentIdByteRange.Count, _readAheadBytes);
         stream.Seek(part.FilePartByteRange.StartInclusive + extraOffset, SeekOrigin.Begin);
         return stream.LimitLength(part.FilePartByteRange.Count - extraOffset);
     }

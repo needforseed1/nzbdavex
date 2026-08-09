@@ -1,20 +1,20 @@
 namespace NzbWebDAV.Exceptions;
 
 /// <summary>
-/// A bounded availability sample did not find any provider with complete
-/// coverage. This is an admission failure, not proof that a specific article
+/// A bounded availability sample was not collectively covered by the available
+/// providers. This is an admission failure, not proof that a specific article
 /// is missing, so callers must not cache a missing segment or attempt repair.
 /// </summary>
 public sealed class UsenetHealthQualificationException(
     int sampleSize,
-    int bestCoverage)
-    : Exception(BuildMessage(sampleSize, bestCoverage))
+    int aggregateCoverage)
+    : Exception(BuildMessage(sampleSize, aggregateCoverage))
 {
     public int SampleSize { get; } = sampleSize;
-    public int BestCoverage { get; } = bestCoverage;
+    public int AggregateCoverage { get; } = aggregateCoverage;
 
-    private static string BuildMessage(int sampleSize, int bestCoverage) =>
-        $"Health-check qualification failed: no provider returned all " +
-        $"{sampleSize} sampled articles (best {bestCoverage}/{sampleSize}). " +
+    private static string BuildMessage(int sampleSize, int aggregateCoverage) =>
+        $"Health-check qualification failed: the available providers collectively returned " +
+        $"{aggregateCoverage}/{sampleSize} sampled articles. " +
         "The bulk health check was not started.";
 }

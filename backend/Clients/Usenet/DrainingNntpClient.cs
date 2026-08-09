@@ -304,6 +304,30 @@ internal sealed class DrainingNntpClient : NntpClient, IQueueConnectionWarmer
             ? warmer.PrimePrimaryHealthCheckAsync(segmentIds, depth, cancellationToken)
             : Task.CompletedTask);
 
+    public Task<QueueHealthQualification> QualifyHealthCheckAsync(
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        CancellationToken cancellationToken) =>
+        UseAsync(client => client is IQueueConnectionWarmer warmer
+            ? warmer.QualifyHealthCheckAsync(
+                segmentIds, depth, fallbackConcurrency, cancellationToken)
+            : Task.FromResult(QueueHealthQualification.None));
+
+    public Task CheckAllSegmentsPipelinedAfterQualificationAsync(
+        QueueHealthQualification qualification,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int fallbackConcurrency,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken) =>
+        UseAsync(client => client is IQueueConnectionWarmer warmer
+            ? warmer.CheckAllSegmentsPipelinedAfterQualificationAsync(
+                qualification, segmentIds, depth, fallbackConcurrency, progress,
+                cancellationToken)
+            : client.CheckAllSegmentsPipelinedAsync(
+                segmentIds, depth, fallbackConcurrency, progress, cancellationToken));
+
     public override void Dispose()
     {
         INntpClient? dispose = null;

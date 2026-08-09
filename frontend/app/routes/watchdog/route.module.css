@@ -519,6 +519,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+    margin: -5px 0 12px;
     padding: 10px;
     color: var(--text-secondary);
     background: rgba(239, 68, 68, 0.07);
@@ -527,8 +528,8 @@
 }
 
 .failureReasonRaw {
-    color: var(--text-muted);
-    font-size: 10px;
+    color: var(--text-secondary);
+    font-size: 11px;
     line-height: 1.45;
     overflow-wrap: anywhere;
 }
@@ -688,18 +689,6 @@
     color: var(--warning);
     font-size: 9px;
     white-space: normal;
-}
-
-/* ---------- Single-attempt summary (replaces the table) ---------- */
-
-.singleAttemptReason {
-    color: var(--text-muted);
-    font-size: 11px;
-    padding: 5px 8px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    word-break: break-word;
 }
 
 /* ---------- Attempt table ---------- */

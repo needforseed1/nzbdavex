@@ -30,16 +30,16 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     (
         Memory<string> segmentIds,
         INntpClient usenetClient,
-        int articleBufferSize,
+        int bufferedArticleCapacity,
         long expectedSegmentSize,
         bool failFastOnFirstSegment,
         CancellationToken cancellationToken
     )
     {
-        if (articleBufferSize == 0)
+        if (bufferedArticleCapacity == 0)
             return new UnbufferedMultiSegmentStream(segmentIds, usenetClient, expectedSegmentSize);
 
-        return new MultiSegmentStream(segmentIds, usenetClient, articleBufferSize, usenetClient.PipeliningDepth,
+        return new MultiSegmentStream(segmentIds, usenetClient, bufferedArticleCapacity, usenetClient.PipeliningDepth,
             expectedSegmentSize, failFastOnFirstSegment, cancellationToken);
     }
 
@@ -47,7 +47,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     (
         Memory<string> segmentIds,
         INntpClient usenetClient,
-        int articleBufferSize,
+        int bufferedArticleCapacity,
         int pipeliningDepth,
         long expectedSegmentSize,
         bool failFastOnFirstSegment,
@@ -59,7 +59,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         _pipeliningDepth = pipeliningDepth;
         _expectedSegmentSize = expectedSegmentSize;
         _failFastOnFirstSegment = failFastOnFirstSegment;
-        _streamTasks = Channel.CreateBounded<Task<Stream>>(articleBufferSize);
+        _streamTasks = Channel.CreateBounded<Task<Stream>>(bufferedArticleCapacity);
         _cts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _playbackDiagnostics = PlaybackDiagnosticContext.Current;
         _ = pipeliningDepth > 0

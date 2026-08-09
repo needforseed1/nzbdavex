@@ -289,7 +289,8 @@ public sealed record PrepUsageSnapshot(
     bool LazyRarMounted,
     long FirstSegmentFallbacks,
     IReadOnlyList<PrepProviderStat> Providers,
-    string? LastStage = null);
+    string? LastStage = null,
+    long HealthQualificationMs = 0);
 
 public sealed record PrepProviderStat(
     string ProviderId,

@@ -153,6 +153,37 @@ public class FetchFirstSegmentsStepTests
         Assert.Single(contexts.Distinct(ReferenceEqualityComparer.Instance));
     }
 
+    [Fact]
+    public void PrepSkipsDiscardedSidecarsSamplesAndRecoveryPar2Volumes()
+    {
+        var files = new[]
+        {
+            NzbFile("movie.part01.rar"),
+            NzbFile("movie.nfo"),
+            NzbFile("movie.sfv"),
+            NzbFile("movie-sample.mkv"),
+            NzbFile("movie.vol00+01.par2"),
+        };
+
+        var selected = FetchFirstSegmentsStep.SelectFilesForPrep(
+            files,
+            ["*.nfo", "*.sfv", "*sample.mkv", "*.par2"]);
+
+        Assert.Equal("movie.part01.rar", Assert.Single(selected).GetSubjectFileName());
+    }
+
+    [Fact]
+    public void PrepKeepsBasePar2IndexEvenWhenPar2FilesAreDiscarded()
+    {
+        var basePar2 = NzbFile("movie.par2");
+
+        var selected = FetchFirstSegmentsStep.SelectFilesForPrep(
+            [basePar2],
+            ["*.par2"]);
+
+        Assert.Same(basePar2, Assert.Single(selected));
+    }
+
     private static NzbFile NzbFile(int index)
     {
         var file = new NzbFile { Subject = $"file-{index}" };
@@ -160,6 +191,17 @@ public class FetchFirstSegmentsStepTests
         {
             Bytes = 1,
             MessageId = $"file-{index}-segment",
+        });
+        return file;
+    }
+
+    private static NzbFile NzbFile(string fileName)
+    {
+        var file = new NzbFile { Subject = $"[1/1] - \"{fileName}\" yEnc" };
+        file.Segments.Add(new NzbSegment
+        {
+            Bytes = 1,
+            MessageId = $"{fileName}-segment",
         });
         return file;
     }
