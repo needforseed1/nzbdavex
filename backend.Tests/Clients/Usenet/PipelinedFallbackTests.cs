@@ -592,6 +592,134 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
+    public async Task BulkHealthFastQualificationDoesNotAddCanaryWork()
+    {
+        var firstClient = new CoveragePipelineClient(_ => true);
+        var secondClient = new CoveragePipelineClient(_ => true);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstClient, ProviderType.Pooled, "first", 0, maxConnections: 8),
+            CreateProvider(secondClient, ProviderType.Pooled, "second", 1, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.DoesNotContain(
+            firstClient.Batches.Concat(secondClient.Batches),
+            batch => batch.Length is > 32);
+    }
+
+    [Fact]
+    public async Task SlowBulkHealthQualificationRunsBoundedCanary()
+    {
+        var slowClient = new CoveragePipelineClient(
+            _ => true,
+            (batch, cancellationToken) => batch == 1
+                ? Task.Delay(TimeSpan.FromMilliseconds(800), cancellationToken)
+                : Task.CompletedTask);
+        var missingClient = new CoveragePipelineClient(_ => false);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(slowClient, ProviderType.Pooled, "slow", 0, maxConnections: 8),
+            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(4, slowClient.Batches.Count(batch => batch.Length == 64));
+    }
+
+    [Fact]
+    public async Task SuspiciousBulkHealthCanaryRetriesOnlyUnansweredTail()
+    {
+        var tracker = new ProviderUsageTracker();
+        using var scope = tracker.BeginScope(Guid.NewGuid());
+        RecordPrepFallback(tracker);
+        var completeClient = new CoveragePipelineClient(
+            _ => true,
+            responseFailure: (batch, received) => batch == 2 && received == 8
+                ? new UsenetPipelinedStatStalledException(
+                    "Simulated partial canary pipeline stall.", received)
+                : null);
+        var missingClient = new CoveragePipelineClient(_ => false);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(completeClient, ProviderType.Pooled, "complete", 0,
+                maxConnections: 8),
+            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1,
+                maxConnections: 8),
+        ], tracker);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        var stalled = Assert.Single(
+            completeClient.CallBatches, batch => batch.Call == 2);
+        var retry = Assert.Single(
+            completeClient.CallBatches, batch => batch.Segments.Length == 56);
+        Assert.Equal(64, stalled.Segments.Length);
+        Assert.Equal(stalled.Segments.Skip(8), retry.Segments);
+        Assert.DoesNotContain(stalled.Segments.Take(8), retry.Segments.Contains);
+        var canaryCalls = completeClient.CallBatches
+            .Where(batch => batch.Call is >= 2 and <= 6)
+            .ToArray();
+        Assert.Equal(
+            canaryCalls.SelectMany(batch => batch.Segments).Count(),
+            canaryCalls.SelectMany(batch => batch.Segments).Distinct().Count() + 56);
+    }
+
+    [Fact]
+    public async Task SuspiciousBulkHealthCanaryRepeatedStallsFailWithinBoundedAttempts()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        using var scope = tracker.BeginScope(queueId);
+        RecordPrepFallback(tracker);
+        var stalledClient = new CoveragePipelineClient(
+            _ => true,
+            responseFailure: (batch, received) => batch >= 2 && received == 8
+                ? new UsenetPipelinedStatStalledException(
+                    "Simulated repeated canary pipeline stall.", received)
+                : null);
+        var missingClient = new CoveragePipelineClient(_ => false);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(stalledClient, ProviderType.Pooled, "stalled", 0,
+                maxConnections: 8),
+            CreateProvider(missingClient, ProviderType.Pooled, "missing", 1,
+                maxConnections: 8),
+        ], tracker);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        var exception = await Assert.ThrowsAsync<
+            NzbWebDAV.Exceptions.UsenetHealthQualificationException>(() =>
+            multiProvider.CheckAllSegmentsPipelinedAsync(
+                    segments, depth: 8, fallbackConcurrency: 8,
+                    progress: null, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2)));
+
+        Assert.Equal(256, exception.SampleSize);
+        Assert.Equal(64, exception.BestCoverage);
+        Assert.Equal(9, stalledClient.CallBatches.Count);
+        Assert.Equal(4, stalledClient.CallBatches.Count(batch => batch.Segments.Length == 64));
+        Assert.Equal(4, stalledClient.CallBatches.Count(batch => batch.Segments.Length == 56));
+        Assert.DoesNotContain(
+            stalledClient.CallBatches.Skip(1),
+            batch => batch.Segments.Length <= 8);
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
+            tracker.SnapshotHealthCheck(queueId));
+        Assert.Null(snapshot.FoundArticles);
+        Assert.Equal(0, snapshot.MissingArticles);
+    }
+
+    [Fact]
     public async Task BulkHealthWithoutQualificationAdmitsProvidersThatBecomeLiveDuringTheRun()
     {
         var firstStarted = new TaskCompletionSource(
@@ -663,7 +791,7 @@ public class PipelinedFallbackTests
         ], new ProviderUsageTracker());
         var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
 
-        await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetArticleNotFoundException>(() =>
+        await Assert.ThrowsAsync<NzbWebDAV.Exceptions.UsenetHealthQualificationException>(() =>
             multiProvider.CheckAllSegmentsPipelinedAsync(
                 segments, depth: 8, fallbackConcurrency: 8,
                 progress: null, CancellationToken.None));
@@ -672,6 +800,59 @@ public class PipelinedFallbackTests
         Assert.Single(secondMissing.Batches);
         Assert.Equal(32, firstMissing.Batches.Single().Length);
         Assert.Equal(32, secondMissing.Batches.Single().Length);
+    }
+
+    [Fact]
+    public async Task BulkHealthPartialCoverageFailsAfterQualificationWithoutFullSweep()
+    {
+        static bool SparseCoverage(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length)) % 16 == 0;
+
+        var firstPartial = new CoveragePipelineClient(SparseCoverage);
+        var secondPartial = new CoveragePipelineClient(SparseCoverage);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstPartial, ProviderType.Pooled, "partial-1", 0, maxConnections: 8),
+            CreateProvider(secondPartial, ProviderType.Pooled, "partial-2", 1, maxConnections: 8),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        var exception = await Assert.ThrowsAsync<
+            NzbWebDAV.Exceptions.UsenetHealthQualificationException>(() =>
+            multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None));
+
+        Assert.Equal(32, exception.SampleSize);
+        Assert.InRange(exception.BestCoverage, 1, 31);
+        Assert.Single(firstPartial.Batches);
+        Assert.Single(secondPartial.Batches);
+        Assert.Equal(32, firstPartial.Batches.Single().Length);
+        Assert.Equal(32, secondPartial.Batches.Single().Length);
+    }
+
+    [Fact]
+    public async Task BulkHealthPartialPrimaryCoverageStillChecksCompleteBackupOnlyCoverage()
+    {
+        static bool SparseCoverage(string segmentId) =>
+            int.Parse(segmentId.AsSpan("segment-".Length)) % 16 == 0;
+
+        var firstPartial = new CoveragePipelineClient(SparseCoverage);
+        var secondPartial = new CoveragePipelineClient(SparseCoverage);
+        var rescue = new CoveragePipelineClient(_ => true);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstPartial, ProviderType.Pooled, "partial-1", 0, maxConnections: 8),
+            CreateProvider(secondPartial, ProviderType.Pooled, "partial-2", 1, maxConnections: 8),
+            CreateProvider(rescue, ProviderType.BackupOnly, "rescue", 2, maxConnections: 1),
+        ], new ProviderUsageTracker());
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+                segments, depth: 8, fallbackConcurrency: 8,
+                progress: null, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Contains(rescue.Batches, batch => batch.Length == 32);
+        Assert.Contains(rescue.Batches, batch => batch.Length > 32);
     }
 
     [Fact]
@@ -1260,6 +1441,20 @@ public class PipelinedFallbackTests
                 await result.Stream.DisposeAsync();
     }
 
+    private static void RecordPrepFallback(ProviderUsageTracker tracker) =>
+        tracker.RecordPrepStats(new PrepUsageSnapshot(
+            FileCount: 1,
+            Connections: 1,
+            QueueWaitMs: 0,
+            FirstSegmentsMs: 1,
+            Par2Ms: 0,
+            RarMs: 0,
+            ProcessorsMs: 0,
+            LazyRarMounted: false,
+            FirstSegmentFallbacks: 1,
+            Providers: [],
+            LastStage: "first-segments"));
+
     private sealed class RecordingPipelineClient(
         IReadOnlyList<bool> results,
         bool failAfterResults = false,
@@ -1424,11 +1619,13 @@ public class PipelinedFallbackTests
 
     private sealed class CoveragePipelineClient(
         Func<string, bool> exists,
-        Func<int, CancellationToken, Task>? beforeBatch = null) : NntpClient
+        Func<int, CancellationToken, Task>? beforeBatch = null,
+        Func<int, int, Exception?>? responseFailure = null) : NntpClient
     {
         private int _batchCount;
 
         public ConcurrentQueue<string[]> Batches { get; } = [];
+        public ConcurrentQueue<(int Call, string[] Segments)> CallBatches { get; } = [];
         public bool ProbeCancelled { get; private set; }
         public TaskCompletionSource ProbeCancellation { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1438,8 +1635,10 @@ public class PipelinedFallbackTests
             int depth,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            Batches.Enqueue(segmentIds.ToArray());
             var batch = Interlocked.Increment(ref _batchCount);
+            var copiedSegments = segmentIds.ToArray();
+            Batches.Enqueue(copiedSegments);
+            CallBatches.Enqueue((batch, copiedSegments));
             try
             {
                 if (beforeBatch is not null) await beforeBatch(batch, cancellationToken);
@@ -1451,9 +1650,12 @@ public class PipelinedFallbackTests
                 throw;
             }
 
-            foreach (var segmentId in segmentIds)
+            for (var received = 0; received < segmentIds.Count; received++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (responseFailure?.Invoke(batch, received) is { } exception)
+                    throw exception;
+                var segmentId = segmentIds[received];
                 yield return new PipelinedStatResult { SegmentId = segmentId, Exists = exists(segmentId) };
                 await Task.Yield();
             }

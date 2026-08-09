@@ -142,6 +142,12 @@ public class ProviderUsageTracker(ActiveReadRegistry? activeReadRegistry = null)
     public PrepUsageSnapshot? SnapshotPrep(Guid scopeId) =>
         _prepStats.GetValueOrDefault(scopeId);
 
+    internal PrepUsageSnapshot? SnapshotCurrentPrep()
+    {
+        var id = CurrentScope.Value;
+        return id is null ? null : _prepStats.GetValueOrDefault(id.Value);
+    }
+
     public void BeginHealthCheck(int totalArticles)
     {
         var id = CurrentScope.Value;

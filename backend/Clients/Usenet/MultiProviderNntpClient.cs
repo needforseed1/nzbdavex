@@ -41,7 +41,9 @@ public class MultiProviderNntpClient(
     private const int HealthPrimeConnectionLimitPerProvider = 4;
     private const int BulkStatProbeSize = 32;
     private const int BulkStatProbeThreshold = 256;
-    private const int ZeroCoverageFastFailMinimumSuccessfulProbes = 2;
+    private const int SuspiciousBulkStatCanarySize = 256;
+    private const int SuspiciousBulkStatCanaryLanes = 4;
+    private const int SuspiciousBulkStatCanaryDepth = 16;
     private static readonly TimeSpan HealthConnectionPrimeTimeout = TimeSpan.FromSeconds(5);
     private const int HealthReclamationIdleFloor = 4;
     private const int HealthQuarantinedRecoveryIdleFloor = 8;
@@ -59,6 +61,16 @@ public class MultiProviderNntpClient(
     private static readonly TimeSpan BulkStatProbeJoinWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan BulkStatProbeCapacitySettleWindow = TimeSpan.Zero;
     private static readonly TimeSpan BulkStatProbeTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SuspiciousBulkStatCanaryBudget = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan SuspiciousBulkStatCanaryAcquisitionTimeout =
+        TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SuspiciousBulkStatCanaryCommandTimeout =
+        TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SuspiciousBulkStatCanaryInactivityTimeout =
+        TimeSpan.FromSeconds(2);
+    private const long SuspiciousBulkStatProbeElapsedMs = 750;
+    private const long SuspiciousBulkStatProbeFirstResponseMs = 500;
+    private const long SuspiciousBulkStatProbeResponseGapMs = 500;
     private static readonly TimeSpan DefaultProviderAttemptTimeout = TimeSpan.FromSeconds(5);
     // Silence, not slowness. A body that keeps delivering bytes is left alone
     // however slow it runs, because refetching costs more than finishing.
@@ -1885,6 +1897,13 @@ public class MultiProviderNntpClient(
             usageTracker.CompleteHealthCheck(null, 0);
             throw;
         }
+        catch (UsenetHealthQualificationException)
+        {
+            // Admission and canary failures are deliberately not missing
+            // verdicts. Preserve that distinction in health telemetry.
+            usageTracker.CompleteHealthCheck(null, 0);
+            throw;
+        }
     }
 
     private async Task CheckAllSegmentsPipelinedCoreAsync(
@@ -2005,6 +2024,8 @@ public class MultiProviderNntpClient(
                 Found: 0,
                 Missing: 0,
                 ElapsedMs: 0,
+                FirstResponseMs: -1,
+                MaxResponseGapMs: 0,
                 LaneMs: 0,
                 Lanes: 0,
                 Success: true,
@@ -2139,16 +2160,14 @@ public class MultiProviderNntpClient(
             LogBulkStatProbe(probe, sample.Length);
 
         var successful = probes.Where(x => x.Success).ToList();
-        if (successful.Count == 0) return BulkStatQualification.None;
 
-        // A complete zero-coverage sample is a strong signal that the release
-        // is unavailable. Before acting on it, give BackupOnly providers the
-        // same small sample so a release held only by a rescue account is not
-        // rejected. This keeps the failure path bounded to 32 articles instead
-        // of expanding an obvious miss into a full-release sweep followed by a
-        // large indeterminate recovery pass.
-        if (successful.Count >= ZeroCoverageFastFailMinimumSuccessfulProbes &&
-            probes.All(probe => probe.Found == 0))
+        // Do not admit a release-wide health sweep unless at least one provider
+        // has demonstrated complete sample coverage. Partial coverage can make
+        // a provider look useful while leaving nearly the entire NZB to cascade
+        // through every fallback (for example, 2/32 led to 95k unresolved IDs).
+        // Give BackupOnly providers the same bounded sample before deciding so
+        // releases held by a rescue account still proceed normally.
+        if (!successful.Any(probe => probe.Found == sample.Length))
         {
             var backupProbes = await Task.WhenAll(candidates
                     .Where(provider => provider.ProviderType == ProviderType.BackupOnly)
@@ -2178,14 +2197,14 @@ public class MultiProviderNntpClient(
             preferred.Sum(provider => provider.MaxConnections), capacityTarget,
             qualificationTimer.ElapsedMilliseconds, endedEarly);
 
-        if (successful.Count >= ZeroCoverageFastFailMinimumSuccessfulProbes &&
-            probes.All(probe => probe.Found == 0))
+        if (!successful.Any(probe => probe.Found == sample.Length))
         {
             Log.Warning(
-                "health-stat fast-fail sample={Sample} reason=zero-coverage successfulProbes={SuccessfulProbes}",
-                sample.Length, successful.Count);
+                "health-stat fast-fail sample={Sample} reason=no-full-coverage " +
+                "bestCoverage={BestCoverage} successfulProbes={SuccessfulProbes}",
+                sample.Length, bestCoverage, successful.Count);
             plan.LogSummary();
-            throw new UsenetArticleNotFoundException(sample[0]);
+            throw new UsenetHealthQualificationException(sample.Length, bestCoverage);
         }
 
         var verified = new HashSet<int>();
@@ -2195,7 +2214,275 @@ public class MultiProviderNntpClient(
                 verified.Add(sampleIndexes[sampleIndex]);
         }
 
+        var canaryReason = GetSuspiciousBulkStatCanaryReason(successful, sample.Length);
+        if (canaryReason is not null)
+        {
+            var canaryIndexes = SelectCanaryIndexes(
+                segmentIds.Count, sampleIndexes, SuspiciousBulkStatCanarySize);
+            if (canaryIndexes.Count > 0)
+            {
+                try
+                {
+                    await RunSuspiciousBulkStatCanaryAsync(
+                            segmentIds,
+                            canaryIndexes,
+                            successful
+                                .Where(probe => probe.Found == sample.Length)
+                                .OrderByDescending(probe => probe.Rate)
+                                .ThenBy(probe => probe.Provider.Priority)
+                                .Select(probe => probe.Provider)
+                                .ToArray(),
+                            canaryReason,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (UsenetHealthQualificationException)
+                {
+                    plan.LogSummary();
+                    throw;
+                }
+            }
+        }
+
         return new BulkStatQualification(plan, verified);
+    }
+
+    private string? GetSuspiciousBulkStatCanaryReason(
+        IReadOnlyList<BulkStatProbe> successful,
+        int sampleSize)
+    {
+        var prep = usageTracker.SnapshotCurrentPrep();
+        if (prep is { FirstSegmentFallbacks: > 0 })
+            return $"prep-fallbacks:{prep.FirstSegmentFallbacks}";
+
+        var fullCoverage = successful
+            .Where(probe => probe.Found == sampleSize)
+            .OrderBy(probe => probe.ElapsedMs)
+            .ToArray();
+        if (fullCoverage.Length == 0) return null;
+
+        var fastest = fullCoverage[0];
+        if (fastest.FirstResponseMs >= SuspiciousBulkStatProbeFirstResponseMs)
+            return $"qualification-first-response-ms:{fastest.FirstResponseMs}";
+        if (fastest.MaxResponseGapMs >= SuspiciousBulkStatProbeResponseGapMs)
+            return $"qualification-response-gap-ms:{fastest.MaxResponseGapMs}";
+        if (fastest.ElapsedMs >= SuspiciousBulkStatProbeElapsedMs)
+            return $"qualification-elapsed-ms:{fastest.ElapsedMs}";
+        return null;
+    }
+
+    private async Task RunSuspiciousBulkStatCanaryAsync(
+        IReadOnlyList<string> segmentIds,
+        IReadOnlyList<int> canaryIndexes,
+        IReadOnlyList<MultiConnectionNntpClient> qualifiedProviders,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var canaryIds = canaryIndexes.Select(index => segmentIds[index]).ToArray();
+        var depth = Math.Min(SuspiciousBulkStatCanaryDepth, Math.Max(1, canaryIds.Length));
+        var lanes = Math.Min(SuspiciousBulkStatCanaryLanes, canaryIds.Length);
+        Log.Information(
+            "health-stat canary start reason={Reason} sample={Sample} providers={Providers} " +
+            "lanes={Lanes} depth={Depth} budgetMs={BudgetMs}",
+            reason,
+            canaryIds.Length,
+            string.Join(',', qualifiedProviders.Select(provider => provider.Host)),
+            lanes,
+            depth,
+            SuspiciousBulkStatCanaryBudget.TotalMilliseconds);
+
+        using var canaryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        canaryCts.CancelAfter(SuspiciousBulkStatCanaryBudget);
+        var bestFound = 0;
+        try
+        {
+            foreach (var provider in qualifiedProviders)
+            {
+                var result = await RunSuspiciousBulkStatCanaryProviderAsync(
+                        provider, canaryIds, depth, lanes, canaryCts.Token)
+                    .ConfigureAwait(false);
+                bestFound = Math.Max(bestFound, result.Found);
+                Log.Information(
+                    "health-stat canary provider={Provider} found={Found}/{Sample} " +
+                    "received={Received} missing={Missing} unanswered={Unanswered} " +
+                    "attempts={Attempts} retries={Retries} failures={Failures} " +
+                    "firstResponseMs={FirstResponseMs} maxResponseGapMs={MaxResponseGapMs} " +
+                    "ms={ElapsedMs}",
+                    provider.Host,
+                    result.Found,
+                    canaryIds.Length,
+                    result.Received,
+                    result.Missing,
+                    result.Unanswered,
+                    result.Attempts,
+                    result.Retries,
+                    result.Failures,
+                    result.FirstResponseMs,
+                    result.MaxResponseGapMs,
+                    result.ElapsedMs);
+                if (result.Found != canaryIds.Length) continue;
+
+                Log.Information(
+                    "health-stat canary done provider={Provider} sample={Sample} ms={ElapsedMs}",
+                    provider.Host, canaryIds.Length, result.ElapsedMs);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (
+            !cancellationToken.IsCancellationRequested && canaryCts.IsCancellationRequested)
+        {
+            Log.Warning(
+                "health-stat canary fast-fail reason=budget-expired sample={Sample} " +
+                "bestCoverage={BestCoverage}/{Sample}",
+                canaryIds.Length, bestFound, canaryIds.Length);
+            throw new UsenetHealthQualificationException(canaryIds.Length, bestFound);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Log.Warning(
+            "health-stat canary fast-fail reason=no-full-coverage sample={Sample} " +
+            "bestCoverage={BestCoverage}/{Sample}",
+            canaryIds.Length, bestFound, canaryIds.Length);
+        throw new UsenetHealthQualificationException(canaryIds.Length, bestFound);
+    }
+
+    private async Task<HealthCanaryProviderResult> RunSuspiciousBulkStatCanaryProviderAsync(
+        MultiConnectionNntpClient provider,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        int lanes,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var partitions = Enumerable.Range(0, lanes)
+            .Select(lane => segmentIds
+                .Where((_, index) => index % lanes == lane)
+                .ToArray())
+            .Where(partition => partition.Length > 0)
+            .ToArray();
+        var results = await Task.WhenAll(partitions.Select(partition =>
+                RunSuspiciousBulkStatCanaryLaneAsync(
+                    provider, partition, depth, cancellationToken)))
+            .ConfigureAwait(false);
+        var firstResponseMs = results
+            .Where(result => result.FirstResponseMs >= 0)
+            .Select(result => result.FirstResponseMs)
+            .DefaultIfEmpty(-1)
+            .Min();
+        return new HealthCanaryProviderResult(
+            results.Sum(result => result.Found),
+            results.Sum(result => result.Received),
+            results.Sum(result => result.Missing),
+            results.Sum(result => result.Unanswered),
+            results.Sum(result => result.Attempts),
+            results.Sum(result => result.Retries),
+            results.Sum(result => result.Failures),
+            firstResponseMs,
+            results.Max(result => result.MaxResponseGapMs),
+            stopwatch.ElapsedMilliseconds);
+    }
+
+    private async Task<HealthCanaryLaneResult> RunSuspiciousBulkStatCanaryLaneAsync(
+        MultiConnectionNntpClient provider,
+        IReadOnlyList<string> segmentIds,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        var unanswered = segmentIds.ToArray();
+        var found = 0;
+        var received = 0;
+        var missing = 0;
+        var attempts = 0;
+        var retries = 0;
+        var failures = 0;
+        var firstResponseMs = -1L;
+        var maxResponseGapMs = 0L;
+
+        for (var attempt = 0; attempt < 2 && unanswered.Length > 0; attempt++)
+        {
+            if (attempt > 0) retries++;
+            attempts++;
+            var attempted = unanswered;
+            var attemptReceived = 0;
+            var attemptTimer = Stopwatch.StartNew();
+            var previousResponseMs = -1L;
+            using var attemptCts =
+                ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.SetContext(new ProviderAttemptContext(
+                SuspiciousBulkStatCanaryAcquisitionTimeout,
+                SuspiciousBulkStatCanaryCommandTimeout,
+                ResponseInactivityTimeout: SuspiciousBulkStatCanaryInactivityTimeout));
+            try
+            {
+                await foreach (var result in provider.StatsPipelinedAsync(
+                                       attempted, depth, attemptCts.Token)
+                                   .WithCancellation(attemptCts.Token).ConfigureAwait(false))
+                {
+                    if (attemptReceived >= attempted.Length ||
+                        !string.Equals(
+                            result.SegmentId,
+                            attempted[attemptReceived],
+                            StringComparison.Ordinal))
+                        throw new InvalidDataException(
+                            $"Provider {provider.Host} returned an invalid health canary response.");
+
+                    var responseMs = attemptTimer.ElapsedMilliseconds;
+                    if (firstResponseMs < 0) firstResponseMs = responseMs;
+                    if (previousResponseMs >= 0)
+                        maxResponseGapMs = Math.Max(
+                            maxResponseGapMs, responseMs - previousResponseMs);
+                    previousResponseMs = responseMs;
+                    if (result.Exists) found++;
+                    else missing++;
+                    received++;
+                    attemptReceived++;
+                }
+
+                if (attemptReceived != attempted.Length)
+                    throw new IOException(
+                        $"Provider {provider.Host} ended a health canary batch after " +
+                        $"{attemptReceived} of {attempted.Length} responses.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                failures++;
+                Log.Debug(e,
+                    "health-stat canary batch failed provider={Provider} " +
+                    "received={Received}/{Attempted} retry={Retry}",
+                    provider.Host, attemptReceived, attempted.Length, attempt == 0);
+            }
+
+            unanswered = attempted.Skip(attemptReceived).ToArray();
+        }
+
+        return new HealthCanaryLaneResult(
+            found,
+            received,
+            missing,
+            unanswered.Length,
+            attempts,
+            retries,
+            failures,
+            firstResponseMs,
+            maxResponseGapMs);
+    }
+
+    private static List<int> SelectCanaryIndexes(
+        int count,
+        IReadOnlyCollection<int> excludedIndexes,
+        int targetCount)
+    {
+        var target = Math.Min(targetCount, Math.Max(0, count - excludedIndexes.Count));
+        if (target == 0) return [];
+        var excluded = excludedIndexes.ToHashSet();
+        return SelectProbeIndexes(count, Math.Min(count, target + excluded.Count))
+            .Where(index => !excluded.Contains(index))
+            .Take(target)
+            .ToList();
     }
 
     private async Task<BulkStatProbe> ProbeBackupStatProviderAsync(
@@ -2306,6 +2593,11 @@ public class MultiProviderNntpClient(
         }
 
         var success = lanes.All(lane => lane.Success);
+        var firstResponseMs = lanes
+            .Where(lane => lane.FirstResponseMs >= 0)
+            .Select(lane => lane.FirstResponseMs)
+            .DefaultIfEmpty(-1)
+            .Min();
         return new BulkStatProbe(
             provider,
             exists,
@@ -2313,6 +2605,8 @@ public class MultiProviderNntpClient(
             lanes.Sum(lane => lane.Found),
             lanes.Sum(lane => lane.Missing),
             stopwatch.ElapsedMilliseconds,
+            firstResponseMs,
+            lanes.Max(lane => lane.MaxResponseGapMs),
             lanes.Sum(lane => lane.LaneMs),
             lanes.Length,
             success,
@@ -2332,6 +2626,9 @@ public class MultiProviderNntpClient(
         var received = 0;
         var found = 0;
         var stopwatch = Stopwatch.StartNew();
+        var firstResponseMs = -1L;
+        var previousResponseMs = -1L;
+        var maxResponseGapMs = 0L;
         using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         probeCts.CancelAfter(BulkProbeTimeout);
         try
@@ -2350,6 +2647,12 @@ public class MultiProviderNntpClient(
 
                 exists[received] = result.Exists;
                 if (result.Exists) found++;
+                var responseMs = stopwatch.ElapsedMilliseconds;
+                if (firstResponseMs < 0) firstResponseMs = responseMs;
+                if (previousResponseMs >= 0)
+                    maxResponseGapMs = Math.Max(
+                        maxResponseGapMs, responseMs - previousResponseMs);
+                previousResponseMs = responseMs;
                 received++;
             }
 
@@ -2358,20 +2661,23 @@ public class MultiProviderNntpClient(
                     $"Provider {provider.Host} ended a STAT probe after {received} of {segmentIds.Count} responses.");
             var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                segmentIds.Count - found, elapsedMs, elapsedMs, 1, true, "ok");
+                segmentIds.Count - found, elapsedMs, firstResponseMs, maxResponseGapMs,
+                elapsedMs, 1, true, "ok");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                received - found, elapsedMs, elapsedMs, 1, false, "timeout");
+                received - found, elapsedMs, firstResponseMs, maxResponseGapMs,
+                elapsedMs, 1, false, "timeout");
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
             Log.Debug(e, "Bulk STAT provider probe failed for {Provider}.", provider.Host);
             var elapsedMs = stopwatch.ElapsedMilliseconds;
             return new BulkStatProbe(provider, exists, received, found,
-                received - found, elapsedMs, elapsedMs, 1, false, "failed");
+                received - found, elapsedMs, firstResponseMs, maxResponseGapMs,
+                elapsedMs, 1, false, "failed");
         }
     }
 
@@ -2380,9 +2686,11 @@ public class MultiProviderNntpClient(
         var rate = (int)Math.Round(probe.Rate);
         Log.Information(
             "health-stat probe provider={Provider} sample={Sample} found={Found} missing={Missing} " +
-            "received={Received} lanes={Lanes} ms={ElapsedMs} rate={StatRate}stat/s status={Status}",
+            "received={Received} lanes={Lanes} ms={ElapsedMs} firstResponseMs={FirstResponseMs} " +
+            "maxResponseGapMs={MaxResponseGapMs} rate={StatRate}stat/s status={Status}",
             probe.Provider.Host, sampleSize, probe.Found, probe.Missing, probe.Received,
-            probe.Lanes, probe.ElapsedMs, rate, probe.Status);
+            probe.Lanes, probe.ElapsedMs, probe.FirstResponseMs, probe.MaxResponseGapMs,
+            rate, probe.Status);
     }
 
     private static List<int> SelectProbeIndexes(int count, int targetCount)
@@ -3547,6 +3855,8 @@ public class MultiProviderNntpClient(
         int Found,
         int Missing,
         long ElapsedMs,
+        long FirstResponseMs,
+        long MaxResponseGapMs,
         long LaneMs,
         int Lanes,
         bool Success,
@@ -3556,6 +3866,29 @@ public class MultiProviderNntpClient(
             ? 0
             : Received * 1000d / Math.Max(1, LaneMs);
     }
+
+    private sealed record HealthCanaryProviderResult(
+        int Found,
+        int Received,
+        int Missing,
+        int Unanswered,
+        int Attempts,
+        int Retries,
+        int Failures,
+        long FirstResponseMs,
+        long MaxResponseGapMs,
+        long ElapsedMs);
+
+    private sealed record HealthCanaryLaneResult(
+        int Found,
+        int Received,
+        int Missing,
+        int Unanswered,
+        int Attempts,
+        int Retries,
+        int Failures,
+        long FirstResponseMs,
+        long MaxResponseGapMs);
 
     private sealed class BulkStatPlan
     {

@@ -279,7 +279,7 @@ public class HealthStatVerdictTests
         ]);
         var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
 
-        await Assert.ThrowsAsync<UsenetArticleNotFoundException>(() =>
+        await Assert.ThrowsAsync<UsenetHealthQualificationException>(() =>
             client.CheckAllSegmentsPipelinedAsync(
                     segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
                 .WaitAsync(TestTimeout));
@@ -366,7 +366,7 @@ public class HealthStatVerdictTests
         ]);
         var segments = Enumerable.Range(0, 300).Select(i => $"s{i}").ToArray();
 
-        await Assert.ThrowsAsync<UsenetArticleNotFoundException>(() =>
+        await Assert.ThrowsAsync<UsenetHealthQualificationException>(() =>
             client.CheckAllSegmentsPipelinedAsync(
                     segments, depth: 16, fallbackConcurrency: 8, null, CancellationToken.None)
                 .WaitAsync(TestTimeout));
@@ -414,9 +414,13 @@ public class HealthStatVerdictTests
         await recoveringProvider.PrewarmAsync(8, CancellationToken.None);
 
         var missing = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var qualifyingBackup = new VerdictStatClient(
+            (_, call) => call == 1 ? StatAnswer.Found : StatAnswer.Missing);
         using var client = CreateClient([
                 recoveringProvider,
                 Provider(missing, "missing", maxConnections: 8),
+                Provider(qualifyingBackup, "qualifying-backup", ProviderType.BackupOnly,
+                    maxConnections: 1),
             ],
             recoveryBudget: TimeSpan.FromSeconds(4));
         var segments = Enumerable.Range(0, 2048).Select(i => $"s{i}").ToArray();
@@ -426,7 +430,7 @@ public class HealthStatVerdictTests
             .WaitAsync(TestTimeout);
 
         Assert.True(recovering.MaxConcurrentCalls >= 4);
-        Assert.Equal(segments.Length, recovering.BatchSizes.Skip(4).Sum());
+        Assert.Equal(segments.Length - 32, recovering.BatchSizes.Skip(4).Sum());
     }
 
     [Fact]
