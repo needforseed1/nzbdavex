@@ -2,17 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { selectHealthSummaryTiming, selectTotalSummaryTiming } from "./watchdog-timing";
 
-test("uses full health duration for new watchdog entries", () => {
-    assert.deepEqual(selectHealthSummaryTiming(3884, 2365), {
+test("combines provider qualification and bulk health time", () => {
+    assert.deepEqual(selectHealthSummaryTiming(3884, 2365, 1253), {
         label: "Health",
-        durationMs: 3884,
+        durationMs: 5137,
     });
 });
 
-test("falls back to the blocking health wait when full duration is unavailable", () => {
-    assert.deepEqual(selectHealthSummaryTiming(null, 2365), {
+test("combines qualification with blocking health wait when bulk duration is unavailable", () => {
+    assert.deepEqual(selectHealthSummaryTiming(null, 2365, 1253), {
         label: "Health",
-        durationMs: 2365,
+        durationMs: 3618,
+    });
+});
+
+test("shows qualification as health time when the bulk check never starts", () => {
+    assert.deepEqual(selectHealthSummaryTiming(null, null, 1253), {
+        label: "Health",
+        durationMs: 1253,
     });
 });
 

@@ -189,7 +189,8 @@ function ClickCard({ group }: { group: ClickGroup }) {
         ? null
         : selectHealthSummaryTiming(
             detailsAttempt.healthDurationMs,
-            detailsAttempt.healthWaitDurationMs);
+            detailsAttempt.healthWaitDurationMs,
+            detailsAttempt.prepStats?.healthQualificationMs);
     const totalSummaryDurationMs = selectTotalSummaryTiming(
         detailsAttempt?.durationMs,
         detailsAttempt?.prepDurationMs,
@@ -242,12 +243,6 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         <span className={styles.winnerVia}>via <span className={styles.winnerIndexer}>{detailsIndexer}</span></span>
                     }
                     <span className={styles.timingBoxes}>
-                        {(detailsAttempt.prepStats?.healthQualificationMs ?? 0) > 0 &&
-                            <TimingBox
-                                label="Probing"
-                                value={formatDuration(detailsAttempt.prepStats?.healthQualificationMs)}
-                            />
-                        }
                         {detailsAttempt.prepDurationMs != null &&
                             <TimingBox label="Prep" value={formatDuration(detailsAttempt.prepDurationMs)} />
                         }
@@ -403,6 +398,7 @@ function RunStats({
     const healthRate = outcomeKnown && healthDurationMs != null && healthDurationMs > 0
         ? Math.round(foundArticles * 1000 / healthDurationMs)
         : null;
+    const healthQualificationMs = prepStats?.healthQualificationMs ?? 0;
     const hasPrepRouting = prepStats != null && prepStats.providers.length > 0;
 
     return (
@@ -478,20 +474,25 @@ function RunStats({
             <section className={styles.detailsSection}>
                 <div className={styles.detailsSectionHeader}>
                     <span className={styles.detailsSectionTitle}>Health routing</span>
-                    {healthStats && (
+                    {(healthStats || healthQualificationMs > 0) && (
                         <MetaList items={[
-                            outcomeKnown
+                            healthStats && outcomeKnown
                                 ? `${formatCount(foundArticles)} / ${formatCount(healthStats.totalArticles)} available`
-                                : missingArticles != null && missingArticles > 0
+                                : healthStats && missingArticles != null && missingArticles > 0
                                     ? `At least ${formatCount(missingArticles)} unavailable`
-                                    : `${formatCount(healthStats.totalArticles)} articles targeted`,
-                            !outcomeKnown && missingArticles != null && missingArticles > 0
+                                    : healthStats
+                                        ? `${formatCount(healthStats.totalArticles)} articles targeted`
+                                        : null,
+                            healthStats && !outcomeKnown && missingArticles != null && missingArticles > 0
                                 ? "stopped early"
                                 : null,
-                            outcomeKnown
+                            healthStats && outcomeKnown
                                 ? (missingArticles === 0 ? "complete" : `${formatCount(missingArticles)} unavailable`)
                                 : null,
-                            healthDurationMs != null ? `${formatDuration(healthDurationMs)} total` : null,
+                            healthQualificationMs > 0
+                                ? `${formatDuration(healthQualificationMs)} probe`
+                                : null,
+                            healthDurationMs != null ? `${formatDuration(healthDurationMs)} bulk` : null,
                             healthWaitDurationMs != null
                                 ? `${formatDuration(healthWaitDurationMs)} after prep`
                                 : null,

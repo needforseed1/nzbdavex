@@ -16,7 +16,7 @@
 
 /* A group is a label row plus its list. Deliberately unboxed: the cards below
    already carry a border, and wrapping them in a second one made "Playing now"
-   and "Playback history" look like different kinds of thing. */
+   and "Read activity" look like different kinds of thing. */
 .group {
     width: 100%;
     margin-bottom: 28px;

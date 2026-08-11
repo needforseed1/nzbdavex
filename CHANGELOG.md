@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.0](https://github.com/needforseed1/nzbdavex/compare/v1.3.20...v1.4.0) (2026-08-12)
+
+### Highlights
+
+* The new Activity page shows active and completed plays, source delays, provider contributions, recovery activity, and Plex playback context without treating successful fallback as a viewing failure.
+* Playback now detects silent or truncated article bodies, retries stalled sequential and pipelined reads on healthy connections, and protects provider capacity for playback while preparation or health checks are busy.
+
+### Fixes
+
+* Troublesome NZBs now receive a bounded provider-coverage probe before full verification. Releases that cannot be verified fail promptly with the full reason and time-to-fail visible in Watchdog, while healthy providers retain the fast bulk path.
+* Preparation skips files that cannot contribute useful media or recovery metadata, reducing unnecessary first-article work and avoiding delays from irrelevant payloads.
+* Health checks preserve completed work when a pipelined provider stalls, grow useful provider capacity on demand, and avoid assigning normal bulk work to providers that failed qualification.
+* Multi-volume and season-pack RAR preparation now handles boundary volumes and sparse metadata more reliably.
+
+### Improvements
+
+* Watchdog includes provider probing in the Health and total timings, keeps detailed probe and bulk measurements in the expanded statistics, and presents failure reasons without requiring the statistics panel.
+* Queue, Watchdog, activity navigation, and playback status use denser layouts that remain readable on narrow screens.
+* Plex connection testing and playback attribution provide clearer evidence about scans, imports, direct play, transcoding, and viewer impact.
+
 ## [1.3.20](https://github.com/needforseed1/nzbdavex/compare/v1.3.19...v1.3.20) (2026-07-25)
 
 ### Improvements

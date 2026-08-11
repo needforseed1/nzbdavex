@@ -51,29 +51,19 @@ nzbdav consumes it through the existing client chain. Each layer is handled:
 
 ## Build / release workflow
 
-The pipelining engine is a change to the **UsenetSharp** library
-(`github.com/nzbdav-dev/UsenetSharp`). `NzbWebDAV.csproj` references it
-conditionally:
+The UsenetSharp protocol implementation used by nzbdavex is maintained in
+`backend/UsenetSharp` and compiled directly into `NzbWebDAV.csproj`. Local,
+Docker, and CI builds therefore use the same source and do not depend on a
+separately published UsenetSharp package or sibling checkout.
 
-- **Local dev** — if a sibling checkout exists at `../../UsenetSharp` (overridable
-  via the `UsenetSharpProject` MSBuild property), it's used as a `ProjectReference`
-  so you can build both together.
-- **Docker / CI** — when no sibling exists, it falls back to
-  `PackageReference UsenetSharp 1.0.7`.
-
-So to release:
-1. Merge the UsenetSharp pipelining branch and **publish UsenetSharp 1.0.7** to
-   NuGet.
-2. The conditional reference then resolves to the package automatically — the
-   Dockerfile needs no changes.
+Changes to pipelining and body handling ship with the normal nzbdavex release.
 
 ## Testing
 
-UsenetSharp ships integration tests that run against a real provider. Fill in
-`UsenetSharpTest/Credentials.cs` and valid segment ids, then run the
-`UsenetClientPipelinedAsyncTests` suite — it verifies in-order delivery,
-byte-for-byte equality with sequential fetches, mixed found/missing handling, and
-that the connection stays reusable after a batch.
+The backend test suite covers in-order delivery, mixed found/missing handling,
+partial and stalled batches, fallback, body completeness, and connection reuse.
+Real-provider validation remains useful because server implementations differ in
+their response timing and handling of deep command pipelines.
 
 Because pipelining touches the core I/O path, validate with the switch **on**
 against your providers before relying on it.

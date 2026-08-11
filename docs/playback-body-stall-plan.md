@@ -109,15 +109,19 @@ Playback pipelining defaults to off (`usenet.pipelining.playback.enabled`,
 `backend/Config/ConfigManager.cs:288`); the deployed setting still needs
 confirming for these reports.
 
-### 4. Not the cause here: connection reservation
+### 4. Not the original cause: connection reservation
 
-`usenet.max-download-connections` ("playback connections") is a ceiling
-enforced by a `PrioritizedSemaphore` in `DownloadingNntpClient`, not a reserve —
-background prep/health work shares the provider pools and playback only gets
-priority odds (`usenet.streaming-priority`, default 80). That is a genuine
-product gap, but starvation emits `stage=connection-permit-wait` and
-`stage=provider-pool-wait` warnings, and none appear in the reported logs.
-Prewarming likewise creates idle authenticated sockets; it does not consume
+At the time of the incident, `usenet.max-download-connections` ("playback
+connections") was only a ceiling enforced by a `PrioritizedSemaphore` in
+`DownloadingNntpClient`; background prep and health work shared every provider
+slot. The reported logs contained no `stage=connection-permit-wait` or
+`stage=provider-pool-wait` warnings, so that gap did not explain this incident.
+
+The gap is now closed separately by `usenet.playback-reserved-connections`.
+Playback-capable providers protect a proportional share of real connection
+capacity from lower-priority preparation and health work. The reservation is
+available on demand and does not keep otherwise unnecessary sockets open.
+Prewarming still only creates authenticated idle sockets; it does not consume
 sustained bandwidth.
 
 `backups="none"` in the session summary means no `BackupOnly` provider was
@@ -126,23 +130,25 @@ configured.
 
 ## Plan
 
-1. **Propagate background BODY/ARTICLE failures through the pipe.** Complete the
+1. **Implemented — propagate background BODY/ARTICLE failures through the pipe.** Complete the
    pipe writer with the captured exception, and synthesize one when the body
    ends without its terminating `.` line. Restores `MaxBodyRetries`.
-2. **Validate yEnc completeness in `YencStream`.** Throw when the stream ends
+2. **Implemented — validate yEnc completeness in `YencStream`.** Throw when the stream ends
    without `=yend`, or when decoded bytes do not match the declared part size.
    Covers every consumer (streaming drain, pipelined materialize, seek probe)
    in one place, so no per-call-site size assert is needed.
-3. **Body-progress watchdog for playback.** Arm an inactivity deadline on the
+3. **Implemented — body-progress watchdog for playback.** Arm an inactivity deadline on the
    transferred body stream; on expiry replace the socket and let the existing
    retry loop refetch the segment.
-4. **Cover pipelined playback separately**, since its body is buffered before
-   the result is yielded.
-5. **Optional: hedge a delayed segment** on a second connection/provider and
+4. **Implemented — cover pipelined playback separately.** Its buffered body path
+   has its own inactivity deadline, preserves completed segments, retires the
+   stalled connection, and retries unresolved work.
+5. **Not implemented — optionally hedge a delayed segment** on a second connection/provider and
    take the first successful result.
-6. **Hard playback reserve**, tracked independently of this incident.
+6. **Implemented — hard playback reserve.** Provider pools protect configurable
+   playback capacity from lower-priority queue and health work.
 
-Steps 1–3 are implemented. Steps 4–6 are not started.
+Steps 1–4 and 6 are implemented. Step 5 remains an optional future enhancement.
 
 ## Diagnostics fixes (2026-07-27, after first live session)
 
@@ -169,7 +175,7 @@ Still open from that review: stall lines carry no recent throughput, so
 "client or server" needs arithmetic across two lines; and long-lived requests
 emit nothing between stalls, so silence is ambiguous.
 
-## Playback page and live view (2026-07-27)
+## Activity page and live view (2026-07-27)
 
 `TotalUpstreamStallMs`/`TotalDownstreamStallMs` now run from the diagnostics
 through to the page (metrics migration `20260727000000_Add-Playback-Stall-Totals`),
@@ -190,7 +196,7 @@ per-tick byte rate and the live stall totals. It previously rendered
 articles have been attributed yet, i.e. how every read begins. That false
 signal is now `starting…`.
 
-Deliberately not done: merging in-flight sessions into the playback page. That
+Deliberately not done: merging in-flight sessions into the Activity page. That
 would mean synthesising plays with no `ReadSession` row, de-duplicating when
 the real row lands after the 15 s idle prune, and bending grouping logic that
 assumes terminal rows. The page is the forensic view; "what is happening right

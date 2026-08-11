@@ -6,14 +6,15 @@ export type HealthSummaryTiming = {
 export function selectHealthSummaryTiming(
     healthDurationMs?: number | null,
     healthWaitDurationMs?: number | null,
+    healthQualificationMs?: number | null,
 ): HealthSummaryTiming | null {
-    if (healthDurationMs != null) {
-        return { label: "Health", durationMs: healthDurationMs };
-    }
-    if (healthWaitDurationMs != null) {
-        return { label: "Health", durationMs: healthWaitDurationMs };
-    }
-    return null;
+    const bulkDurationMs = healthDurationMs ?? healthWaitDurationMs;
+    const probeDurationMs = Math.max(0, healthQualificationMs ?? 0);
+    if (bulkDurationMs == null && probeDurationMs === 0) return null;
+    return {
+        label: "Health",
+        durationMs: Math.max(0, bulkDurationMs ?? 0) + probeDurationMs,
+    };
 }
 
 export function selectTotalSummaryTiming(

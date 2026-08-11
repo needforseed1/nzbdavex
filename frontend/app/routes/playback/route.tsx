@@ -94,7 +94,7 @@ export default function Playback({ loaderData }: Route.ComponentProps) {
 
     const clearAll = useCallback(async () => {
         const confirmed = window.confirm(
-            "Delete all playback history?\n\n" +
+            "Delete all activity history?\n\n" +
             "The overview page counts its session totals from the same records, " +
             "so those numbers will reset too. This can't be undone.");
         if (!confirmed) return;

@@ -1,8 +1,9 @@
-# Playback page
+# Activity page
 
-A companion to Watchdog. Watchdog answers *"why was this NZB picked?"*. Playback
-answers *"how did it actually stream?"* — what was played, which providers served
-the articles, and whether the source showed signs that could affect playback.
+A companion to Watchdog. Watchdog answers *"why was this NZB picked?"*. Activity
+answers *"what read it, and how did it stream?"* — which mount activity occurred,
+what was played, which providers served the articles, and whether the source
+showed signs that could affect playback.
 
 Status legend: ☐ not started · ◐ in progress · ☑ done
 
@@ -174,10 +175,13 @@ The resource route serves both the list and the lazily loaded `?id=` detail.
   could affect playback? It does not expose internal recovery codes as competing
   warning badges. Backup use remains visible as a neutral **Backup used** marker,
   because it is useful provider context even when delivery succeeded.
-- **Source delays** means at least three recorded source waits or one lasting
-  three seconds. This is explicitly described as a buffering risk, not proof that
-  the player paused; the expanded Delays panel shows the actual count, total, and
-  longest wait.
+- **Source delays** on a completed play means either one continuous source wait
+  lasting ten seconds, or at least three seconds of non-overlapping source waits
+  that consumed ten percent of the recorded activity. This is explicitly
+  described as a buffering risk, not proof that the player paused; the expanded
+  Delays panel shows the actual count, total, and longest wait. Request logs use
+  the earlier operational threshold of three waits or one lasting three seconds,
+  because an in-flight request has no final activity duration to compare against.
 - Successful fallback, backup use, provider rotation, connection replacement,
   pool waits, permit waits, and retry-budget events remain visible after
   expansion with neutral styling. They only affect the headline when the play
@@ -201,11 +205,10 @@ The resource route serves both the list and the lazily loaded `?id=` detail.
   peer is loopback or private, because the header is attacker-controlled from
   the public internet and this value groups sessions.
 
-Known and deliberately unfixed: the `stalled` issue trips on a first play of an
-item, where prep plus the health check costs a few seconds before the pipeline
-is warm. That is normal startup work, not a slow source. Judging on
-`TotalUpstreamStallMs` as a share of watched time rather than the worst single
-wait would tolerate it without special-casing prep.
+Completed playback history now judges non-overlapping source-wait time against
+the duration of the activity. This keeps ordinary cold-start preparation from
+being labelled as a source delay merely because it produced several short waits,
+without special-casing preparation or hiding a sustained interruption.
 
 ## Phase 4 — polish ☐ (next)
 
@@ -294,7 +297,7 @@ as clean. What changed:
   |---|---|---|---|
   | Zero-filled articles | Damaged (bad) | Warning | The viewer got wrong data. |
   | Failed / timed out | bad | Warning | Terminal. |
-  | Source waits past threshold | Source delays (warn) | Warning | Same threshold both sides. |
+  | Source waits past threshold | Source delays (warn) | Warning | The completed page uses duration-aware playback-risk thresholds; an in-flight request log uses count/worst-wait thresholds because its final duration is not yet known. |
   | Recovered wedged connection | neutral | **Warning** | The viewer saw nothing, so the page stays quiet — but a fault that heals leaves no other trace, and an operator wants it. |
   | Backup used / rescue / rotation / retry limit | neutral | **Information** | Routine failover on a healthy play. Warning on it drowns the rows above; the request-end line still carries the counts. |
 
