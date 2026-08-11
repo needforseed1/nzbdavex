@@ -17,6 +17,7 @@
 
 ### Improvements
 
+* Read-ahead is now configured in MiB instead of article count, providing predictable buffering and memory use across NZBs with different article sizes while automatically adapting the number of prefetched articles per stream.
 * Watchdog includes provider probing in the Health and total timings, keeps detailed probe and bulk measurements in the expanded statistics, and presents failure reasons without requiring the statistics panel.
 * Queue, Watchdog, activity navigation, and playback status use denser layouts that remain readable on narrow screens.
 * Plex connection testing and playback attribution provide clearer evidence about scans, imports, direct play, transcoding, and viewer impact.
