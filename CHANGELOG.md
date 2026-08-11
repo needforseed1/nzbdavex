@@ -13,6 +13,7 @@
 * Preparation skips files that cannot contribute useful media or recovery metadata, reducing unnecessary first-article work and avoiding delays from irrelevant payloads.
 * Health checks preserve completed work when a pipelined provider stalls, grow useful provider capacity on demand, and avoid assigning normal bulk work to providers that failed qualification.
 * Multi-volume and season-pack RAR preparation now handles boundary volumes and sparse metadata more reliably.
+* Runtime dependencies now use patched releases for recently disclosed web-server, archive, API-schema, and SQLite security issues.
 
 ### Improvements
 
