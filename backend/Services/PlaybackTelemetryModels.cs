@@ -58,6 +58,9 @@ public sealed record PlaybackRequestDelta(
     int ZeroFilledSegments,
     long ZeroFilledBytes,
     int BodyStallRecoveries,
+    double ReadAheadByteMilliseconds,
+    double ReadAheadMeasuredMilliseconds,
+    long? MinimumReadAheadBytes,
     IReadOnlyList<PlaybackBackupProviderStat> BackupProviders,
     string? ErrorNote);
 
@@ -95,6 +98,8 @@ public sealed record PlaybackSessionTotals(
     int ZeroFilledSegments,
     long ZeroFilledBytes,
     int BodyStallRecoveries,
+    long? AverageReadAheadBytes,
+    long? MinimumReadAheadBytes,
     IReadOnlyList<PlaybackBackupProviderStat> BackupProviders,
     string? ErrorNote);
 

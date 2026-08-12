@@ -220,8 +220,13 @@ public class NzbFileStream(
     {
         var segmentIds = fileSegmentIds.AsMemory()[firstSegmentIndex..];
         var bufferedArticleCapacity = CalculateBufferedArticleCapacity(readAheadBytes, ExpectedSegmentSize);
-        return MultiSegmentStream.Create(segmentIds, usenetClient, bufferedArticleCapacity, ExpectedSegmentSize,
-            failFastOnFirstSegment, cancellationToken);
+        var effectiveArticleCapacity = Math.Min(bufferedArticleCapacity, segmentIds.Length);
+        var capacityBytes = ExpectedSegmentSize > long.MaxValue / Math.Max(1, effectiveArticleCapacity)
+            ? long.MaxValue
+            : ExpectedSegmentSize * effectiveArticleCapacity;
+        var effectiveTargetBytes = Math.Min(readAheadBytes, capacityBytes);
+        return MultiSegmentStream.Create(segmentIds, usenetClient, bufferedArticleCapacity, effectiveTargetBytes,
+            ExpectedSegmentSize, failFastOnFirstSegment, cancellationToken);
     }
 
     internal static int CalculateBufferedArticleCapacity(long targetBytes, long expectedSegmentSize)

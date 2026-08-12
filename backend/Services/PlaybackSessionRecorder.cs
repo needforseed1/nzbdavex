@@ -107,6 +107,8 @@ public sealed class PlaybackSessionRecorder(
             ZeroFilledSegments = totals?.ZeroFilledSegments ?? 0,
             ZeroFilledBytes = totals?.ZeroFilledBytes ?? 0,
             BodyStallRecoveries = totals?.BodyStallRecoveries ?? 0,
+            AverageReadAheadBytes = totals?.AverageReadAheadBytes,
+            MinimumReadAheadBytes = totals?.MinimumReadAheadBytes,
             ProviderStatsJson = BuildProviderStatsJson(
                 segmentsByProvider,
                 bytesByProvider,

@@ -5,6 +5,7 @@ internal sealed class PlaybackRequestDiagnostics
     private static readonly TimeSpan DefaultStallThreshold = TimeSpan.FromSeconds(1);
     private readonly TimeSpan _stallThreshold;
     private readonly PlaybackMetricsAccumulator _metrics = new();
+    private readonly PlaybackReadAheadTracker _readAhead = new();
     private readonly PlaybackRequestLogger _logger;
     private long _bytesServed;
     private long _currentOffset;
@@ -182,11 +183,23 @@ internal sealed class PlaybackRequestDiagnostics
     public void UpstreamOperationCompleted() =>
         DecrementNonNegative(ref _inFlightSegments);
 
-    public void SegmentBuffered() =>
-        Interlocked.Increment(ref _bufferedSegments);
+    public void ReadAheadProducerStarted(long targetBytes) =>
+        _readAhead.ProducerStarted(targetBytes);
 
-    public void SegmentDequeued() =>
+    public void ReadAheadProducerCompleted(long targetBytes) =>
+        _readAhead.ProducerCompleted(targetBytes);
+
+    public void SegmentBuffered(long bytes = 0)
+    {
+        Interlocked.Increment(ref _bufferedSegments);
+        _readAhead.SegmentBuffered(bytes);
+    }
+
+    public void SegmentDequeued(long bytes = 0)
+    {
         DecrementNonNegative(ref _bufferedSegments);
+        _readAhead.SegmentDequeued(bytes);
+    }
 
     public void RecordBackupAttempt(
         string providerId,
@@ -369,6 +382,7 @@ internal sealed class PlaybackRequestDiagnostics
     private PlaybackRequestDelta BuildDelta(string reason, Exception? exception)
     {
         var metrics = _metrics.Snapshot();
+        var readAhead = _readAhead.Complete();
         return new PlaybackRequestDelta(
             _startedAt,
             _logger.FirstByteMs,
@@ -388,6 +402,9 @@ internal sealed class PlaybackRequestDiagnostics
             0,
             0,
             0,
+            readAhead.ByteMilliseconds,
+            readAhead.MeasuredMilliseconds,
+            readAhead.MinimumBytes,
             metrics.BackupProviders,
             exception is null ? null : Truncate($"{reason}: {exception.Message}", 500));
     }

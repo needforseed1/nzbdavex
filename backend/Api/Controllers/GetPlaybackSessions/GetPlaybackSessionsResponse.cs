@@ -69,6 +69,8 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         /// </summary>
         [JsonPropertyName("sourceBytesPerSecond")] public required long SourceBytesPerSecond { get; init; }
         [JsonPropertyName("firstByteMs")] public int? FirstByteMs { get; init; }
+        [JsonPropertyName("averageReadAheadBytes")] public long? AverageReadAheadBytes { get; init; }
+        [JsonPropertyName("minimumReadAheadBytes")] public long? MinimumReadAheadBytes { get; init; }
         [JsonPropertyName("endReason")] public required string EndReason { get; init; }
         [JsonPropertyName("errorNote")] public string? ErrorNote { get; init; }
         [JsonPropertyName("hasDiagnostics")] public required bool HasDiagnostics { get; init; }
@@ -167,6 +169,8 @@ public class GetPlaybackSessionsResponse : BaseApiResponse
         [JsonPropertyName("fileSize")] public long? FileSize { get; init; }
         [JsonPropertyName("maxOffset")] public required long MaxOffset { get; init; }
         [JsonPropertyName("firstByteMs")] public int? FirstByteMs { get; init; }
+        [JsonPropertyName("averageReadAheadBytes")] public long? AverageReadAheadBytes { get; init; }
+        [JsonPropertyName("minimumReadAheadBytes")] public long? MinimumReadAheadBytes { get; init; }
         [JsonPropertyName("endReason")] public required string EndReason { get; init; }
         [JsonPropertyName("errorNote")] public string? ErrorNote { get; init; }
         /// <summary>

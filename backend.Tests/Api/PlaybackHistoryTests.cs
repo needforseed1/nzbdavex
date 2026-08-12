@@ -116,6 +116,31 @@ public class PlaybackHistoryTests
     }
 
     [Fact]
+    public void GroupIntoPlays_PreservesReadAheadAverageAndMinimum()
+    {
+        var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var play = Assert.Single(PlaybackHistory.GroupIntoPlays([
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start,
+                    endedAt: start + 10_000,
+                    averageReadAheadBytes: 32_000_000,
+                    minimumReadAheadBytes: 8_000_000),
+                Providers()),
+            PlaybackHistory.BuildSession(
+                CreateRow(
+                    startedAt: start + 11_000,
+                    endedAt: start + 31_000,
+                    averageReadAheadBytes: 16_000_000,
+                    minimumReadAheadBytes: 4_000_000),
+                Providers()),
+        ]));
+
+        Assert.Equal(21_333_333, play.AverageReadAheadBytes);
+        Assert.Equal(4_000_000, play.MinimumReadAheadBytes);
+    }
+
+    [Fact]
     public void BuildSession_UnparseableProviderStatsDegradeToEmpty()
     {
         var session = PlaybackHistory.BuildSession(
@@ -1125,6 +1150,8 @@ public class PlaybackHistoryTests
         int zeroFilledSegments = 0,
         long zeroFilledBytes = 0,
         int bodyStallRecoveries = 0,
+        long? averageReadAheadBytes = null,
+        long? minimumReadAheadBytes = null,
         long bytesServed = 0,
         long? fileSize = null,
         long maxOffset = 0,
@@ -1172,6 +1199,8 @@ public class PlaybackHistoryTests
             ZeroFilledSegments = zeroFilledSegments,
             ZeroFilledBytes = zeroFilledBytes,
             BodyStallRecoveries = bodyStallRecoveries,
+            AverageReadAheadBytes = averageReadAheadBytes,
+            MinimumReadAheadBytes = minimumReadAheadBytes,
             ProviderStatsJson = providerStatsJson,
         };
     }

@@ -42,6 +42,28 @@ public class PlaybackSessionStatsTests
     }
 
     [Fact]
+    public void Fold_TimeWeightsReadAheadAndKeepsTheLowestQualifiedMinimum()
+    {
+        var stats = new PlaybackSessionStats();
+        var sessionId = Guid.NewGuid();
+
+        stats.Fold(sessionId, CreateDelta(
+            readAheadByteMilliseconds: 40_000,
+            readAheadMeasuredMilliseconds: 1_000,
+            minimumReadAheadBytes: 10));
+        stats.Fold(sessionId, CreateDelta(
+            readAheadByteMilliseconds: 20_000,
+            readAheadMeasuredMilliseconds: 1_000,
+            minimumReadAheadBytes: 5));
+
+        var totals = stats.Take(sessionId);
+
+        Assert.NotNull(totals);
+        Assert.Equal(30, totals.AverageReadAheadBytes);
+        Assert.Equal(5, totals.MinimumReadAheadBytes);
+    }
+
+    [Fact]
     public void RecordStall_CountsBeforeAnyRequestHasCompleted()
     {
         var stats = new PlaybackSessionStats();
@@ -365,7 +387,10 @@ public class PlaybackSessionStatsTests
         long maxOffset = 0,
         int cacheHits = 0,
         IReadOnlyList<PlaybackBackupProviderStat>? backups = null,
-        DateTimeOffset? requestStartedAt = null) =>
+        DateTimeOffset? requestStartedAt = null,
+        double readAheadByteMilliseconds = 0,
+        double readAheadMeasuredMilliseconds = 0,
+        long? minimumReadAheadBytes = null) =>
         new(
             requestStartedAt ?? DateTimeOffset.UtcNow,
             firstByteMs,
@@ -382,6 +407,9 @@ public class PlaybackSessionStatsTests
             ZeroFilledSegments: 0,
             ZeroFilledBytes: 0,
             BodyStallRecoveries: 0,
+            readAheadByteMilliseconds,
+            readAheadMeasuredMilliseconds,
+            minimumReadAheadBytes,
             backups ?? [],
             ErrorNote: null);
 }

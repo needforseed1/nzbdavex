@@ -18,6 +18,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     private readonly Memory<string> _segmentIds;
     private readonly INntpClient _usenetClient;
     private readonly long _expectedSegmentSize;
+    private readonly long _readAheadTargetBytes;
     private readonly bool _failFastOnFirstSegment;
     private readonly int _pipeliningDepth;
     private readonly Channel<Task<Stream>> _streamTasks;
@@ -31,6 +32,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         Memory<string> segmentIds,
         INntpClient usenetClient,
         int bufferedArticleCapacity,
+        long readAheadTargetBytes,
         long expectedSegmentSize,
         bool failFastOnFirstSegment,
         CancellationToken cancellationToken
@@ -40,7 +42,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             return new UnbufferedMultiSegmentStream(segmentIds, usenetClient, expectedSegmentSize);
 
         return new MultiSegmentStream(segmentIds, usenetClient, bufferedArticleCapacity, usenetClient.PipeliningDepth,
-            expectedSegmentSize, failFastOnFirstSegment, cancellationToken);
+            readAheadTargetBytes, expectedSegmentSize, failFastOnFirstSegment, cancellationToken);
     }
 
     private MultiSegmentStream
@@ -49,6 +51,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         INntpClient usenetClient,
         int bufferedArticleCapacity,
         int pipeliningDepth,
+        long readAheadTargetBytes,
         long expectedSegmentSize,
         bool failFastOnFirstSegment,
         CancellationToken cancellationToken
@@ -57,11 +60,13 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         _segmentIds = segmentIds;
         _usenetClient = usenetClient;
         _pipeliningDepth = pipeliningDepth;
+        _readAheadTargetBytes = Math.Max(1, readAheadTargetBytes);
         _expectedSegmentSize = expectedSegmentSize;
         _failFastOnFirstSegment = failFastOnFirstSegment;
         _streamTasks = Channel.CreateBounded<Task<Stream>>(bufferedArticleCapacity);
         _cts = ContextualCancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _playbackDiagnostics = PlaybackDiagnosticContext.Current;
+        _playbackDiagnostics?.ReadAheadProducerStarted(_readAheadTargetBytes);
         _ = pipeliningDepth > 0
             ? DownloadSegmentsPipelined(pipeliningDepth, _cts.Token)
             : DownloadSegments(_cts.Token);
@@ -95,6 +100,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         finally
         {
             _streamTasks.Writer.TryComplete(failure);
+            _playbackDiagnostics?.ReadAheadProducerCompleted(_readAheadTargetBytes);
         }
 
         return;
@@ -112,7 +118,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
             var stream = await DownloadSegment(
                     segmentId, exclusiveConnection, isFirstSegment, cancellationToken)
                 .ConfigureAwait(false);
-            _playbackDiagnostics?.SegmentBuffered();
+            _playbackDiagnostics?.SegmentBuffered(GetBufferedLength(stream));
             return stream;
         }
         finally
@@ -210,6 +216,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         {
             _streamTasks.Writer.TryComplete(failure);
             _playbackDiagnostics?.UpstreamOperationCompleted();
+            _playbackDiagnostics?.ReadAheadProducerCompleted(_readAheadTargetBytes);
         }
     }
 
@@ -220,7 +227,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
     {
         var stream = await MaterializeSegment(result, isFirstSegment, cancellationToken)
             .ConfigureAwait(false);
-        _playbackDiagnostics?.SegmentBuffered();
+        _playbackDiagnostics?.SegmentBuffered(GetBufferedLength(stream));
         return stream;
     }
 
@@ -366,7 +373,7 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
                 if (!await _streamTasks.Reader.WaitToReadAsync(cancellationToken)) return 0;
                 if (!_streamTasks.Reader.TryRead(out var streamTask)) return 0;
                 _stream = await streamTask;
-                _playbackDiagnostics?.SegmentDequeued();
+                _playbackDiagnostics?.SegmentDequeued(GetBufferedLength(_stream));
             }
 
             // read from the stream
@@ -408,13 +415,25 @@ public class MultiSegmentStream : FastReadOnlyNonSeekableStream
         try
         {
             var stream = await streamTask.ConfigureAwait(false);
-            _playbackDiagnostics?.SegmentDequeued();
+            _playbackDiagnostics?.SegmentDequeued(GetBufferedLength(stream));
             await stream.DisposeAsync().ConfigureAwait(false);
         }
         catch
         {
             // The producer completes the channel with fetch failures. Cleanup
             // must not create a second unobserved task fault.
+        }
+    }
+
+    private long GetBufferedLength(Stream stream)
+    {
+        try
+        {
+            return stream.CanSeek ? Math.Max(0, stream.Length) : Math.Max(0, _expectedSegmentSize);
+        }
+        catch (NotSupportedException)
+        {
+            return Math.Max(0, _expectedSegmentSize);
         }
     }
 }

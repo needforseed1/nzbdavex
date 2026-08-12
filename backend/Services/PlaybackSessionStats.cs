@@ -122,6 +122,9 @@ public class PlaybackSessionStats
         private int _activeUpstreamWallWaits;
         private long? _upstreamWallWaitStartedAtMs;
         private readonly List<PlaybackWaitWindow> _upstreamWaitWindows = [];
+        private double _readAheadByteMilliseconds;
+        private double _readAheadMeasuredMilliseconds;
+        private long? _minimumReadAheadBytes;
 
         public DateTimeOffset LastFoldAt { get; private set; } = DateTimeOffset.UtcNow;
 
@@ -235,6 +238,12 @@ public class PlaybackSessionStats
                 }
 
                 _maxOffset = Math.Max(_maxOffset, delta.MaxOffset);
+                _readAheadByteMilliseconds += Math.Max(0, delta.ReadAheadByteMilliseconds);
+                _readAheadMeasuredMilliseconds += Math.Max(0, delta.ReadAheadMeasuredMilliseconds);
+                if (delta.MinimumReadAheadBytes is { } minimum)
+                    _minimumReadAheadBytes = _minimumReadAheadBytes is { } current
+                        ? Math.Min(current, minimum)
+                        : minimum;
                 // Stalls are not folded here: RecordStall already counted them as
                 // they happened, and folding the request's copy would double them.
                 _metrics.Fold(delta);
@@ -279,6 +288,12 @@ public class PlaybackSessionStats
                     metrics.ZeroFilledSegments,
                     metrics.ZeroFilledBytes,
                     metrics.BodyStallRecoveries,
+                    _readAheadMeasuredMilliseconds > 0
+                        ? (long)Math.Round(
+                            _readAheadByteMilliseconds / _readAheadMeasuredMilliseconds,
+                            MidpointRounding.AwayFromZero)
+                        : null,
+                    _minimumReadAheadBytes,
                     metrics.BackupProviders,
                     _errorNote);
             }

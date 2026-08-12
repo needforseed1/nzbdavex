@@ -624,6 +624,10 @@ export type PlaybackPlay = {
     /** What usenet delivered, against what the client took (avgBytesPerSecond). */
     sourceBytesPerSecond: number,
     firstByteMs?: number | null,
+    /** Time-weighted bytes queued ahead of the article currently being read. */
+    averageReadAheadBytes?: number | null,
+    /** Lowest queued bytes sustained for one second after the read-ahead target was reached. */
+    minimumReadAheadBytes?: number | null,
     endReason: PlaybackEndReason,
     errorNote?: string | null,
     hasDiagnostics: boolean,
@@ -691,6 +695,8 @@ export type PlaybackSession = {
     fileSize?: number | null,
     maxOffset: number,
     firstByteMs?: number | null,
+    averageReadAheadBytes?: number | null,
+    minimumReadAheadBytes?: number | null,
     endReason: PlaybackEndReason,
     errorNote?: string | null,
     hasDiagnostics: boolean,

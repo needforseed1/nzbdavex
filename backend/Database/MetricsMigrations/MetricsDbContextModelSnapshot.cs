@@ -254,6 +254,9 @@ namespace NzbWebDAV.Database.MetricsMigrations
                     b.Property<int>("FallbackRescues")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("AverageReadAheadBytes")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("FileName")
                         .HasColumnType("TEXT");
 
@@ -285,6 +288,9 @@ namespace NzbWebDAV.Database.MetricsMigrations
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("MaxUpstreamWaitWallMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("MinimumReadAheadBytes")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Path")

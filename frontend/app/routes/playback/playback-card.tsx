@@ -274,6 +274,30 @@ function PlaybackDetail({
                         <span className={styles.detailLabel}>Size</span>
                         <span className={styles.detailValue}>{formatBytes(play.fileSize)}</span>
                     </div>
+                    {play.averageReadAheadBytes != null && (
+                        <div className={styles.detailRow}>
+                            <span className={styles.detailLabel}>Read-ahead avg</span>
+                            <span
+                                className={styles.detailValue}
+                                title="Time-weighted data queued ahead of the article being read.">
+                                {formatBytes(play.averageReadAheadBytes)}
+                            </span>
+                        </div>
+                    )}
+                    {play.averageReadAheadBytes != null && (
+                        <div className={styles.detailRow}>
+                            <span className={styles.detailLabel}>Read-ahead min</span>
+                            <span
+                                className={styles.detailValue}
+                                title="Lowest queued data sustained for at least one second after the buffer first reached its configured target. Brief dips, startup, and the final EOF drain are excluded.">
+                                {play.minimumReadAheadBytes == null
+                                    ? "Target not reached"
+                                    : play.minimumReadAheadBytes === 0
+                                    ? "0 B"
+                                    : formatBytes(play.minimumReadAheadBytes)}
+                            </span>
+                        </div>
+                    )}
                     {mountLabel && (
                         <>
                             <div className={styles.detailRow}>

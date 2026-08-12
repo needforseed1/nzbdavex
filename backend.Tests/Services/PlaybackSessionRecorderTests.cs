@@ -102,6 +102,8 @@ public class PlaybackSessionRecorderTests
         Assert.Equal(900, session.TotalHeadOfLineStallMs);
         Assert.Equal(1, session.ZeroFilledSegments);
         Assert.Equal(750_000, session.ZeroFilledBytes);
+        Assert.Equal(32_000_000, session.AverageReadAheadBytes);
+        Assert.Equal(8_000_000, session.MinimumReadAheadBytes);
         Assert.Equal("error: source failed", session.ErrorNote);
 
         var providers = JsonSerializer.Deserialize<List<PlaybackProviderStat>>(
@@ -148,6 +150,8 @@ public class PlaybackSessionRecorderTests
             ZeroFilledSegments: 1,
             ZeroFilledBytes: 750_000,
             BodyStallRecoveries: 1,
+            AverageReadAheadBytes: 32_000_000,
+            MinimumReadAheadBytes: 8_000_000,
             BackupProviders:
             [
                 new PlaybackBackupProviderStat(

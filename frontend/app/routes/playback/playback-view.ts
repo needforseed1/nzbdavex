@@ -619,6 +619,8 @@ export function playsEqual(a: readonly PlaybackPlay[], b: readonly PlaybackPlay[
         if (x.endedAtUnix !== y.endedAtUnix) return false;
         if (x.bytesServed !== y.bytesServed) return false;
         if (x.bytesFetched !== y.bytesFetched) return false;
+        if (x.averageReadAheadBytes !== y.averageReadAheadBytes) return false;
+        if (x.minimumReadAheadBytes !== y.minimumReadAheadBytes) return false;
         if (x.sessions.length !== y.sessions.length) return false;
         if (x.endReason !== y.endReason) return false;
         if (x.isRcloneActivity !== y.isRcloneActivity) return false;

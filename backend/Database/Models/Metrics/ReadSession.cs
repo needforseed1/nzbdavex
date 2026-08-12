@@ -73,6 +73,16 @@ public class ReadSession
     /// </summary>
     public int BodyStallRecoveries { get; set; }
 
+    /// <summary>Time-weighted bytes queued ahead of the current article.</summary>
+    public long? AverageReadAheadBytes { get; set; }
+
+    /// <summary>
+    /// Lowest queued byte count sustained for at least one second after the
+    /// configured target was first reached; startup and the terminal EOF drain
+    /// are deliberately excluded.
+    /// </summary>
+    public long? MinimumReadAheadBytes { get; set; }
+
     /// <summary>
     /// Per-provider breakdown, denormalised because SegmentFetches expire after
     /// 24 h while sessions are kept for 90 days. Hosts and nicknames stay out of

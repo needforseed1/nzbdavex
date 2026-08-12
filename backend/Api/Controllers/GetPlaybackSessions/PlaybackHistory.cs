@@ -175,6 +175,8 @@ public static class PlaybackHistory
             FileSize = row.FileSize,
             MaxOffset = row.MaxOffset,
             FirstByteMs = row.FirstByteMs,
+            AverageReadAheadBytes = row.AverageReadAheadBytes,
+            MinimumReadAheadBytes = row.MinimumReadAheadBytes,
             EndReason = endReason,
             ErrorNote = row.ErrorNote,
             HasDiagnostics = row.RequestCount > 0 || row.ProviderStatsJson is not null,
@@ -493,6 +495,8 @@ public static class PlaybackHistory
             // that measured a first byte — not the smallest measurement, which
             // is a mid-play seek off an already-warm stream.
             FirstByteMs = group.FirstOrDefault(x => x.FirstByteMs.HasValue)?.FirstByteMs,
+            AverageReadAheadBytes = WeightedAverageReadAhead(group),
+            MinimumReadAheadBytes = MinimumReadAhead(group),
             // The last session decides how the play ended; earlier ones are seeks.
             EndReason = last.EndReason,
             ErrorNote = group.Select(x => x.ErrorNote).LastOrDefault(x => !string.IsNullOrWhiteSpace(x)),
@@ -903,6 +907,28 @@ public static class PlaybackHistory
         "progress-continued" => 2,
         _ => 3,
     };
+
+    private static long? WeightedAverageReadAhead(IEnumerable<SessionDto> sessions)
+    {
+        var measured = sessions
+            .Where(session => session.AverageReadAheadBytes.HasValue)
+            .ToList();
+        if (measured.Count == 0) return null;
+
+        var totalWeight = measured.Sum(session => Math.Max(1L, session.DurationMs));
+        var weightedBytes = measured.Sum(session =>
+            session.AverageReadAheadBytes!.Value * (double)Math.Max(1L, session.DurationMs));
+        return (long)Math.Round(weightedBytes / totalWeight, MidpointRounding.AwayFromZero);
+    }
+
+    private static long? MinimumReadAhead(IEnumerable<SessionDto> sessions)
+    {
+        var measured = sessions
+            .Where(session => session.MinimumReadAheadBytes.HasValue)
+            .Select(session => session.MinimumReadAheadBytes!.Value)
+            .ToList();
+        return measured.Count == 0 ? null : measured.Min();
+    }
 
     private static List<ProviderDto> MergeProviders(IEnumerable<ProviderDto> providers) => providers
         .GroupBy(x => x.ProviderId, StringComparer.OrdinalIgnoreCase)

@@ -503,6 +503,8 @@ test("polling skips re-render when nothing changed", () => {
     assert.equal(playsEqual(a, b), true);
     assert.equal(playsEqual(a, [play({ bytesServed: 10 })]), false);
     assert.equal(playsEqual(a, [play({ bytesFetched: 10 })]), false);
+    assert.equal(playsEqual(a, [play({ averageReadAheadBytes: 32_000_000 })]), false);
+    assert.equal(playsEqual(a, [play({ minimumReadAheadBytes: 8_000_000 })]), false);
     assert.equal(playsEqual(a, [play({ isReliablePlayback: false })]), false);
     assert.equal(playsEqual(a, [play({ isLikelyBackgroundActivity: true })]), false);
     assert.equal(playsEqual(a, [play({ mountPurpose: "import-inspection" })]), false);
