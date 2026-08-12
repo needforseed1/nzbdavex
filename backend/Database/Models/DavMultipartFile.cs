@@ -40,6 +40,13 @@ public partial class DavMultipartFile
 
         [MemoryPackOrder(5)]
         public PendingPart[] PendingParts { get; set; } = [];
+
+        // Consecutive parts resolved backward from EOF. Keeping this tail
+        // separate lets range reads near the end avoid resolving every
+        // preceding volume. Once PendingParts is empty, the resolver folds
+        // these into FileParts and clears the lazy state.
+        [MemoryPackOrder(6)]
+        public FilePart[] TailFileParts { get; set; } = [];
     }
 
     [MemoryPackable(GenerateType.VersionTolerant)]

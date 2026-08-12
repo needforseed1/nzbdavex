@@ -14,6 +14,7 @@ public class DavMultipartFileStream : Stream
     private readonly long _readAheadBytes;
     private readonly LazyRarResolver? _resolver;
     private readonly long _length;
+    private readonly Func<DavMultipartFile.FilePart, long, Stream>? _partOpener;
 
     private long _position;
     private CombinedStream? _innerStream;
@@ -23,27 +24,51 @@ public class DavMultipartFileStream : Stream
         DavMultipartFile mpf,
         INntpClient usenetClient,
         long readAheadBytes,
-        LazyRarResolver? resolver)
+        LazyRarResolver? resolver,
+        long? expectedLength = null)
+        : this(mpf, usenetClient, readAheadBytes, resolver, expectedLength, partOpener: null)
+    {
+    }
+
+    internal DavMultipartFileStream(
+        DavMultipartFile mpf,
+        Func<DavMultipartFile.FilePart, long, Stream> partOpener,
+        LazyRarResolver? resolver,
+        long expectedLength)
+        : this(
+            mpf,
+            usenetClient: null!,
+            readAheadBytes: 0,
+            resolver: resolver,
+            expectedLength: expectedLength,
+            partOpener: partOpener)
+    {
+    }
+
+    private DavMultipartFileStream(
+        DavMultipartFile mpf,
+        INntpClient usenetClient,
+        long readAheadBytes,
+        LazyRarResolver? resolver,
+        long? expectedLength,
+        Func<DavMultipartFile.FilePart, long, Stream>? partOpener)
     {
         _mpf = mpf;
         _usenetClient = usenetClient;
         _readAheadBytes = readAheadBytes;
         _resolver = resolver;
-        _length = ComputeLength(mpf.Metadata);
+        _length = expectedLength ?? ComputeLength(mpf.Metadata);
+        _partOpener = partOpener;
 
         if (_resolver != null
             && _mpf.Metadata.IsLazy
             && (_mpf.Metadata.PendingParts?.Length ?? 0) > 0)
         {
-            // Fire-and-forget: resolve every trailing volume's header in the
-            // BACKGROUND so reads never block on it. The first volume is already
-            // resolved at import, so byte 0 streams immediately while the rest
-            // fill in behind the player at Low priority (CancellationToken.None
-            // carries no High-priority context, so these fetches always yield to
-            // live playback). A seek that outruns this pass is covered on demand
-            // by EnsureCoveringAsync — the resolver coalesces the two by segment
-            // id so a volume is never fetched twice, and persists the result so
-            // the next open of this file resolves nothing at all.
+            // Fill the prefix in the background one volume at a time. A single
+            // low-priority walk leaves capacity for a live tail seek to resolve
+            // its final volume directly instead of flooding the provider pools
+            // with every header at once. Sequential playback still shares the
+            // in-flight next volume, and every result is persisted.
             _ = PreWarmAsync();
         }
     }
@@ -57,9 +82,16 @@ public class DavMultipartFileStream : Stream
     {
         try
         {
-            await _resolver!
-                .EnsureResolvedThroughAsync(_mpf, long.MaxValue, CancellationToken.None)
-                .ConfigureAwait(false);
+            while (_mpf.Metadata.IsLazy
+                   && (_mpf.Metadata.PendingParts?.Length ?? 0) > 0)
+            {
+                var before = _mpf.Metadata.PendingParts?.Length ?? 0;
+                var meta = await _resolver!
+                    .ResolveNextAsync(_mpf, CancellationToken.None)
+                    .ConfigureAwait(false);
+                _mpf.Metadata = meta;
+                if ((meta.PendingParts?.Length ?? 0) >= before) break;
+            }
         }
         catch (Exception e)
         {
@@ -130,13 +162,31 @@ public class DavMultipartFileStream : Stream
     // every iteration with ?? [] to stay safe.
     private static long ComputeLength(DavMultipartFile.Meta meta)
     {
+        var pendingParts = meta.PendingParts ?? [];
+        if (meta.AesParams != null && meta.IsLazy && pendingParts.Length > 0)
+        {
+            // The lazy estimates describe the decoded file and therefore do
+            // not include the final AES block padding. The decoder validates
+            // the packed stream length before any trailing RAR headers have
+            // been resolved, so expose the deterministic padded length until
+            // the exact part map replaces the estimates.
+            return AesDecoderStream.GetCiphertextLength(meta.AesParams.DecodedSize);
+        }
+
         var sum = 0L;
         foreach (var p in meta.FileParts ?? []) sum += p.FilePartByteRange.Count;
-        foreach (var p in meta.PendingParts ?? []) sum += p.EstimatedDataSize;
+        foreach (var p in pendingParts) sum += p.EstimatedDataSize;
+        foreach (var p in meta.TailFileParts ?? []) sum += p.FilePartByteRange.Count;
         return sum;
     }
 
-    private (int filePartIndex, long filePartOffset) SeekFilePart(
+    private readonly record struct ResolvedPosition(
+        DavMultipartFile.FilePart[] Parts,
+        int PartIndex,
+        long PartOffset,
+        bool IsTail);
+
+    private ResolvedPosition SeekFilePart(
         DavMultipartFile.Meta meta,
         long byteOffset)
     {
@@ -147,7 +197,18 @@ public class DavMultipartFileStream : Stream
             var filePart = fileParts[i];
             var nextOffset = offset + filePart.FilePartByteRange.Count;
             if (byteOffset < nextOffset)
-                return (i, offset);
+                return new ResolvedPosition(fileParts, i, offset, IsTail: false);
+            offset = nextOffset;
+        }
+
+        var tailParts = meta.TailFileParts ?? [];
+        var tailBytes = tailParts.Sum(part => part.FilePartByteRange.Count);
+        offset = _length - tailBytes;
+        for (var i = 0; i < tailParts.Length; i++)
+        {
+            var nextOffset = offset + tailParts[i].FilePartByteRange.Count;
+            if (byteOffset < nextOffset)
+                return new ResolvedPosition(tailParts, i, offset, IsTail: true);
             offset = nextOffset;
         }
 
@@ -168,8 +229,11 @@ public class DavMultipartFileStream : Stream
         if (rangeStart == 0)
             return new CombinedStream(EnumerateFromPart(0, 0, ct));
 
-        var (filePartIndex, filePartOffset) = SeekFilePart(meta, rangeStart);
-        return new CombinedStream(EnumerateFromPart(filePartIndex, rangeStart - filePartOffset, ct));
+        var resolved = SeekFilePart(meta, rangeStart);
+        var firstOffset = rangeStart - resolved.PartOffset;
+        return resolved.IsTail
+            ? new CombinedStream(EnumerateResolvedParts(resolved.Parts, resolved.PartIndex, firstOffset))
+            : new CombinedStream(EnumerateFromPart(resolved.PartIndex, firstOffset, ct));
     }
 
     // Resolve trailing volumes up to (and including) the one that contains
@@ -177,8 +241,24 @@ public class DavMultipartFileStream : Stream
     // No-op for non-lazy archives.
     private async Task<DavMultipartFile.Meta> EnsureCoveringAsync(long byteOffset, CancellationToken ct)
     {
-        if (_resolver is null || !_mpf.Metadata.IsLazy) return _mpf.Metadata;
-        return await _resolver.EnsureResolvedThroughAsync(_mpf, byteOffset, ct).ConfigureAwait(false);
+        if (_resolver is null) return _mpf.Metadata;
+        var meta = await _resolver
+            .EnsureResolvedForReadAsync(_mpf, byteOffset, _length, ct)
+            .ConfigureAwait(false);
+        _mpf.Metadata = meta;
+        return meta;
+    }
+
+    private IEnumerable<Task<Stream>> EnumerateResolvedParts(
+        DavMultipartFile.FilePart[] parts,
+        int firstPartIndex,
+        long firstOffset)
+    {
+        for (var i = firstPartIndex; i < parts.Length; i++)
+        {
+            var extraOffset = i == firstPartIndex ? firstOffset : 0;
+            yield return Task.FromResult(OpenPart(parts[i], extraOffset));
+        }
     }
 
     // Lazy iterator over the file's volume sequence. Each yielded Task opens
@@ -215,6 +295,7 @@ public class DavMultipartFileStream : Stream
 
     private Stream OpenPart(DavMultipartFile.FilePart part, long extraOffset)
     {
+        if (_partOpener != null) return _partOpener(part, extraOffset);
         var stream = _usenetClient.GetFileStream(part.SegmentIds, part.SegmentIdByteRange.Count, _readAheadBytes);
         stream.Seek(part.FilePartByteRange.StartInclusive + extraOffset, SeekOrigin.Begin);
         return stream.LimitLength(part.FilePartByteRange.Count - extraOffset);
@@ -222,8 +303,8 @@ public class DavMultipartFileStream : Stream
 
     private async Task<Stream> ResolveAndOpenAsync(int targetIndex, CancellationToken ct)
     {
-        await _resolver!.ResolveNextAsync(_mpf, ct).ConfigureAwait(false);
-        var meta = _mpf.Metadata;
+        var meta = await _resolver!.ResolveNextAsync(_mpf, ct).ConfigureAwait(false);
+        _mpf.Metadata = meta;
         if (targetIndex >= meta.FileParts.Length)
         {
             // Resolver should always grow FileParts when there were pending

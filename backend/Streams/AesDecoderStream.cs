@@ -26,6 +26,12 @@ namespace NzbWebDAV.Streams
         private const int DefaultPlainBufferSize = 4 << 10; // 4096
         private const int DefaultCipherBufferBlocks = 8; // read up to 8 blocks at once
 
+        internal static long GetCiphertextLength(long decodedSize)
+        {
+            if (decodedSize < 0) throw new ArgumentOutOfRangeException(nameof(decodedSize));
+            return checked((decodedSize + BlockSize - 1) & ~(BlockSize - 1L));
+        }
+
         public AesDecoderStream(Stream input, AesParams aesParams)
         {
             _mStream = input ?? throw new ArgumentNullException(nameof(input));
