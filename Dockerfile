@@ -24,13 +24,11 @@ WORKDIR /backend
 # Accept build-time architecture as ARG (e.g., x64 or arm64)
 ARG TARGETARCH
 COPY ./backend/NzbWebDAV.csproj ./
-RUN --mount=type=cache,target=/root/.nuget/packages \
-    dotnet restore -r linux-musl-${TARGETARCH}
+RUN dotnet restore -r linux-musl-${TARGETARCH}
 
 COPY ./backend ./
 
-RUN --mount=type=cache,target=/root/.nuget/packages \
-    dotnet publish -c Release -r linux-musl-${TARGETARCH} \
+RUN dotnet publish -c Release -r linux-musl-${TARGETARCH} \
         --no-restore -o ./publish
 
 # -------- Stage 3: Combined runtime image --------
