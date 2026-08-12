@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.1](https://github.com/needforseed1/nzbdavex/compare/v1.4.0...v1.4.1) (2026-08-12)
+
+### Fixes
+
+* Encrypted, uncompressed multipart 7z NZBs mount normally again instead of failing during preparation after the archive dependency update.
+
 ## [1.4.0](https://github.com/needforseed1/nzbdavex/compare/v1.3.20...v1.4.0) (2026-08-12)
 
 ### Highlights

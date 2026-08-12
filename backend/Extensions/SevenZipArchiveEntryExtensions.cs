@@ -12,7 +12,11 @@ public static class SevenZipArchiveEntryExtensions
         {
             return entry.CompressionType;
         }
-        catch (NotImplementedException)
+        // SharpCompress 0.39 reported an unrecognized coder as
+        // NotImplementedException; 0.48 reports the same condition as
+        // InvalidFormatException. Inspecting the coder remains necessary for
+        // encrypted stored archives, where AES wraps uncompressed data.
+        catch (Exception e) when (e is NotImplementedException or InvalidFormatException)
         {
             var coders = entry?.GetCoders();
             var compressionMethodId = GetCoderMethodId(coders?.FirstOrDefault());
