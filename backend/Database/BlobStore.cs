@@ -19,18 +19,24 @@ public class BlobStore
         return Path.Combine(ConfigPath, "blobs", firstTwo, nextTwo, fileName);
     }
 
-    private static FileStream OpenBlobWrite(Guid id)
+    private static FileStream OpenTemporaryBlobWrite(string blobPath, out string temporaryPath)
     {
-        var blobPath = GetBlobPath(id);
         var directory = Path.GetDirectoryName(blobPath);
+        temporaryPath = $"{blobPath}.{Guid.NewGuid():N}.tmp";
 
-        // Acquire file handle inside lock to prevent race condition where
-        // directory gets deleted between CreateDirectory and File.Create
+        // Acquire the temporary handle inside the lock so cleanup cannot
+        // remove the directory between CreateDirectory and opening the file.
         FileStream fileStream;
         lock (LockObj)
         {
             Directory.CreateDirectory(directory!);
-            fileStream = File.Create(blobPath);
+            fileStream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
         }
 
         return fileStream;
@@ -38,15 +44,52 @@ public class BlobStore
 
     public static async Task WriteBlob(Guid id, Stream stream)
     {
-        await using var fileStream = OpenBlobWrite(id);
-        await stream.CopyToAsync(fileStream);
+        await WriteBlobFile(GetBlobPath(id), stream);
+    }
+
+    internal static async Task WriteBlobFile(string blobPath, Stream stream)
+    {
+        await WriteBlobFile(blobPath, fileStream => stream.CopyToAsync(fileStream));
     }
 
     public static async Task WriteBlob<T>(Guid id, T blob)
     {
-        await using var fileStream = OpenBlobWrite(id);
-        await using var compressionStream = new CompressionStream(fileStream, CompressionLevel);
-        await MemoryPackSerializer.SerializeAsync(compressionStream, blob);
+        await WriteBlobFile(GetBlobPath(id), async fileStream =>
+        {
+            await using var compressionStream = new CompressionStream(
+                fileStream,
+                CompressionLevel,
+                leaveOpen: true);
+            await MemoryPackSerializer.SerializeAsync(compressionStream, blob);
+        });
+    }
+
+    private static async Task WriteBlobFile(string blobPath, Func<Stream, Task> writeAsync)
+    {
+        var fileStream = OpenTemporaryBlobWrite(blobPath, out var temporaryPath);
+        try
+        {
+            await using (fileStream.ConfigureAwait(false))
+            {
+                await writeAsync(fileStream).ConfigureAwait(false);
+                await fileStream.FlushAsync().ConfigureAwait(false);
+            }
+
+            // The temporary file lives beside the destination, so this rename
+            // is atomic. Readers retain the previous complete blob until the
+            // replacement is fully written and closed, then new readers see
+            // the complete replacement without an exclusive-writer window.
+            lock (LockObj)
+            {
+                File.Move(temporaryPath, blobPath, overwrite: true);
+            }
+        }
+        finally
+        {
+            // Serialization/copy failures must leave the prior blob intact and
+            // must not accumulate abandoned temporary files.
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
     }
 
     public static Stream? ReadBlob(Guid id)
