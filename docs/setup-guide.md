@@ -39,11 +39,9 @@ Configure them in NzbDavEx under `Settings → Indexers`, and (optionally) in an
 
 We start with a basic NzbDavEx container.
 
-We use the pre-built multi-arch image published to GHCR (`ghcr.io/qooode/nzbdavex`). No clone or build needed.
+We use the pre-built multi-arch image published to GHCR (`ghcr.io/needforseed1/nzbdavex`). No clone or build is needed.
 
-> **IPv6-only host?** `ghcr.io` is not reachable over IPv6. The same images are mirrored to Docker Hub (IPv6-capable) — replace `ghcr.io/qooode/nzbdavex` with `qooode/nzbdavex` in the `image:` lines throughout this guide.
-
-> Prefer to build from source? Clone the repo (`git clone https://github.com/qooode/nzbdavex.git`) and replace the `image:` line in the compose below with `build: /path/to/nzbdavex`.
+> Prefer to build from source? Clone the repo (`git clone https://github.com/needforseed1/nzbdavex.git`) and replace the `image:` line in the compose below with `build: /path/to/nzbdavex`.
 
 ### 1. `docker-compose.yml` (Part 1)
 
@@ -62,7 +60,7 @@ You can get your PUID/PGID by running `id` in your terminal.
 ```yaml
 services:
   davex:
-    image: ghcr.io/qooode/nzbdavex:stable   # to build from source instead, replace with: build: /path/to/nzbdavex
+    image: ghcr.io/needforseed1/nzbdavex:stable   # to build from source instead, replace with: build: /path/to/nzbdavex
     container_name: davex
     restart: unless-stopped
     healthcheck:
@@ -88,12 +86,12 @@ services:
       - /mnt:/mnt
 ```
 
-Build and run the container (the first run will build the image from the cloned source — subsequent runs reuse it):
+Start the container:
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-To update later: `git pull` in the cloned `nzbdavex` directory, then `docker compose up -d --build` again.
+To update later, run `docker compose pull davex`, then `docker compose up -d --force-recreate davex`.
 
 ### 2. Core Configuration
 
