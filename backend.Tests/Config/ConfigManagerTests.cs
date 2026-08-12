@@ -20,7 +20,7 @@ public class ConfigManagerTests
 
         Assert.True(config.IsEnsureImportableVideoEnabled());
         Assert.Equal(1, config.GetMaxDownloadConnections());
-        Assert.Equal(64L * 1024 * 1024, config.GetReadAheadBytes());
+        Assert.Equal(32L * 1024 * 1024, config.GetReadAheadBytes());
         Assert.Equal(10L * 1024 * 1024 * 1024, config.GetSegmentCacheMaxBytes());
         Assert.Equal(80, config.GetStreamingPriority().HighPriorityOdds);
     }

@@ -348,7 +348,7 @@ public class ConfigManager
     public long GetReadAheadBytes()
     {
         const long bytesPerMiB = 1024L * 1024L;
-        const int defaultMiB = 64;
+        const int defaultMiB = 32;
         const int maxMiB = 1024;
 
         var configured = StringUtil.EmptyToNull(GetConfigValue("usenet.read-ahead-mb"));

@@ -13,7 +13,7 @@ public static class SettingsRegistry
       "usenet.providers":"","usenet.max-download-connections":"15","usenet.playback-reserved-connections":"",
       "usenet.max-queue-connections":"","usenet.warm-validation-concurrency":"",
       "usenet.ready-connections.primary":"5","usenet.ready-connections.health":"10","usenet.streaming-priority":"80",
-      "usenet.read-ahead-mb":"64","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
+      "usenet.read-ahead-mb":"32","usenet.segment-cache.enabled":"false","usenet.segment-cache.path":"/config/segment-cache",
       "usenet.segment-cache.max-gb":"10","usenet.pipelining.playback.enabled":"false","usenet.pipelining.health.enabled":"true",
       "usenet.pipelining.health.provider-qualification.enabled":"true",
       "usenet.pipelining.health.depth":"32","usenet.pipelining.health.lanes":"64",
