@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.2](https://github.com/needforseed1/nzbdavex/compare/v1.4.1...v1.4.2) (2026-08-13)
+
+### Fixes
+
+* Lazy RAR mounting now handles releases with small companion files before the main spanning video, avoiding a slow eager scan of every archive volume.
+* Lazy RAR preparation now tolerates inaccurate NZB segment sizes when matching PAR2 and yEnc metadata agree, while conflicting metadata still falls back safely.
+* Full health verification waits for archive preparation to finish when processors are active, preventing the two workloads from starving each other or producing unstable provider results.
+
 ## [1.4.1](https://github.com/needforseed1/nzbdavex/compare/v1.4.0...v1.4.1) (2026-08-12)
 
 ### Fixes

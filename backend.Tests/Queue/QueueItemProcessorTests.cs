@@ -19,10 +19,12 @@ public class QueueItemProcessorTests
 
     [Theory]
     [InlineData(0, 155, false)]
-    [InlineData(155, 155, false)]
+    [InlineData(1, 155, true)]
+    [InlineData(99, 128, true)]
+    [InlineData(155, 155, true)]
     [InlineData(156, 155, true)]
     [InlineData(703, 155, true)]
-    public void DefersHealthOnlyWhenProcessorsExceedOneConcurrencyWave(
+    public void DefersHealthUntilProcessorPreparationFinishes(
         int processorCount,
         int processorConcurrency,
         bool expected)

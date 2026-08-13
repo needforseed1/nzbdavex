@@ -79,12 +79,29 @@ public static class RarUtil
         CancellationToken ct
     )
     {
-        await using var cancellableStream = new CancellableStream(stream, ct);
-        return await Task.Run(() => ReadHeadersUntilFirstFile(cancellableStream, password), ct)
+        return await ReadHeadersUntilMatchingFileAsync(
+                stream, password, static _ => true, ct)
             .ConfigureAwait(false);
     }
 
-    private static List<IRarHeader> ReadHeadersUntilFirstFile(Stream stream, string? password)
+    public static async Task<List<IRarHeader>> ReadHeadersUntilMatchingFileAsync
+    (
+        Stream stream,
+        string? password,
+        Func<IRarHeader, bool> predicate,
+        CancellationToken ct
+    )
+    {
+        await using var cancellableStream = new CancellableStream(stream, ct);
+        return await Task.Run(
+                () => ReadHeadersUntilMatchingFile(cancellableStream, password, predicate), ct)
+            .ConfigureAwait(false);
+    }
+
+    private static List<IRarHeader> ReadHeadersUntilMatchingFile(
+        Stream stream,
+        string? password,
+        Func<IRarHeader, bool> predicate)
     {
         try
         {
@@ -98,7 +115,7 @@ public static class RarUtil
                 if (header.GetCompressionMethod() != 0)
                     throw new UnsupportedRarCompressionMethodException(
                         "Only rar files with compression method m0 are supported.");
-                return headers;
+                if (predicate(header)) return headers;
             }
             return headers;
         }

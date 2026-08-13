@@ -78,7 +78,11 @@ public class QueueItemProcessor(
 
     internal static bool ShouldDeferHealthCheck(int processorCount, int processorConcurrency)
     {
-        return processorCount > processorConcurrency;
+        // File processors may fetch article bodies while resolving archive
+        // metadata. Even a single concurrency wave can therefore exhaust the
+        // same provider pools used by the full STAT workload. Only overlap
+        // health when there is no processor preparation left to run.
+        return processorCount > 0;
     }
 
     public async Task ProcessAsync()
@@ -572,9 +576,10 @@ public class QueueItemProcessor(
                 .SelectMany(x => x.NzbFile.GetSegmentIds())
                 .ToList();
 
-        // Step 3 can overlap a processor set that fits in one concurrency wave.
-        // When processors are already queued behind that wave, starting the full
-        // STAT workload can starve both workloads and trip provider timeouts.
+        // File processors and full health checks share provider pools. Wait for
+        // all processor preparation to finish before starting the STAT workload;
+        // otherwise even one processor wave can starve both workloads and trip
+        // provider timeouts.
         var deferHealthCheck = shouldCheckHealth && healthCheckTask is null &&
             ShouldDeferHealthCheck(fileProcessors.Count, processorConcurrency);
 

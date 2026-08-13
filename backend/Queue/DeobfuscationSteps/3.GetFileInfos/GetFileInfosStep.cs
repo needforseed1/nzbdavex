@@ -117,9 +117,27 @@ public static class GetFileInfosStep
         if (!hashToFiledescMap.TryGetValue(hash, out var fileDescs)) return null;
         var fileDesc = fileDescs.First!.Value;
         if (fileDescs.Count > 1) fileDescs.RemoveFirst();
-        return IsCloseToYencodedSize((long)fileDesc.FileLength, file.NzbFile.GetTotalYencodedSize())
+        if (fileDesc.FileLength > long.MaxValue) return null;
+        var fileSize = (long)fileDesc.FileLength;
+        return IsMatchingFileSize(fileSize, file)
             ? fileDesc
             : null;
+    }
+
+    private static bool IsMatchingFileSize(
+        long par2FileSize,
+        FetchFirstSegmentsStep.NzbFileWithFirstSegment file)
+    {
+        // A PAR2 descriptor is already tied to this payload by the MD5 hash
+        // of its first 16 KiB. When yEnc also declares an exact whole-file
+        // size, require those two independent metadata sources to agree and
+        // ignore potentially inaccurate NZB <segment bytes> values.
+        if (file.Header?.FileSize is > 0)
+            return par2FileSize == file.Header.FileSize;
+
+        // Older or malformed yEnc posts may omit the whole-file size. Retain
+        // the existing conservative NZB-size heuristic for that case.
+        return IsCloseToYencodedSize(par2FileSize, file.NzbFile.GetTotalYencodedSize());
     }
 
     private static bool IsCloseToYencodedSize(long fileSize, long totalYencodedSize)
