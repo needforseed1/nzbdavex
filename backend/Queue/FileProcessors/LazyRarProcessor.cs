@@ -32,10 +32,13 @@ public class LazyRarProcessor(
 
     private const double YencDecodeRatio = 0.95;
 
-    // The payload selected for lazy mounting must span most of the NZB. Small
-    // leading entries such as NFO files are skipped while reading the first
-    // volume; if no plausible payload is found, eager parsing remains the
-    // fallback.
+    // We dropped the explicit "must be a single-file archive" check because
+    // detecting it required walking past the first file header — which is
+    // the slow seek that dominates first-volume parse cost. This sanity
+    // check replaces it: if the matched file isn't large enough to span
+    // most of the NZB, it's likely a companion file (.nfo, sample, etc.)
+    // sitting in front of the actual video inside a multi-file archive,
+    // so we bail out to let the eager processor pick the right one.
     private const double InnerFileSizeRatioThreshold = 0.70;
 
     public override async Task<BaseProcessor.Result?> ProcessAsync()
@@ -52,28 +55,17 @@ public class LazyRarProcessor(
         var firstInfo = sorted[0];
         var firstFileSize = firstInfo.FileSize
             ?? await usenetClient.GetFileSizeAsync(firstInfo.NzbFile, ct).ConfigureAwait(false);
-        var totalNzbSize = sorted.All(x => x.FileSize.HasValue)
-            ? sorted.Sum(x => x.FileSize!.Value)
-            : 0;
 
         List<IRarHeader> headers;
         try
         {
             await using var firstStream = usenetClient.GetFileStream(
                 firstInfo.NzbFile, firstFileSize, readAheadBytes: 0);
-            // Usually this stops at the first file header. If that entry is
-            // clearly too small to be the spanning payload, advance only far
-            // enough to inspect the next header. NzbFileStream defers the
-            // large seek performed after the matching header until a read, so
-            // accepting the match does not scan the payload itself.
-            headers = await RarUtil.ReadHeadersUntilMatchingFileAsync(
-                    firstStream,
-                    password,
-                    header => (sorted.Count == 1 || header.GetIsSplitAfter()) &&
-                              (totalNzbSize <= 0 ||
-                               header.GetUncompressedSize() >=
-                               totalNzbSize * InnerFileSizeRatioThreshold),
-                    ct)
+            // Stop as soon as the first file header lands. Walking further
+            // forces SharpCompress to seek past the file data, which on
+            // NzbFileStream triggers InterpolationSearch (~7 STAT calls)
+            // and was the dominant cost of first-volume parse.
+            headers = await RarUtil.ReadHeadersUntilFirstFileAsync(firstStream, password, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception e) when (!e.IsCancellationException())
@@ -116,28 +108,22 @@ public class LazyRarProcessor(
             Log.Information("LazyRarProcessor: {File} is solid, falling back to eager", firstInfo.FileName);
             return null;
         }
-        if (sorted.Count > 1 && !fileHeader.GetIsSplitAfter())
-        {
-            Log.Information(
-                "LazyRarProcessor: candidate {InnerFile} does not continue into the next volume, " +
-                "falling back to eager",
-                fileHeader.GetFileName());
-            return null;
-        }
 
         var pathInArchive = fileHeader.GetFileName();
         var aesParams = fileHeader.GetAesParams(password);
         var totalFileSize = aesParams?.DecodedSize ?? fileHeader.GetUncompressedSize();
 
-        // Retain the size guard after parsing as a fail-closed check for an
-        // archive where header iteration ended without a plausible payload.
-        if (totalNzbSize > 0)
+        // Inner-file-vs-NZB-size sanity check (replaces the dropped
+        // multi-file count check). Only compares when we have PAR2 sizes
+        // for every part; otherwise the comparison is unreliable.
+        if (sorted.All(x => x.FileSize.HasValue))
         {
-            if (totalFileSize < totalNzbSize * InnerFileSizeRatioThreshold)
+            var totalNzbSize = sorted.Sum(x => x.FileSize!.Value);
+            if (totalNzbSize > 0 && totalFileSize < totalNzbSize * InnerFileSizeRatioThreshold)
             {
                 Log.Information(
                     "LazyRarProcessor: {File} inner file {Inner} bytes is <{Ratio:P0} of NZB {Total}, " +
-                    "and no plausible spanning payload followed it — falling back to eager",
+                    "likely a companion file in a multi-file archive — falling back to eager",
                     firstInfo.FileName, totalFileSize, InnerFileSizeRatioThreshold, totalNzbSize);
                 return null;
             }
