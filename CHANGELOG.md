@@ -4,8 +4,7 @@
 
 ### Fixes
 
-* Affected multipart RAR releases once again use lightweight lazy preparation instead of falling back to CPU-heavy scans across every volume.
-* Full health verification still waits for archive preparation to finish, preserving stable provider behavior during imports.
+* Improved multipart RAR preparation to minimize unnecessary full-volume processing and CPU usage.
 
 ## [1.4.2](https://github.com/needforseed1/nzbdavex/compare/v1.4.1...v1.4.2) (2026-08-13)
 
