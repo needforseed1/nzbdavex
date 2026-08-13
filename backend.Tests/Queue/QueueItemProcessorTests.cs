@@ -1,7 +1,10 @@
-using NzbWebDAV.Queue;
-using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Models;
+using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Queue;
+using NzbWebDAV.Queue.FileProcessors;
 
 namespace NzbWebDAV.Tests.Queue;
 
@@ -60,6 +63,23 @@ public class QueueItemProcessorTests
         Assert.True(QueueItemProcessor.ShouldProcessNonArchiveFile(
             "release.vol000-001.par2",
             ["*.nfo", "*.sfv"]));
+    }
+
+    [Theory]
+    [InlineData(false, true, 239, false)]
+    [InlineData(true, false, 239, false)]
+    [InlineData(true, true, 0, false)]
+    [InlineData(true, true, 239, true)]
+    public void RejectsOnlyOptInEncryptedLazyMultipartRars(
+        bool enabled,
+        bool encrypted,
+        int trailingVolumeCount,
+        bool expected)
+    {
+        var result = LazyRarResult(encrypted, trailingVolumeCount);
+
+        Assert.Equal(expected,
+            QueueItemProcessor.ShouldRejectEncryptedMultipartRar(enabled, result));
     }
 
     [Fact]
@@ -360,4 +380,29 @@ public class QueueItemProcessorTests
             new NzbSegment { Bytes = 1, MessageId = $"segment-{index}" }));
         return file;
     }
+
+    private static LazyRarProcessor.Result LazyRarResult(
+        bool encrypted,
+        int trailingVolumeCount) => new()
+    {
+        PathInArchive = "movie.mkv",
+        TotalFileSize = 100,
+        Password = encrypted ? "secret" : null,
+        AesParams = encrypted ? new AesParams() : null,
+        FirstPart = new DavMultipartFile.FilePart
+        {
+            SegmentIdByteRange = LongRange.FromStartAndSize(0, 100),
+            FilePartByteRange = LongRange.FromStartAndSize(0, 100),
+        },
+        PendingParts = Enumerable.Range(0, trailingVolumeCount)
+            .Select(index => new DavMultipartFile.PendingPart
+            {
+                SegmentIds = [$"part-{index}"],
+                SegmentIdByteRange = LongRange.FromStartAndSize(0, 100),
+                EstimatedDataSize = 100,
+            })
+            .ToArray(),
+        ReleaseDate = DateTimeOffset.UnixEpoch,
+        ArchiveName = "release",
+    };
 }

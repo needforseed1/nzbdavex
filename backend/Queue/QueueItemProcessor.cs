@@ -85,6 +85,12 @@ public class QueueItemProcessor(
         return processorCount > 0;
     }
 
+    internal static bool ShouldRejectEncryptedMultipartRar(
+        bool rejectionEnabled,
+        LazyRarProcessor.Result? result) =>
+        rejectionEnabled
+        && result is { AesParams: not null, PendingParts.Length: > 0 };
+
     public async Task ProcessAsync()
     {
         // initialize
@@ -542,6 +548,15 @@ public class QueueItemProcessor(
                     queueItem.Id, queueItem.JobName, rarFiles.Count);
                 var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
                 lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
+                if (ShouldRejectEncryptedMultipartRar(
+                        configManager.IsEncryptedMultipartRarRejectionEnabled(),
+                        lazyRarResult))
+                {
+                    var volumeCount = lazyRarResult!.PendingParts.Length + 1;
+                    throw new InvalidDataException(
+                        $"Encrypted multipart RAR requires mapping all {volumeCount} archive volumes " +
+                        "before import and was rejected by the enabled slow-import setting.");
+                }
             }
         }
         finally

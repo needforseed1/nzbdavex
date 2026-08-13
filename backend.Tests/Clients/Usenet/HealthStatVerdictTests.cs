@@ -377,6 +377,47 @@ public class HealthStatVerdictTests
     }
 
     [Fact]
+    public async Task PrePrepQualificationFailurePreservesProviderProbeStatistics()
+    {
+        var tracker = new ProviderUsageTracker();
+        var queueId = Guid.NewGuid();
+        var first = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        var second = new VerdictStatClient((_, _) => StatAnswer.Missing);
+        using var scope = tracker.BeginScope(queueId);
+        using var client = CreateClient([
+                Provider(first, "first", maxConnections: 8),
+                Provider(second, "second", maxConnections: 8),
+            ],
+            usageTracker: tracker);
+        var sample = Enumerable.Range(0, 128).Select(i => $"s{i}").ToArray();
+
+        await Assert.ThrowsAsync<UsenetHealthQualificationException>(() =>
+            client.QualifyHealthCheckAsync(
+                    sample, depth: 16, fallbackConcurrency: 8, CancellationToken.None)
+                .WaitAsync(TestTimeout));
+
+        var snapshot = Assert.IsType<HealthCheckUsageSnapshot>(
+            tracker.SnapshotHealthCheck(queueId));
+        Assert.Equal(sample.Length, snapshot.TotalArticles);
+        Assert.Collection(
+            snapshot.Providers.OrderBy(provider => provider.ProviderId),
+            provider =>
+            {
+                Assert.Equal("first", provider.ProviderId);
+                Assert.Equal(0, provider.ProbeFound);
+                Assert.Equal(sample.Length, provider.ProbeReceived);
+                Assert.Equal("ok", provider.ProbeStatus);
+            },
+            provider =>
+            {
+                Assert.Equal("second", provider.ProviderId);
+                Assert.Equal(0, provider.ProbeFound);
+                Assert.Equal(sample.Length, provider.ProbeReceived);
+                Assert.Equal("ok", provider.ProbeStatus);
+            });
+    }
+
+    [Fact]
     public async Task ZeroResponseProbeRetriesFreshSocketBeforeQuarantiningProvider()
     {
         // One stale socket must not quarantine an otherwise fast, full-coverage

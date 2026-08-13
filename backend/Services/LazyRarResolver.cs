@@ -17,6 +17,8 @@ namespace NzbWebDAV.Services;
 // archive is written back to the blob-store so restarts also reuse it.
 public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager configManager)
 {
+    private const int MaxConcurrentPasswordedHeaderParses = 2;
+
     // Coalesces concurrent resolution requests for the same volume.
     // Keyed by the volume's first segment ID so two readers asking for the
     // same trailing part share one parse, even if they hit different
@@ -71,10 +73,12 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             var partsToResolve = new DavMultipartFile.PendingPart[count];
             Array.Copy(pending, partsToResolve, count);
 
-            // Run resolutions in parallel, bounded by the provider plan limit.
-            // Use the same cap that governs the rest of the queue processor so
-            // we never burst past what the user's provider plan allows.
-            var maxConcurrency = Math.Max(1, configManager.GetMaxDownloadConnections());
+            // Preserve configured fan-out for ordinary RARs. Passworded RAR
+            // headers can perform CPU-heavy key derivation for every volume,
+            // so keep that path from saturating the host and provider pools.
+            var maxConcurrency = GetResolutionConcurrency(
+                configManager.GetMaxDownloadConnections(),
+                meta.ArchivePassword);
             using var semaphore = new SemaphoreSlim(maxConcurrency);
 
             var resolveTasks = partsToResolve.Select(async part =>
@@ -104,6 +108,16 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
                 return meta;
             }
         }
+    }
+
+    internal static int GetResolutionConcurrency(
+        int configuredConcurrency,
+        string? archivePassword)
+    {
+        var concurrency = Math.Max(1, configuredConcurrency);
+        return archivePassword is null
+            ? concurrency
+            : Math.Min(concurrency, MaxConcurrentPasswordedHeaderParses);
     }
 
     // Convenience for the sequential read path (DavMultipartFileStream

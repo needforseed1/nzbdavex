@@ -1906,6 +1906,9 @@ public class MultiProviderNntpClient(
         int fallbackConcurrency,
         CancellationToken cancellationToken)
     {
+        // Qualification can fail before the tracked bulk pass begins. Open the
+        // snapshot here so its provider probe summaries still reach Watchdog.
+        usageTracker.BeginHealthCheck(segmentIds.Count);
         var plan = await CheckAllSegmentsPipelinedCoreAsync(
                 segmentIds,
                 depth,

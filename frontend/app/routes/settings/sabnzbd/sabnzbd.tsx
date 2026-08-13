@@ -154,6 +154,25 @@ export function SabnzbdSettings({ config, setNewConfig }: SabnzbdSettingsProps) 
                 <Form.Check
                     className={styles.input}
                     type="switch"
+                    id="reject-encrypted-multipart-rar-checkbox"
+                    aria-describedby="reject-encrypted-multipart-rar-help"
+                    label="Fail slow encrypted multipart RAR downloads"
+                    checked={config["api.reject-encrypted-multipart-rar"] === "true"}
+                    onChange={e => setNewConfig({
+                        ...config,
+                        "api.reject-encrypted-multipart-rar": "" + e.target.checked,
+                    })} />
+                <Form.Text id="reject-encrypted-multipart-rar-help" muted>
+                    When enabled, downloads containing an encrypted video split across multiple RAR volumes are
+                    marked failed during preparation if every volume would need mapping before import. Radarr or
+                    Sonarr can then blocklist the release and try another NZB. Other passworded NZBs are unaffected.
+                </Form.Text>
+            </Form.Group>
+            <hr />
+            <Form.Group>
+                <Form.Check
+                    className={styles.input}
+                    type="switch"
                     id="ensure-importable-video-checkbox"
                     aria-describedby="ensure-importable-video-help"
                     label={`Fail downloads for nzbs without video content`}

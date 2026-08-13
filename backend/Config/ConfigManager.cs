@@ -223,6 +223,11 @@ public class ConfigManager
         return GetBoolean("api.ensure-importable-video", true);
     }
 
+    public bool IsEncryptedMultipartRarRejectionEnabled()
+    {
+        return GetBoolean("api.reject-encrypted-multipart-rar", false);
+    }
+
     public bool ShowHiddenWebdavFiles()
     {
         return GetBoolean("webdav.show-hidden-files", false);
