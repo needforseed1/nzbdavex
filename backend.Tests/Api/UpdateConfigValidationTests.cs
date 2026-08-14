@@ -6,39 +6,6 @@ namespace NzbWebDAV.Tests.Api;
 
 public class UpdateConfigValidationTests
 {
-    [Theory]
-    [InlineData("latest-season")]
-    [InlineData("first-season")]
-    [InlineData("all-aired")]
-    [InlineData("recent")]
-    [InlineData("off")]
-    public void AcceptsEveryWatchtowerSeriesScopeUsedByTheUiAndRuntime(string value)
-    {
-        ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = "watchtower.series-scope", ConfigValue = value },
-        ]);
-    }
-
-    [Fact]
-    public void RejectsObsoleteWatchtowerSeriesScopeAlias()
-    {
-        Assert.Throws<BadHttpRequestException>(() =>
-            ConfigUpdateValidator.Validate([
-                new ConfigItem { ConfigName = "watchtower.series-scope", ConfigValue = "all" },
-            ]));
-    }
-
-    [Theory]
-    [InlineData("latest-season")]
-    [InlineData("all")]
-    [InlineData("recent")]
-    public void AcceptsEverySeasonBundleFallbackScopeUsedByTheUiAndRuntime(string value)
-    {
-        ConfigUpdateValidator.Validate([
-            new ConfigItem { ConfigName = "watchtower.season-bundle-fallback-scope", ConfigValue = value },
-        ]);
-    }
-
     [Fact]
     public void QueueConnectionLimitAcceptsAutomaticButRejectsInvalidText()
     {
@@ -164,7 +131,6 @@ public class UpdateConfigValidationTests
     [Theory]
     [InlineData("play.total-budget-seconds", "1")]
     [InlineData("preflight.max-attempts", "0")]
-    [InlineData("watchtower.size-floor-bytes", "-1")]
     [InlineData("maintenance.remove-orphaned-schedule-time", "1440")]
     [InlineData("variants.max-per-group", "51")]
     public void RejectsValuesOutsideRuntimeAndUiRanges(string key, string value)
@@ -186,9 +152,20 @@ public class UpdateConfigValidationTests
         ConfigUpdateValidator.Validate([
             new ConfigItem { ConfigName = "api.strm-key", ConfigValue = "internal-key" },
             new ConfigItem { ConfigName = "api.lazy-rar-parsing", ConfigValue = "true" },
-            new ConfigItem { ConfigName = "watchtower.resolve-concurrency", ConfigValue = "3" },
-            new ConfigItem { ConfigName = "warden.max-source-entries", ConfigValue = "2000000" },
         ]);
+    }
+
+    [Theory]
+    [InlineData("watchtower.enabled")]
+    [InlineData("watchtower.resolve-concurrency")]
+    [InlineData("warden.hide-dead")]
+    [InlineData("warden.max-source-entries")]
+    public void RejectsRetiredFeatureSettings(string key)
+    {
+        Assert.Throws<BadHttpRequestException>(() =>
+            ConfigUpdateValidator.Validate([
+                new ConfigItem { ConfigName = key, ConfigValue = "true" },
+            ]));
     }
 
     [Fact]

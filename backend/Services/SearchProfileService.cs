@@ -1,8 +1,6 @@
-using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
 using NzbWebDAV.Clients.Indexers;
 using NzbWebDAV.Config;
-using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Utils;
@@ -19,8 +17,7 @@ public class SearchProfileService(
     TmdbIdResolver tmdbResolver,
     ExternalIdResolver externalResolver,
     ImdbTitleResolver titleResolver,
-    PreflightOrchestrator preflightOrchestrator,
-    WardenStore wardenStore)
+    PreflightOrchestrator preflightOrchestrator)
 {
     // Newznab caps a single request at 100 (the spec's common max), so to return more we page in
     // 100-result chunks and advance the offset. A target of 100 (the default) is a single request —
@@ -458,21 +455,7 @@ public class SearchProfileService(
             })
             .ToList();
 
-        if (configManager.IsWatchtowerEnabled())
-        {
-            await AddWarmedExactAsync(candidates, type, id, ct).ConfigureAwait(false);
-            await AddWarmedSeasonBundleAsync(candidates, type, id, ct).ConfigureAwait(false);
-        }
-
         if (candidates.Count == 0) return Empty(profileToken, type, id);
-
-        if (configManager.IsWardenHideDeadEnabled())
-        {
-            var alive = candidates
-                .Where(c => !wardenStore.IsDeadAnywhere(WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)))
-                .ToList();
-            if (alive.Count > 0) candidates = alive;
-        }
 
         var tokens = cache.AddGroup(candidates, type, profileToken, id);
         if (startPreflight)
@@ -486,105 +469,6 @@ public class SearchProfileService(
             Candidates = candidates,
             PlayTokens = tokens,
         };
-    }
-
-    private async Task AddWarmedExactAsync(
-        List<NzbResolutionCache.Candidate> candidates, string type, string id, CancellationToken ct)
-    {
-        if (type != "series" && type != "movie") return;
-
-        try
-        {
-            await using var ctx = new DavDatabaseContext();
-            var row = await ctx.WantedItems.AsNoTracking()
-                .FirstOrDefaultAsync(w => w.Key == $"{type}:{id}" && w.State == WantedItem.StateReady, ct)
-                .ConfigureAwait(false);
-            if (row is null) return;
-
-            var verified = WtJson.ReadPointers(row.Shortlist)
-                .Where(p => p.Verdict == "available" && !string.IsNullOrWhiteSpace(p.NzbUrl))
-                .ToList();
-            if (verified.Count == 0) return;
-
-            var ordered = new List<NzbResolutionCache.Candidate>(candidates.Count + verified.Count);
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var p in verified)
-            {
-                if (!seen.Add(p.NzbUrl)) continue;
-                var existing = candidates.FirstOrDefault(c => c.NzbUrl == p.NzbUrl);
-                ordered.Add(existing ?? new NzbResolutionCache.Candidate
-                {
-                    IndexerId = p.IndexerId,
-                    IndexerName = p.IndexerName,
-                    IndexerUserAgent = p.IndexerUserAgent,
-                    NzbUrl = p.NzbUrl,
-                    Title = p.Title,
-                    Size = p.Size,
-                    Grabs = p.Grabs,
-                    Poster = p.Poster,
-                    UsenetDate = p.UsenetDate,
-                    ProxyUrl = p.ProxyUrl,
-                });
-            }
-
-            foreach (var c in candidates)
-                if (c.NzbUrl is null || seen.Add(c.NzbUrl)) ordered.Add(c);
-
-            candidates.Clear();
-            candidates.AddRange(ordered);
-            Log.Debug("Watchtower: boosted {Count} verified pick(s) to top for {Type}/{Id}",
-                verified.Count, type, id);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception e)
-        {
-            Log.Debug(e, "Watchtower: exact-match candidate boost failed for {Type}/{Id}", type, id);
-        }
-    }
-
-    private async Task AddWarmedSeasonBundleAsync(
-        List<NzbResolutionCache.Candidate> candidates, string type, string id, CancellationToken ct)
-    {
-        if (type != "series") return;
-        var parts = id.Split(':');
-        if (parts.Length < 3) return;
-        if (!int.TryParse(parts[^2], out var season)) return;
-        var imdb = parts[0];
-        if (!imdb.StartsWith("tt", StringComparison.OrdinalIgnoreCase)) return;
-
-        try
-        {
-            await using var ctx = new DavDatabaseContext();
-            var seasonRow = await ctx.WantedItems.AsNoTracking()
-                .FirstOrDefaultAsync(w => w.Key == $"season:{imdb}:{season}" && w.State == WantedItem.StateReady, ct)
-                .ConfigureAwait(false);
-            if (seasonRow is null) return;
-
-            foreach (var p in WtJson.ReadPointers(seasonRow.Shortlist))
-            {
-                if (p.Verdict != "available") continue;
-                if (candidates.Any(c => c.NzbUrl == p.NzbUrl)) continue;
-                candidates.Add(new NzbResolutionCache.Candidate
-                {
-                    IndexerId = p.IndexerId,
-                    IndexerName = p.IndexerName,
-                    IndexerUserAgent = p.IndexerUserAgent,
-                    NzbUrl = p.NzbUrl,
-                    Title = p.Title,
-                    Size = p.Size,
-                    Grabs = p.Grabs,
-                    Poster = p.Poster,
-                    UsenetDate = p.UsenetDate,
-                    ProxyUrl = p.ProxyUrl,
-                });
-            }
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception e)
-        {
-            Log.Debug(e, "Watchtower: season-bundle candidate augment failed for {Id}", id);
-        }
     }
 
     private async Task<IEnumerable<IndexerHit>[]> RunPerIndexerQueryAsync(

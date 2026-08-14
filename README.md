@@ -19,7 +19,6 @@ This fork focuses on that complete path:
 - **Combine provider coverage:** a release does not need to be complete on one provider. Primary and backup providers can collectively supply it, while providers that fail qualification stay out of normal bulk work.
 - **Fail with evidence:** troublesome NZBs receive bounded checks instead of holding the queue indefinitely. Watchdog records the release, provider contribution, failure reason, and time spent in preparation, probing, and health verification.
 - **Recover during playback:** stalled, truncated, or silent article bodies are retried on healthy connections and eligible providers. Playback capacity can be reserved so queue and health work cannot consume every connection.
-- **Keep the next play ready:** Watchtower can resolve and periodically reverify wanted titles before they are requested. Warden remembers known-dead release fingerprints and can share trusted remote lists.
 - **Show viewer impact, not internal noise:** Activity groups range requests into plays and separates successful recovery from source delays, damaged output, timeouts, and failures.
 
 ## Two ways to use davex
@@ -59,7 +58,7 @@ Indexer search ──► ranked candidates ──► verify / fall through ─�
                                        Watchdog evidence
 ```
 
-A Search Profile selects indexers, matching rules, fallback queries, and output adapters. On a play request, davex tries candidates in ranked order, skips known-dead results, verifies the release, and falls through to the next candidate when necessary.
+A Search Profile selects indexers, matching rules, fallback queries, and output adapters. On a play request, davex tries candidates in ranked order, skips recently failed results, verifies the release, and falls through to the next candidate when necessary.
 
 Each profile can expose:
 
@@ -80,7 +79,7 @@ Each profile can expose:
 | **Search** | Multiple Newznab-compatible indexers, strict title matching, filtering, quotas, fallback queries, deduplication, and token-scoped Search Profiles |
 | **Automation** | Radarr/Sonarr monitoring, configurable queue actions, symlink or STRM workflows, background repair, and Plex attribution |
 | **Observability** | Live throughput and connections, queue progress, Watchdog attempt history, Activity playback history, provider shares, health history, and in-app logs |
-| **Proactive reliability** | Preflight candidate verification, Watchtower wanted-list warming, and Warden local/remote dead-release fingerprints |
+| **Proactive verification** | Preflight candidate verification and short-lived cache reuse ahead of playback |
 
 ## Reliability model
 
@@ -99,7 +98,6 @@ When the evidence is insufficient, davex distinguishes a confirmed missing artic
 - **Queue** — preparation and verification progress for SAB imports.
 - **Watchdog** — candidate-by-candidate resolution history, including failure reasons, provider coverage, and time to success or failure.
 - **Activity** — active and completed plays, source delays, bytes served, provider contribution, recovery behavior, and Plex context.
-- **Watchtower** — titles davex is resolving and keeping verified ahead of demand.
 - **Files** — browse the WebDAV-backed virtual filesystem.
 - **Health** — background verification and repair state.
 - **Search** — query configured indexers from the UI.

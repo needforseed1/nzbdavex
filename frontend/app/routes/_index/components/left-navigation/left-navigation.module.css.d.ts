@@ -19,6 +19,5 @@ declare const styles: {
   readonly "title": string;
   readonly "unstyled": string;
   readonly "watchdog-icon": string;
-  readonly "watchtower-icon": string;
 };
 export = styles;

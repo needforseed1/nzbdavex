@@ -39,8 +39,6 @@ public class ProfilePlayController(
     PreflightCache preflightCache,
     PreflightSessionRegistry preflightSessions,
     VariantResolver variantResolver,
-    WatchtowerStore watchtowerStore,
-    WardenStore wardenStore,
     PlayResolutionCoalescer playCoalescer,
     PreferredOrderStore preferredOrderStore,
     ProviderUsageTracker providerUsageTracker
@@ -76,9 +74,6 @@ public class ProfilePlayController(
 
         var entry = cache.Get(nzbToken);
         if (entry is null) return NotFound("Link expired. Re-search in your client.");
-
-        if (configManager.IsWatchtowerEnabled())
-            await watchtowerStore.TryWarmCacheAsync(entry.Type, entry.Id, HttpContext.RequestAborted).ConfigureAwait(false);
 
         preflightSessions.Cancel(entry.ProfileToken, entry.Type, entry.Id);
 
@@ -237,9 +232,6 @@ public class ProfilePlayController(
         // total attempts (maxAttempts) are exhausted, or we run out of cached candidates.
         var preferredOrder = preferredOrderStore.GetOrder(entry.ProfileToken, entry.Type, entry.Id);
         var fallbackQueue = BuildFallbackQueue(entry, preferredOrder);
-        var hideKnownWardenDead = configManager.IsWardenHideDeadEnabled()
-            && fallbackQueue.Any(c => !wardenStore.IsDeadAnywhere(
-                WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)));
         var rankIndex = new Dictionary<string, int>();
         var displayRank = 0;
         var queueIndex = 0;
@@ -260,7 +252,7 @@ public class ProfilePlayController(
             var pool = new List<NzbResolutionCache.Candidate>();
             while (carryOver.Count > 0 && pool.Count < batchBudget)
             {
-                // Already passed the negative-cache/warden gate when first pulled;
+                // Already passed the negative-cache gate when first pulled;
                 // rankIndex still holds their original rank.
                 pool.Add(carryOver[0]);
                 carryOver.RemoveAt(0);
@@ -269,9 +261,7 @@ public class ProfilePlayController(
             {
                 var c = fallbackQueue[queueIndex];
                 queueIndex++;
-                if (negativeCache.IsFailed(c.NzbUrl)
-                    || (hideKnownWardenDead && wardenStore.IsDeadAnywhere(
-                        WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate))))
+                if (negativeCache.IsFailed(c.NzbUrl))
                 {
                     // Surface this in the watchdog so users see every tried candidate,
                     // including those preflight (or a prior click) already poisoned —
@@ -460,7 +450,6 @@ public class ProfilePlayController(
                         break;
                     case PlaybackFastVerifier.Verdict.Dead:
                         negativeCache.MarkFailed(r.Candidate.NzbUrl);
-                        wardenStore.MarkDead(WardenFingerprint.Compute(r.Candidate.Size, r.Candidate.Poster, r.Candidate.UsenetDate));
                         RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                             rankIndex[r.Candidate.NzbUrl],
                             WatchdogEntry.Outcome.PreVerifyDead,
@@ -473,7 +462,7 @@ public class ProfilePlayController(
                         {
                             // NZB never arrived (indexer rate limit, HTTP error, fetch
                             // timeout) — nothing to commit, and nothing learned about the
-                            // release itself, so no negative-cache/warden mark either.
+                            // release itself, so no negative-cache mark either.
                             RecordAttempt(clickId, r.Candidate, contentType, requestedTitle,
                                 rankIndex[r.Candidate.NzbUrl],
                                 WatchdogEntry.Outcome.EnqueueFailed,
@@ -806,7 +795,7 @@ public class ProfilePlayController(
             {
                 // Indexer-side failure (rate limit, HTTP error, fetch timeout) — says
                 // nothing about the release's health on usenet. Timeout keeps it out of
-                // the negative cache and warden store; Dead would poison it permanently.
+                // the negative cache; Dead would suppress it until the short TTL expires.
                 return new PreVerifyResult(candidate, null, PlaybackFastVerifier.Verdict.Timeout, null);
             }
 

@@ -19,7 +19,7 @@ public class GetSettingsMetadataController(DavDatabaseClient dbClient, ConfigMan
         "usenet.warm-validation-concurrency",
         "rclone.host", "rclone.user", "rclone.pass",
         "plex.base-url", "plex.token", "plex.path-prefix", "plex.local-path-prefix",
-        "media.library-dir", "search.exclude-patterns", "watchtower.profile-token",
+        "media.library-dir", "search.exclude-patterns",
     ];
 
     protected override async Task<IActionResult> HandleRequest()

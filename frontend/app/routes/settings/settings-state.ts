@@ -1,5 +1,5 @@
 export type SettingsSection =
-    "usenet" | "indexers" | "profiles" | "watchdog" | "preflight" | "watchtower" | "warden"
+    "usenet" | "indexers" | "profiles" | "watchdog" | "preflight"
     | "webdav" | "sabnzbd" | "arrs" | "repairs" | "rclone" | "plex" | "maintenance";
 
 export function getSettingsSection(key: string): SettingsSection | null {
@@ -9,8 +9,6 @@ export function getSettingsSection(key: string): SettingsSection | null {
     if (key.startsWith("profiles.") || key === "general.base-url") return "profiles";
     if (key.startsWith("play.") || key.startsWith("grab.") || key.startsWith("variants.")) return "watchdog";
     if (key.startsWith("preflight.")) return "preflight";
-    if (key.startsWith("watchtower.")) return "watchtower";
-    if (key.startsWith("warden.")) return "warden";
     if (key.startsWith("webdav.")) return "webdav";
     if (key === "rclone.mount-dir" || key.startsWith("api.")) return "sabnzbd";
     if (key === "arr.instances") return "arrs";
@@ -36,7 +34,6 @@ export function getValidationSections(
 ): ReadonlySet<SettingsSection> {
     const sections = new Set(dirtySections);
     if (dirtySections.has("indexers")) sections.add("profiles");
-    if (dirtySections.has("profiles")) sections.add("watchtower");
     if (dirtySections.has("arrs")) sections.add("repairs");
     if (dirtySections.has("repairs")) sections.add("maintenance");
     if (changedKeys.has("general.base-url")) sections.add("sabnzbd");

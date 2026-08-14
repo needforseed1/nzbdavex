@@ -12,8 +12,6 @@ import { isMaintenanceSettingsValid, Maintenance } from "./maintenance/maintenan
 import { isRepairsSettingsValid, RepairsSettings } from "./repairs/repairs";
 import { isWatchdogSettingsValid, WatchdogSettings } from "./watchdog/watchdog";
 import { isPreflightSettingsValid, PreflightSettings } from "./preflight/preflight";
-import { isWatchtowerSettingsValid, WatchtowerSettings } from "./watchtower/watchtower";
-import { isWardenSettingsValid, WardenSettings } from "./warden/warden";
 import { isRcloneSettingsValid, RcloneSettings } from "./rclone/rclone";
 import { isPlexSettingsValid, PlexSettings } from "./plex/plex";
 import { useCallback, useState, type ReactNode } from "react";
@@ -65,8 +63,6 @@ function Body(props: BodyProps) {
     const isProfilesUpdated = dirtySections.has("profiles");
     const isWatchdogUpdated = dirtySections.has("watchdog");
     const isPreflightUpdated = dirtySections.has("preflight");
-    const isWatchtowerUpdated = dirtySections.has("watchtower");
-    const isWardenUpdated = dirtySections.has("warden");
     const isWebdavUpdated = dirtySections.has("webdav");
     const isSabnzbdUpdated = dirtySections.has("sabnzbd");
     const isArrsUpdated = dirtySections.has("arrs");
@@ -83,8 +79,6 @@ function Body(props: BodyProps) {
     const profilesTitle = tabTitle("Search Profiles", isProfilesUpdated);
     const watchdogTitle = tabTitle("Watchdog", isWatchdogUpdated);
     const preflightTitle = tabTitle("Preflight", isPreflightUpdated);
-    const watchtowerTitle = tabTitle("Watchtower", isWatchtowerUpdated);
-    const wardenTitle = tabTitle("Warden", isWardenUpdated);
     const advancedTitle = tabTitle("Advanced", isAdvancedUpdated);
 
     const invalidSection = findInvalidSection([
@@ -96,8 +90,6 @@ function Body(props: BodyProps) {
         { active: validationSections.has("usenet"), label: "Usenet", validate: () => isUsenetSettingsValid(newConfig) },
         { active: validationSections.has("watchdog"), label: "Watchdog", validate: () => isWatchdogSettingsValid(newConfig) },
         { active: validationSections.has("preflight"), label: "Preflight", validate: () => isPreflightSettingsValid(newConfig) },
-        { active: validationSections.has("watchtower"), label: "Watchtower", validate: () => isWatchtowerSettingsValid(newConfig) },
-        { active: validationSections.has("warden"), label: "Warden", validate: () => isWardenSettingsValid(newConfig) },
         { active: validationSections.has("rclone"), label: "Rclone", validate: () => isRcloneSettingsValid(newConfig) },
         { active: validationSections.has("plex"), label: "Plex", validate: () => isPlexSettingsValid(newConfig) },
         { active: validationSections.has("repairs"), label: "Repairs", validate: () => isRepairsSettingsValid(newConfig) },
@@ -191,12 +183,6 @@ function Body(props: BodyProps) {
                 </Tab>
                 <Tab eventKey="preflight" title={preflightTitle}>
                     <PreflightSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="watchtower" title={watchtowerTitle}>
-                    <WatchtowerSettings config={newConfig} setNewConfig={setNewConfig} />
-                </Tab>
-                <Tab eventKey="warden" title={wardenTitle}>
-                    <WardenSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
                 <Tab eventKey="advanced" title={advancedTitle}>
                     <div className={styles.advanced}>

@@ -14,7 +14,7 @@ public class GetDatabaseBackupController() : BaseApiController
         // This is intentionally disabled by default. Snapshot through SQLite's
         // backup API so WAL transactions are included and the downloaded main
         // database is internally consistent. This is not a full CONFIG_PATH
-        // backup (metrics, Warden, blobs and data-protection keys are separate).
+        // backup (metrics, blobs, data-protection keys and retired feature data are separate).
         if (!EnvironmentUtil.IsVariableTrue("DANGEROUS_ENABLE_DATABASE_DOWNLOAD_ENDPOINT"))
             return StatusCode(403, new { status = false, error = "This endpoint is not enabled." });
 

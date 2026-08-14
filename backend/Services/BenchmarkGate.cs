@@ -2,7 +2,7 @@ namespace NzbWebDAV.Services;
 
 /// <summary>
 /// A lightweight, in-memory gate that suspends background NNTP work — the
-/// download queue, health checks and watchtower — while a connection speed-test
+/// download queue and health checks — while a connection speed-test
 /// runs, so the test gets the provider's full connection budget instead of
 /// contending with everything else.
 ///

@@ -181,16 +181,6 @@ public class ConfigManagerTests
     }
 
     [Fact]
-    public void WatchtowerKeepFreshMaximumCannotBeBelowBase()
-    {
-        var config = WithValues(
-            ("watchtower.keepfresh-base-seconds", "7200"),
-            ("watchtower.keepfresh-max-seconds", "600"));
-
-        Assert.Equal(7200, config.GetWatchtowerKeepFreshMaxSeconds());
-    }
-
-    [Fact]
     public void UpdateValuesEmitsOnlySettingsWhoseStoredValueChanged()
     {
         var config = new ConfigManager();

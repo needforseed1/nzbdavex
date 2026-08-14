@@ -9,8 +9,6 @@ test("assigns representative keys to every settings section", () => {
         ["profiles.instances", "profiles"],
         ["play.watchdog-enabled", "watchdog"],
         ["preflight.mode", "preflight"],
-        ["watchtower.enabled", "watchtower"],
-        ["warden.quorum", "warden"],
         ["webdav.user", "webdav"],
         ["api.categories", "sabnzbd"],
         ["arr.instances", "arrs"],
@@ -29,6 +27,8 @@ test("keeps shared-prefix exceptions with their visible owners", () => {
     assert.equal(getSettingsSection("api.search-user-agent"), "indexers");
     assert.equal(getSettingsSection("rclone.mount-dir"), "sabnzbd");
     assert.equal(getSettingsSection("general.base-url"), "profiles");
+    assert.equal(getSettingsSection("watchtower.enabled"), null);
+    assert.equal(getSettingsSection("warden.hide-dead"), null);
     assert.equal(getSettingsSection("unknown.setting"), null);
 });
 
@@ -45,6 +45,6 @@ test("derives cross-section validation dependencies", () => {
 
     assert.deepEqual([...dirty].sort(), ["arrs", "indexers", "profiles", "repairs"].sort());
     assert.deepEqual([...validation].sort(), [
-        "arrs", "indexers", "profiles", "repairs", "maintenance", "watchtower", "sabnzbd",
+        "arrs", "indexers", "profiles", "repairs", "maintenance", "sabnzbd",
     ].sort());
 });

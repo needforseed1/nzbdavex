@@ -398,49 +398,6 @@ class BackendClient {
         return await response.json();
     }
 
-    public async getWatchtower(params: WatchtowerQuery = {}): Promise<WatchtowerData> {
-        const qs = new URLSearchParams();
-        if (params.state) qs.set("state", params.state);
-        if (params.q) qs.set("q", params.q);
-        if (params.sort) qs.set("sort", params.sort);
-        if (params.offset) qs.set("offset", String(params.offset));
-        if (params.limit) qs.set("limit", String(params.limit));
-        if (params.expander) qs.set("expander", params.expander);
-        if (params.statsOnly) qs.set("statsOnly", "1");
-        const query = qs.toString();
-        const url = BACKEND_URL + "/api/get-watchtower" + (query ? `?${query}` : "");
-        const apiKey = FRONTEND_BACKEND_API_KEY;
-        const response = await fetch(url, { method: "GET", headers: { "x-api-key": apiKey } });
-        if (!response.ok) {
-            throw new Error(`Failed to get watchtower: ${(await response.json()).error}`);
-        }
-        return await response.json();
-    }
-
-    public async watchtowerMutate(fields: Record<string, string>): Promise<boolean> {
-        const url = BACKEND_URL + "/api/watchtower-mutate";
-        const apiKey = FRONTEND_BACKEND_API_KEY;
-        const form = new FormData();
-        for (const [k, v] of Object.entries(fields)) form.append(k, v);
-        const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey }, body: form });
-        if (!response.ok) {
-            throw new Error(`Watchtower action failed: ${(await response.json()).error}`);
-        }
-        const data = await response.json();
-        return data.status;
-    }
-
-    public async discoverStremioCatalogs(manifestUrl: string): Promise<DiscoverCatalogsResponse> {
-        const url = BACKEND_URL + "/api/watchtower-discover-catalogs";
-        const apiKey = FRONTEND_BACKEND_API_KEY;
-        const form = new FormData();
-        form.append("url", manifestUrl);
-        const response = await fetch(url, { method: "POST", headers: { "x-api-key": apiKey }, body: form });
-        if (!response.ok) {
-            throw new Error(`${(await response.json()).error}`);
-        }
-        return await response.json();
-    }
 }
 
 export const backendClient = new BackendClient();
@@ -811,82 +768,6 @@ export type ConfigItem = {
 export type SettingMetadata = {
     key: string,
     effectiveValue: string,
-}
-
-export type WatchtowerQuery = {
-    state?: string,
-    q?: string,
-    sort?: string,
-    offset?: number,
-    limit?: number,
-    expander?: string,
-    statsOnly?: boolean,
-}
-
-export type WatchtowerData = {
-    status: boolean,
-    enabled: boolean,
-    sources: WatchtowerSource[],
-    items: WatchtowerItem[],
-    shows: WatchtowerItem[],
-    total: number,
-    hasMore: boolean,
-    stats: WatchtowerStats,
-}
-
-export type WatchtowerSource = {
-    id: string,
-    kind: string,
-    name: string,
-    url?: string | null,
-    enabled: boolean,
-    cap: number,
-    seriesScope?: string | null,
-    lastSyncedAtUnix?: number | null,
-    lastSyncError?: string | null,
-}
-
-export type WatchtowerItem = {
-    key: string,
-    type: string,
-    contentId: string,
-    title: string,
-    state: string,
-    provenanceCount: number,
-    expanderKey?: string | null,
-    childTotal?: number | null,
-    childReady?: number | null,
-    childUnavailable?: number | null,
-    shortlistCount: number,
-    winnerTitle?: string | null,
-    winnerSize: number,
-    lastVerifiedAtUnix?: number | null,
-    nextCheckAtUnix?: number | null,
-    failReason?: string | null,
-}
-
-export type WatchtowerStats = {
-    total: number,
-    ready: number,
-    scouting: number,
-    unavailable: number,
-    parked: number,
-    expanders: number,
-}
-
-export type DiscoveredCatalog = {
-    type: string,
-    id: string,
-    name: string,
-    url: string,
-    extraRequired?: string | null,
-}
-
-export type DiscoverCatalogsResponse = {
-    status: boolean,
-    error?: string,
-    addonName?: string | null,
-    catalogs: DiscoveredCatalog[],
 }
 
 export type SearchIndexersResponse = {

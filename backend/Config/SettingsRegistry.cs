@@ -32,18 +32,7 @@ public static class SettingsRegistry
       "variants.eviction-active-grace-seconds":"60","preflight.mode":"off","preflight.max-attempts":"20",
       "preflight.verify-sample-count":"3","preflight.ttl-seconds":"120","preflight.indexer-max-wait-seconds":"5",
       "repair.enable":"false","db.is-startup-vacuum-enabled":"false","maintenance.remove-orphaned-schedule-enabled":"false",
-      "maintenance.remove-orphaned-schedule-time":"0","api.nzb-backup-enabled":"false","api.nzb-backup-location":"",
-      "watchtower.enabled":"false","watchtower.profile-token":"","watchtower.ranking":"watchdog",
-      "watchtower.size-floor-bytes":"536870912","watchtower.size-ceiling-bytes":"0","watchtower.shortlist-depth":"2",
-      "watchtower.grab-cap-per-resolve":"3","watchtower.active-set-cap":"100","watchtower.daily-resolve-budget":"60",
-      "watchtower.auto-throughput":"false","watchtower.sync-interval-seconds":"3600","watchtower.series-scope":"latest-season",
-      "watchtower.season-bundles":"true","watchtower.series-max-episodes":"50","watchtower.series-cap-keep":"newest",
-      "watchtower.series-recent-count":"3","watchtower.season-bundle-fallback":"false",
-      "watchtower.season-bundle-fallback-scope":"latest-season","watchtower.season-bundle-fallback-recent-count":"2",
-      "watchtower.season-bundle-fallback-max-episodes":"50","watchtower.min-grabs":"0","watchtower.verify-sample-count":"3",
-      "watchtower.verify-timeout-seconds":"10","watchtower.keepfresh-base-seconds":"21600","watchtower.keepfresh-max-seconds":"604800",
-      "watchtower.unavailable-retry-seconds":"21600","watchtower.verbose-logging":"false","warden.hide-dead":"true",
-      "warden.quorum":"2","warden.backbone-scope":"true"
+      "maintenance.remove-orphaned-schedule-time":"0","api.nzb-backup-enabled":"false","api.nzb-backup-location":""
     }
     """;
 
@@ -58,8 +47,6 @@ public static class SettingsRegistry
             // Accepted for older clients and used as a runtime fallback until
             // the replacement MiB setting has been saved.
             ["usenet.article-buffer-size"] = "40",
-            ["watchtower.resolve-concurrency"] = "3",
-            ["warden.max-source-entries"] = "2000000",
         };
 
     internal static readonly IReadOnlyDictionary<string, (long Min, long Max)> Ranges =
@@ -94,26 +81,6 @@ public static class SettingsRegistry
         ["preflight.ttl-seconds"] = (10, 1800),
         ["preflight.indexer-max-wait-seconds"] = (0, 120),
         ["maintenance.remove-orphaned-schedule-time"] = (0, 1439),
-        ["watchtower.size-floor-bytes"] = (0, long.MaxValue),
-        ["watchtower.size-ceiling-bytes"] = (0, long.MaxValue),
-        ["watchtower.shortlist-depth"] = (1, 5),
-        ["watchtower.grab-cap-per-resolve"] = (1, 10),
-        ["watchtower.active-set-cap"] = (1, 100000),
-        ["watchtower.daily-resolve-budget"] = (0, int.MaxValue),
-        ["watchtower.sync-interval-seconds"] = (60, 86400),
-        ["watchtower.series-max-episodes"] = (0, 1000),
-        ["watchtower.series-recent-count"] = (1, 100),
-        ["watchtower.season-bundle-fallback-recent-count"] = (1, 100),
-        ["watchtower.season-bundle-fallback-max-episodes"] = (1, 1000),
-        ["watchtower.min-grabs"] = (0, int.MaxValue),
-        ["watchtower.verify-sample-count"] = (1, 20),
-        ["watchtower.verify-timeout-seconds"] = (2, 120),
-        ["watchtower.keepfresh-base-seconds"] = (300, 604800),
-        ["watchtower.keepfresh-max-seconds"] = (600, 2592000),
-        ["watchtower.unavailable-retry-seconds"] = (600, 604800),
-        ["watchtower.resolve-concurrency"] = (1, 16),
-        ["warden.quorum"] = (1, 20),
-        ["warden.max-source-entries"] = (1, 10000000),
     };
 
     internal static readonly IReadOnlyDictionary<string, string[]> Choices =
@@ -126,10 +93,6 @@ public static class SettingsRegistry
         ["variants.replay-strategy"] = ["closest-to-click", "largest", "smallest"],
         ["variants.eviction-strategy"] = ["lru", "largest-first", "smallest-first", "never"],
         ["preflight.mode"] = ["off", "light", "standard", "full"],
-        ["watchtower.ranking"] = ["watchdog", "largest"],
-        ["watchtower.series-scope"] = ["latest-season", "first-season", "all-aired", "recent", "off"],
-        ["watchtower.series-cap-keep"] = ["newest", "oldest"],
-        ["watchtower.season-bundle-fallback-scope"] = ["latest-season", "all", "recent"],
     };
 
     internal static bool TryGetValidationDefault(string key, out string defaultValue)

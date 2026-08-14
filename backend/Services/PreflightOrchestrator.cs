@@ -18,7 +18,6 @@ public class PreflightOrchestrator(
     LazyRarResolver lazyRarResolver,
     PreflightSessionRegistry sessionRegistry,
     CandidateNegativeCache negativeCache,
-    WardenStore wardenStore,
     NzbFetchCoalescer nzbFetchCoalescer)
 {
     public void Start(
@@ -71,15 +70,11 @@ public class PreflightOrchestrator(
             })
             .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First().Value, StringComparer.OrdinalIgnoreCase);
-        var hideKnownWardenDead = configManager.IsWardenHideDeadEnabled()
-            && candidates.Any(c => !wardenStore.IsDeadAnywhere(
-                WardenFingerprint.Compute(c.Size, c.Poster, c.UsenetDate)));
-
         for (var i = 0; i < maxAttempts; i++)
         {
             if (ct.IsCancellationRequested) return 0;
             var ok = await PreflightCandidateAsync(
-                mode, candidates[i], indexers, maxWait, hideKnownWardenDead, ct).ConfigureAwait(false);
+                mode, candidates[i], indexers, maxWait, ct).ConfigureAwait(false);
             if (ok) return 1;
         }
         return 0;
@@ -90,13 +85,9 @@ public class PreflightOrchestrator(
         NzbResolutionCache.Candidate candidate,
         IReadOnlyDictionary<string, IndexerConfig.ConnectionDetails> indexers,
         TimeSpan maxWait,
-        bool hideKnownWardenDead,
         CancellationToken ct)
     {
         if (ct.IsCancellationRequested) return false;
-
-        var fp = WardenFingerprint.Compute(candidate.Size, candidate.Poster, candidate.UsenetDate);
-        if (hideKnownWardenDead && wardenStore.IsDeadAnywhere(fp)) return false;
 
         if (!indexers.TryGetValue(candidate.IndexerId ?? candidate.IndexerName, out var indexer)) return false;
         var nzbBytes = await FetchNzbBytesAsync(candidate, indexer, maxWait, ct).ConfigureAwait(false);
@@ -113,7 +104,6 @@ public class PreflightOrchestrator(
         if (outcome.Verdict == PlaybackFastVerifier.Verdict.Dead)
         {
             negativeCache.MarkFailed(candidate.NzbUrl);
-            wardenStore.MarkDead(fp);
             return false;
         }
 

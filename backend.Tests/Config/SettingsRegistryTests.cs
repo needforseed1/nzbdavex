@@ -17,20 +17,18 @@ public class SettingsRegistryTests
         Assert.True(SettingsRegistry.TryGetValidationDefault("usenet.article-buffer-size", out _));
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.depth"]);
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.health.depth"]);
-        Assert.Equal((1, 100000), SettingsRegistry.Ranges["watchtower.active-set-cap"]);
         Assert.Contains("strm", SettingsRegistry.Choices["api.import-strategy"]);
     }
 
-    [Fact]
-    public void WatchtowerSeriesScopeChoicesMatchRuntimeValues()
+    [Theory]
+    [InlineData("watchtower.enabled")]
+    [InlineData("watchtower.resolve-concurrency")]
+    [InlineData("warden.hide-dead")]
+    [InlineData("warden.max-source-entries")]
+    public void RetiredFeatureSettingsAreNotWritable(string key)
     {
-        string[] expected = ["latest-season", "first-season", "all-aired", "recent", "off"];
-
-        Assert.Equal(expected, SettingsRegistry.Choices["watchtower.series-scope"]);
-        foreach (var value in expected)
-            Assert.Equal(value, ConfigManager.NormalizeSeriesScope(value));
-
-        Assert.Null(ConfigManager.NormalizeSeriesScope("all"));
+        Assert.DoesNotContain(key, SettingsRegistry.Defaults.Keys);
+        Assert.False(SettingsRegistry.TryGetValidationDefault(key, out _));
     }
 
     [Fact]

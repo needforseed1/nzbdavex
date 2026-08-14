@@ -11,16 +11,6 @@ public class AddStableConfigIds : Migration
 
     protected override void Up(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.AddColumn<long>(
-            name: "LastAccessedAtUnix",
-            table: "WantedItems",
-            type: "INTEGER",
-            nullable: true);
-        migrationBuilder.CreateIndex(
-            name: "IX_WantedItems_State_LastAccessedAtUnix",
-            table: "WantedItems",
-            columns: ["State", "LastAccessedAtUnix"]);
-
         migrationBuilder.Sql($$"""
             UPDATE ConfigItems
             SET ConfigValue = json_set(
@@ -133,11 +123,5 @@ public class AddStableConfigIds : Migration
             ), '[]')))
             WHERE ConfigName = 'indexers.instances' AND json_valid(ConfigValue);
             """);
-        migrationBuilder.DropIndex(
-            name: "IX_WantedItems_State_LastAccessedAtUnix",
-            table: "WantedItems");
-        migrationBuilder.DropColumn(
-            name: "LastAccessedAtUnix",
-            table: "WantedItems");
     }
 }
