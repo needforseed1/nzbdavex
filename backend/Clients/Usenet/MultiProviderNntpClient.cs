@@ -35,9 +35,16 @@ public class MultiProviderNntpClient(
     TimeSpan? indeterminateRecoveryBudget = null,
     TimeSpan? bulkStatProbeTimeout = null,
     TimeSpan? pipelinedStatResponseInactivityTimeout = null,
-    TimeSpan? bodyProgressInactivityTimeout = null
+    TimeSpan? bodyProgressInactivityTimeout = null,
+    WarmValidationCoordinator? validationCoordinator = null
 ) : NntpClient, IQueueConnectionWarmer
 {
+    private enum HealthConnectionAllocationMode
+    {
+        PreserveWarmup,
+        ManageBulkHealth,
+    }
+
     private const int HealthPrimeConnectionLimitPerProvider = 4;
     private const int BulkStatProbeSize = 128;
     private const int BulkStatProbeThreshold = 128;
@@ -92,6 +99,12 @@ public class MultiProviderNntpClient(
     private static readonly AsyncLocal<StatVerdictCollector?> VerdictCollectorContext = new();
     private readonly BackupRecoveryCoordinator _backupRecovery = new(
         HealthRecoveryConnectionReserve);
+    private readonly WarmValidationCoordinator _warmValidationCoordinator =
+        validationCoordinator ?? new WarmValidationCoordinator(() => Math.Max(
+            1,
+            Math.Min(
+                applicationConnectionLimit,
+                warmValidationConnectionBudget?.Invoke() ?? applicationConnectionLimit)));
 
     /// <summary>
     /// Tag the current async flow with a read-session id so SegmentFetch rows
@@ -134,10 +147,6 @@ public class MultiProviderNntpClient(
         (int)Math.Min(
             providers.Sum(provider => (long)provider.MaxConnections),
             int.MaxValue));
-    private int WarmValidationConnectionBudget => Math.Clamp(
-        warmValidationConnectionBudget?.Invoke() ?? ApplicationConnectionLimit,
-        0,
-        ApplicationConnectionLimit);
     private TimeSpan ProviderAttemptTimeout => providerAttemptTimeout ?? DefaultProviderAttemptTimeout;
     private TimeSpan ProviderOperationTimeout => providerOperationTimeout ?? DefaultProviderOperationTimeout;
     private TimeSpan? PipelinedStatResponseInactivityTimeout =>
@@ -233,35 +242,54 @@ public class MultiProviderNntpClient(
             })).ConfigureAwait(false);
     }
 
-    public async Task PrewarmHealthCheckAsync(CancellationToken cancellationToken)
+    public async Task PrewarmHealthCheckAsync(
+        int connectionDemand,
+        CancellationToken cancellationToken)
     {
-        // Pool providers are already warmed by queue prewarm and then exercised by
-        // BODY/ARTICLE prep. Health-only and backup+STAT providers otherwise sit
-        // outside that path, so establish the same bounded warm floor used at
-        // startup while prep is busy. Do not force-validate established idle
-        // connections here: borrowing the entire idle pool for DATE can make it
-        // unavailable to the foreground prep that triggered this warmup.
-        var eligible = providers
-            .Where(x => x.ProviderType == ProviderType.BackupAndStats ||
-                        (UsenetStreamingClient.HealthProviderPrewarmEnabled &&
-                         x.ProviderType == ProviderType.HealthChecksOnly))
-            .Where(x => !x.IsTripped)
-            .Where(x => !IsOverLimit(x))
-            .ToList();
+        await PrewarmHealthProvidersAsync(
+                providers.Where(provider => provider.ProviderType is
+                    ProviderType.HealthChecksOnly or ProviderType.BackupAndStats),
+                connectionDemand,
+                "dedicated",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task PrewarmPrimaryHealthCheckAsync(
+        int connectionDemand,
+        CancellationToken cancellationToken)
+    {
+        await PrewarmHealthProvidersAsync(
+                providers.Where(provider => provider.ProviderType == ProviderType.Pooled),
+                connectionDemand,
+                "primary",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task PrewarmHealthProvidersAsync(
+        IEnumerable<MultiConnectionNntpClient> candidates,
+        int connectionDemand,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        var allocations = GetHealthBurstAllocations(connectionDemand);
+        var eligible = candidates
+            .Where(provider => allocations.GetValueOrDefault(provider) > 0)
+            .ToArray();
 
         await Task.WhenAll(eligible.Select(async provider =>
         {
-            var target = UsenetStreamingClient.GetWarmConnectionTarget(
-                provider.ProviderType, provider.MaxConnections);
+            var target = allocations[provider];
             try
             {
                 await provider.PrewarmForDemandAsync(target, cancellationToken)
                     .ConfigureAwait(false);
                 Log.Debug(
-                    "Health prewarm provider={Provider} target={Target} mode=establish-only " +
-                    "warm={Warm} live={Live} idle={Idle}",
-                    provider.Host, target,
-                    provider.WarmConnections, provider.LiveConnections, provider.IdleConnections);
+                    "Health prewarm phase={Phase} provider={Provider} target={Target} " +
+                    "mode=lane-bounded establish-only warm={Warm} live={Live} idle={Idle}",
+                    phase, provider.Host, target, provider.WarmConnections,
+                    provider.LiveConnections, provider.IdleConnections);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -269,50 +297,66 @@ public class MultiProviderNntpClient(
             }
             catch (Exception e)
             {
-                Log.Debug(e, "Health prewarm failed for provider={Provider} target={Target}",
-                    provider.Host, target);
+                Log.Debug(e,
+                    "Health prewarm failed phase={Phase} provider={Provider} target={Target}",
+                    phase, provider.Host, target);
             }
         })).ConfigureAwait(false);
     }
 
-    public async Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken)
+    private Dictionary<MultiConnectionNntpClient, int> GetHealthBurstAllocations(
+        int connectionDemand)
     {
-        // First-segment prep intentionally reads only the metadata prefix of each
-        // article. Those partially consumed BODY connections are discarded to keep
-        // the NNTP command stream synchronized, so a Primary pool can be cold at the
-        // prep-to-STAT boundary even when queue prewarm filled it beforehand.
-        // Refill opportunistically after that boundary, but leave every established
-        // idle socket available to lazy-RAR and other foreground ARTICLE work.
         var eligible = providers
-            .Where(x => x.ProviderType == ProviderType.Pooled)
-            .Where(x => !x.IsTripped)
-            .Where(x => !IsOverLimit(x))
-            .ToList();
+            .Where(provider => provider.ProviderType is ProviderType.Pooled
+                or ProviderType.BackupAndStats
+                or ProviderType.HealthChecksOnly)
+            .Where(provider => !provider.IsTripped)
+            .Where(provider => !IsOverLimit(provider))
+            .OrderBy(provider => provider.Priority)
+            .ToArray();
+        var allocations = AllocateHealthBurstTargets(
+            eligible.Select(provider => provider.EffectiveMaxConnections).ToArray(),
+            connectionDemand);
+        return eligible
+            .Select((provider, index) => new { Provider = provider, Allocation = allocations[index] })
+            .ToDictionary(item => item.Provider, item => item.Allocation);
+    }
 
-        await Task.WhenAll(eligible.Select(async provider =>
+    internal static int[] AllocateHealthBurstTargets(
+        IReadOnlyList<int> capacities,
+        int requestedConnections)
+    {
+        var normalized = capacities.Select(capacity => Math.Max(0, capacity)).ToArray();
+        var totalCapacity = normalized.Sum(capacity => (long)capacity);
+        if (totalCapacity == 0 || requestedConnections <= 0) return new int[normalized.Length];
+
+        var remaining = (int)Math.Min(totalCapacity, requestedConnections);
+        var allocations = new int[normalized.Length];
+
+        // Retain one fallback lane per eligible provider before spreading the
+        // remaining demand proportionally. When demand is smaller than the
+        // provider count, configured priority determines which providers start.
+        foreach (var index in Enumerable.Range(0, normalized.Length)
+                     .Where(index => normalized[index] > 0))
         {
-            var target = UsenetStreamingClient.GetHealthCheckWarmConnectionTarget(
-                provider.ProviderType, provider.MaxConnections);
-            try
-            {
-                await provider.PrewarmForDemandAsync(target, cancellationToken)
-                    .ConfigureAwait(false);
-                Log.Debug(
-                    "Primary health prewarm provider={Provider} target={Target} mode=establish-only " +
-                    "warm={Warm} live={Live} idle={Idle}",
-                    provider.Host, target,
-                    provider.WarmConnections, provider.LiveConnections, provider.IdleConnections);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                Log.Debug(e, "Primary health prewarm failed for provider={Provider} target={Target}",
-                    provider.Host, target);
-            }
-        })).ConfigureAwait(false);
+            if (remaining == 0) break;
+            allocations[index] = 1;
+            remaining--;
+        }
+
+        while (remaining > 0)
+        {
+            var index = Enumerable.Range(0, normalized.Length)
+                .Where(candidate => allocations[candidate] < normalized[candidate])
+                .OrderBy(candidate => allocations[candidate] / (double)normalized[candidate])
+                .ThenBy(candidate => candidate)
+                .First();
+            allocations[index]++;
+            remaining--;
+        }
+
+        return allocations;
     }
 
     public Task PrimeHealthCheckAsync(
@@ -346,7 +390,6 @@ public class MultiProviderNntpClient(
         CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0) return;
-        var validationAllocations = GetWarmValidationAllocations();
         var effectiveDepth = Math.Clamp(depth, 1, segmentIds.Count);
         var eligible = candidates
             .Where(provider => !provider.IsTripped)
@@ -374,9 +417,7 @@ public class MultiProviderNntpClient(
             // sample of distinct sockets on the real STAT path. Priming an entire
             // large pool can consume the capacity needed by foreground ARTICLE work
             // and turns one slow provider into a job-wide timeout burst.
-            var allocatedConcurrency = validationAllocations.GetValueOrDefault(provider);
-            var concurrency = Math.Min(
-                HealthPrimeConnectionLimitPerProvider, allocatedConcurrency);
+            var concurrency = HealthPrimeConnectionLimitPerProvider;
             var connectionCount = Math.Min(provider.IdleConnections, concurrency);
             if (connectionCount == 0) return;
             var timer = Stopwatch.StartNew();
@@ -385,7 +426,8 @@ public class MultiProviderNntpClient(
             try
             {
                 await provider.PrimeHealthConnectionsAsync(
-                        segmentIds, connectionCount, concurrency, primeCts.Token)
+                        segmentIds, connectionCount, concurrency,
+                        _warmValidationCoordinator, primeCts.Token)
                     .ConfigureAwait(false);
                 Log.Debug(
                     "Health STAT prime phase={Phase} provider={Provider} connections={Connections} " +
@@ -414,58 +456,7 @@ public class MultiProviderNntpClient(
         })).ConfigureAwait(false);
     }
 
-    private Dictionary<MultiConnectionNntpClient, int> GetWarmValidationAllocations()
-    {
-        var eligible = providers
-            .Where(provider => provider.ProviderType is ProviderType.Pooled
-                or ProviderType.BackupAndStats
-                or ProviderType.HealthChecksOnly)
-            .Where(provider => !provider.IsTripped)
-            .Where(provider => !IsOverLimit(provider))
-            .ToArray();
-        var targets = eligible
-            .Select(provider => UsenetStreamingClient.GetHealthCheckWarmConnectionTarget(
-                provider.ProviderType, provider.MaxConnections))
-            .ToArray();
-        var allocations = AllocateWarmValidationBudget(targets, WarmValidationConnectionBudget);
-        return eligible
-            .Select((provider, index) => new { Provider = provider, Allocation = allocations[index] })
-            .ToDictionary(item => item.Provider, item => item.Allocation);
-    }
-
-    internal static int[] AllocateWarmValidationBudget(IReadOnlyList<int> targets, int requestedBudget)
-    {
-        var normalized = targets.Select(target => Math.Max(0, target)).ToArray();
-        var total = normalized.Sum(target => (long)target);
-        if (total == 0 || requestedBudget <= 0) return new int[normalized.Length];
-
-        var budget = (int)Math.Min(total, requestedBudget);
-        var allocations = new int[normalized.Length];
-        var remainders = new (int Index, double Remainder)[normalized.Length];
-        var allocated = 0;
-        for (var index = 0; index < normalized.Length; index++)
-        {
-            var exact = budget * (double)normalized[index] / total;
-            allocations[index] = Math.Min(normalized[index], (int)Math.Floor(exact));
-            allocated += allocations[index];
-            remainders[index] = (index, exact - allocations[index]);
-        }
-
-        foreach (var item in remainders
-                     .OrderByDescending(item => item.Remainder)
-                     .ThenByDescending(item => normalized[item.Index])
-                     .ThenBy(item => item.Index))
-        {
-            if (allocated >= budget) break;
-            if (allocations[item.Index] >= normalized[item.Index]) continue;
-            allocations[item.Index]++;
-            allocated++;
-        }
-
-        return allocations;
-    }
-
-    private static async Task<HealthPrimeProbe> ProbeHealthPrimeProviderAsync(
+    private async Task<HealthPrimeProbe> ProbeHealthPrimeProviderAsync(
         MultiConnectionNntpClient provider,
         IReadOnlyList<string> segmentIds,
         int depth,
@@ -480,7 +471,8 @@ public class MultiProviderNntpClient(
         try
         {
             (received, found) = await provider.ProbeHealthCoverageAsync(
-                    segmentIds, ResolveHealthDepth(provider, depth), probeCts.Token)
+                    segmentIds, ResolveHealthDepth(provider, depth),
+                    _warmValidationCoordinator, probeCts.Token)
                 .ConfigureAwait(false);
             Log.Debug(
                 "Health warm probe phase={Phase} provider={Provider} found={Found}/{Received} " +
@@ -1864,7 +1856,8 @@ public class MultiProviderNntpClient(
             segmentIds.Count,
             () => CheckAllSegmentsPipelinedCoreAsync(
                 segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
-                qualifyProviders, reusablePlan: null));
+                qualifyProviders, reusablePlan: null,
+                connectionAllocationMode: HealthConnectionAllocationMode.ManageBulkHealth));
 
     private async Task RunTrackedHealthCheckAsync(
         int segmentCount,
@@ -1916,7 +1909,8 @@ public class MultiProviderNntpClient(
                 progress: null,
                 cancellationToken,
                 qualifyProviders: true,
-                reusablePlan: null)
+                reusablePlan: null,
+                connectionAllocationMode: HealthConnectionAllocationMode.PreserveWarmup)
             .ConfigureAwait(false);
         return plan is null
             ? QueueHealthQualification.None
@@ -1939,7 +1933,8 @@ public class MultiProviderNntpClient(
                 progress,
                 cancellationToken,
                 qualifyProviders: true,
-                reusablePlan: qualification.State as BulkStatPlan));
+                reusablePlan: qualification.State as BulkStatPlan,
+                connectionAllocationMode: HealthConnectionAllocationMode.ManageBulkHealth));
 
     private async Task<BulkStatPlan?> CheckAllSegmentsPipelinedCoreAsync(
         IReadOnlyList<string> segmentIds,
@@ -1948,7 +1943,8 @@ public class MultiProviderNntpClient(
         IProgress<int>? progress,
         CancellationToken cancellationToken,
         bool qualifyProviders,
-        BulkStatPlan? reusablePlan)
+        BulkStatPlan? reusablePlan,
+        HealthConnectionAllocationMode connectionAllocationMode)
     {
         // One verdict collector per operation: a segment may only be confirmed
         // missing when every provider in this snapshot answered "missing".
@@ -1959,7 +1955,7 @@ public class MultiProviderNntpClient(
         {
             return await CheckAllSegmentsPipelinedWithCollectorAsync(
                 segmentIds, depth, fallbackConcurrency, progress, cancellationToken,
-                qualifyProviders, reusablePlan).ConfigureAwait(false);
+                qualifyProviders, reusablePlan, connectionAllocationMode).ConfigureAwait(false);
         }
         finally
         {
@@ -1974,7 +1970,8 @@ public class MultiProviderNntpClient(
         IProgress<int>? progress,
         CancellationToken cancellationToken,
         bool qualifyProviders,
-        BulkStatPlan? reusablePlan)
+        BulkStatPlan? reusablePlan,
+        HealthConnectionAllocationMode connectionAllocationMode)
     {
         if (segmentIds.Count < BulkStatProbeThreshold || fallbackConcurrency <= 1)
         {
@@ -2023,7 +2020,10 @@ public class MultiProviderNntpClient(
 
             var previousPlan = BulkStatPlanContext.Value;
             BulkStatPlanContext.Value = qualification.Plan;
-            using var connectionAllocation = qualification.Plan.BeginConnectionAllocation(fallbackConcurrency);
+            using var connectionAllocation =
+                connectionAllocationMode == HealthConnectionAllocationMode.ManageBulkHealth
+                ? qualification.Plan.BeginConnectionAllocation(fallbackConcurrency)
+                : null;
             try
             {
                 if (remaining.Length == 0) return qualification.Plan;
@@ -4388,8 +4388,7 @@ public class MultiProviderNntpClient(
 
         private static async Task RestoreWarmProviderAsync(MultiConnectionNntpClient provider)
         {
-            var target = UsenetStreamingClient.GetWarmConnectionTarget(
-                provider.ProviderType, provider.MaxConnections);
+            var target = provider.PersistentIdleConnectionTarget;
             if (target == 0) return;
 
             try

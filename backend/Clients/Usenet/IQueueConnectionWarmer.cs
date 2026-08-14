@@ -15,8 +15,8 @@ public sealed class QueueHealthQualification
 public interface IQueueConnectionWarmer
 {
     Task PrewarmQueueAsync(int targetConnections, CancellationToken cancellationToken);
-    Task PrewarmHealthCheckAsync(CancellationToken cancellationToken);
-    Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken);
+    Task PrewarmHealthCheckAsync(int connectionDemand, CancellationToken cancellationToken);
+    Task PrewarmPrimaryHealthCheckAsync(int connectionDemand, CancellationToken cancellationToken);
     Task PrimeHealthCheckAsync(
         IReadOnlyList<string> segmentIds, int depth, CancellationToken cancellationToken);
     Task PrimePrimaryHealthCheckAsync(

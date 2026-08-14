@@ -37,6 +37,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     public int ActiveConnections => _live - _idleConnections.Count;
     public int WarmConnections => GetWarmConnectionCount();
     public int MaxConnections => _maxConnections;
+    internal int EffectiveMaxConnections => Volatile.Read(ref _effectiveMaxConnections);
     internal int MinimumIdleConnections => _minimumIdleConnections;
     internal int MinimumWarmConnections => _minimumWarmConnections;
     public int AvailableConnections => Math.Max(0, _effectiveMaxConnections - ActiveConnections);
@@ -60,6 +61,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private readonly Action<int, Exception>? _onConnectionCapacityReduced;
     private readonly Action<int, int, bool>? _onWarmFloorStateChanged;
     private readonly ConnectionLifetimeBudget? _connectionBudget;
+    private readonly WarmValidationCoordinator? _warmValidationCoordinator;
     private readonly bool _useRecoveryCapacity;
 
     /* --------------------------------- state --------------------------------------- */
@@ -108,6 +110,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         Action<int, Exception>? onConnectionCapacityReduced = null,
         Action<int, int, bool>? onWarmFloorStateChanged = null,
         ConnectionLifetimeBudget? connectionBudget = null,
+        WarmValidationCoordinator? warmValidationCoordinator = null,
         bool useRecoveryCapacity = false,
         int highPriorityReserve = 0)
     {
@@ -141,6 +144,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         _onConnectionCapacityReduced = onConnectionCapacityReduced;
         _onWarmFloorStateChanged = onWarmFloorStateChanged;
         _connectionBudget = connectionBudget;
+        _warmValidationCoordinator = warmValidationCoordinator;
         _useRecoveryCapacity = useRecoveryCapacity;
 
         _maxConnections = maxConnections;
@@ -181,7 +185,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken,
         bool forceIdleValidation,
         bool oldestFirst,
-        bool preserveIdleAge
+        bool preserveIdleAge,
+        WarmValidationCoordinator? validationCoordinator
     )
     {
         // Make caller cancellation also cancel the wait on the gate.
@@ -229,6 +234,10 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         bool healthy;
                         try
                         {
+                            using var validationLease = validationCoordinator is null
+                                ? null
+                                : await validationCoordinator.EnterAsync(linked.Token)
+                                    .ConfigureAwait(false);
                             healthy = await _validator(item.Connection, linked.Token).ConfigureAwait(false);
                         }
                         catch
@@ -1102,7 +1111,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             await RefreshWarmConnectionsWithLeaseAsync(
                     count, maxConcurrency, null,
-                    cancellationToken, maintenanceLease.Token)
+                    cancellationToken, maintenanceLease.Token,
+                    _warmValidationCoordinator)
                 .ConfigureAwait(false);
             return true;
         }
@@ -1114,6 +1124,19 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         Func<T, CancellationToken, ValueTask> primer,
         CancellationToken cancellationToken = default)
     {
+        await PrimeWarmConnectionsAsync(
+                count, maxConcurrency, primer, cancellationToken,
+                _warmValidationCoordinator)
+            .ConfigureAwait(false);
+    }
+
+    internal async Task PrimeWarmConnectionsAsync(
+        int count,
+        int maxConcurrency,
+        Func<T, CancellationToken, ValueTask> primer,
+        CancellationToken cancellationToken,
+        WarmValidationCoordinator? validationCoordinator)
+    {
         ArgumentNullException.ThrowIfNull(primer);
         if (count <= 0) return;
         if (!TryAcquireMaintenanceLease(out var maintenanceLease)) return;
@@ -1121,7 +1144,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             await RefreshWarmConnectionsWithLeaseAsync(
                     count, maxConcurrency, primer,
-                    cancellationToken, maintenanceLease.Token)
+                    cancellationToken, maintenanceLease.Token,
+                    validationCoordinator)
                 .ConfigureAwait(false);
         }
     }
@@ -1131,7 +1155,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         int maxConcurrency,
         Func<T, CancellationToken, ValueTask>? primer,
         CancellationToken cancellationToken,
-        CancellationToken maintenanceToken)
+        CancellationToken maintenanceToken,
+        WarmValidationCoordinator? validationCoordinator)
     {
         BeginOperation();
         try
@@ -1153,7 +1178,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                     oldestFirst: true,
                     maxConcurrency: maxConcurrency,
                     primer: primer,
-                    cancellationToken: linked.Token).ConfigureAwait(false);
+                    cancellationToken: linked.Token,
+                    validationCoordinator: validationCoordinator).ConfigureAwait(false);
             }
             finally
             {
@@ -1183,7 +1209,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         bool oldestFirst,
         int maxConcurrency,
         Func<T, CancellationToken, ValueTask>? primer,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WarmValidationCoordinator? validationCoordinator)
     {
         count = Math.Clamp(count, 0, _maxConnections);
         if (count == 0) return;
@@ -1203,11 +1230,16 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         // Background DATE refreshes must not look like queued
                         // health demand. Primers execute real STAT work and remain
                         // visible to routing and diagnostics.
-                        trackPendingAcquisition: primer is not null)
+                        trackPendingAcquisition: primer is not null,
+                        validationCoordinator: validationCoordinator)
                     .ConfigureAwait(false);
                 if (primer is null) continue;
                 try
                 {
+                    using var validationLease = validationCoordinator is null
+                        ? null
+                        : await validationCoordinator.EnterAsync(cancellationToken)
+                            .ConfigureAwait(false);
                     await primer(connection.Connection, cancellationToken).ConfigureAwait(false);
                 }
                 catch
@@ -1305,7 +1337,8 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         bool forceIdleValidation,
         bool oldestFirst,
         bool preserveIdleAge,
-        bool trackPendingAcquisition)
+        bool trackPendingAcquisition,
+        WarmValidationCoordinator? validationCoordinator = null)
     {
         BeginOperation();
         if (trackPendingAcquisition)
@@ -1315,7 +1348,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             return await GetConnectionLockCoreAsync(
                     priority, cancellationToken, forceIdleValidation,
-                    oldestFirst, preserveIdleAge)
+                    oldestFirst, preserveIdleAge, validationCoordinator)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (

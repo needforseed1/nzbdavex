@@ -128,12 +128,12 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
-    public async Task StalledWarmupContinuesUntilForegroundHealthCompletes()
+    public async Task StalledWarmupIsCancelledBeforeForegroundHealthStarts()
     {
         using var warmupCancellation = new CancellationTokenSource();
         var warmup = Task.Delay(Timeout.InfiniteTimeSpan, warmupCancellation.Token);
         var healthStarted = false;
-        var warmupWasRunningDuringHealth = false;
+        var warmupWasStoppedBeforeHealth = false;
         var graceExpired = false;
 
         await QueueItemProcessor.RunHealthCheckAfterWarmupAsync(
@@ -143,8 +143,8 @@ public class QueueItemProcessorTests
             () =>
             {
                 healthStarted = true;
-                warmupWasRunningDuringHealth =
-                    !warmupCancellation.IsCancellationRequested && !warmup.IsCompleted;
+                warmupWasStoppedBeforeHealth =
+                    warmupCancellation.IsCancellationRequested;
                 return Task.CompletedTask;
             },
             () => graceExpired = true,
@@ -152,7 +152,7 @@ public class QueueItemProcessorTests
 
         Assert.True(graceExpired);
         Assert.True(healthStarted);
-        Assert.True(warmupWasRunningDuringHealth);
+        Assert.True(warmupWasStoppedBeforeHealth);
         Assert.True(warmupCancellation.IsCancellationRequested);
         Assert.True(warmup.IsCanceled);
     }
@@ -184,7 +184,7 @@ public class QueueItemProcessorTests
     }
 
     [Fact]
-    public async Task WarmupCanFinishWhileForegroundHealthIsRunning()
+    public async Task HandoffCancellationDoesNotWaitForWarmupThatIgnoresCancellation()
     {
         using var warmupCancellation = new CancellationTokenSource();
         var warmupCompletion = new TaskCompletionSource(
@@ -206,13 +206,14 @@ public class QueueItemProcessorTests
             handoffGrace: TimeSpan.Zero);
 
         await healthStarted.Task;
-        Assert.False(warmupCancellation.IsCancellationRequested);
+        Assert.True(warmupCancellation.IsCancellationRequested);
+        Assert.False(warmupCompletion.Task.IsCompleted);
         warmupCompletion.SetResult();
         finishHealth.SetResult();
         await run;
 
         Assert.True(warmupCompletion.Task.IsCompletedSuccessfully);
-        Assert.False(warmupCancellation.IsCancellationRequested);
+        Assert.True(warmupCancellation.IsCancellationRequested);
     }
 
     [Fact]

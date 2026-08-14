@@ -66,6 +66,7 @@ public class MultiConnectionNntpClient(
     public int AvailableConnections => connectionPool.AvailableConnections;
     public int LowPriorityConnectionLimit => connectionPool.LowPriorityConnectionLimit;
     public int MaxConnections => connectionPool.MaxConnections;
+    internal int EffectiveMaxConnections => connectionPool.EffectiveMaxConnections;
 
     private int _pendingSelections;
     public int PendingSelections => Volatile.Read(ref _pendingSelections);
@@ -96,6 +97,7 @@ public class MultiConnectionNntpClient(
         IReadOnlyList<string> segmentIds,
         int count,
         int maxConcurrency,
+        WarmValidationCoordinator validationCoordinator,
         CancellationToken cancellationToken)
     {
         if (segmentIds.Count == 0 || count <= 0) return Task.CompletedTask;
@@ -109,12 +111,14 @@ public class MultiConnectionNntpClient(
                 var index = Interlocked.Increment(ref cursor) % segmentIds.Count;
                 return PrimeStatConnectionAsync(connection, segmentIds[index], token);
             },
-            cancellationToken);
+            cancellationToken,
+            validationCoordinator);
     }
 
     public async Task<(int Received, int Found)> ProbeHealthCoverageAsync(
         IReadOnlyList<string> segmentIds,
         int depth,
+        WarmValidationCoordinator validationCoordinator,
         CancellationToken cancellationToken)
     {
         var received = 0;
@@ -138,7 +142,8 @@ public class MultiConnectionNntpClient(
                         if (result.Exists) found++;
                     }
                 },
-                cancellationToken)
+                cancellationToken,
+                validationCoordinator)
             .ConfigureAwait(false);
 
         if (received != segmentIds.Count)

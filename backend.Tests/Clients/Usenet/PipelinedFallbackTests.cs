@@ -893,7 +893,7 @@ public class PipelinedFallbackTests
     }
 
     [Fact]
-    public async Task BulkHealthReclaimsIdleSocketsFromNonContributorsAndRestoresThemAfterward()
+    public async Task BulkHealthRestoresReclaimedProviderOnlyToPersistentReadyTarget()
     {
         var bulkStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseBulk = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -907,7 +907,8 @@ public class PipelinedFallbackTests
                 await releaseBulk.Task.WaitAsync(cancellationToken);
             });
         using var missing = CreateProvider(
-            missingClient, ProviderType.HealthChecksOnly, "missing", 0, maxConnections: 8);
+            missingClient, ProviderType.HealthChecksOnly, "missing", 0, maxConnections: 8,
+            minimumIdleConnections: 5);
         using var complete = CreateProvider(
             completeClient, ProviderType.HealthChecksOnly, "complete", 1, maxConnections: 8);
         using var multiProvider = new MultiProviderNntpClient(
@@ -926,10 +927,10 @@ public class PipelinedFallbackTests
         releaseBulk.TrySetResult();
         await check.WaitAsync(TimeSpan.FromSeconds(1));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-        while (missing.LiveConnections < 8)
+        while (missing.LiveConnections < 5)
             await Task.Delay(10, timeout.Token);
 
-        Assert.Equal(8, missing.IdleConnections);
+        Assert.Equal(5, missing.IdleConnections);
     }
 
     [Fact]
@@ -1077,6 +1078,28 @@ public class PipelinedFallbackTests
         Assert.True(timer.Elapsed < TimeSpan.FromSeconds(1.5));
         await requestCts.CancelAsync();
         await stalledClient.ProbeCancellation.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task BulkHealthQualificationIgnoresWarmValidationLimit()
+    {
+        var lanes = new LaneCoordinator(2);
+        var firstClient = new CoordinatedPipelineClient(lanes);
+        var secondClient = new CoordinatedPipelineClient(lanes);
+        var warmValidation = new WarmValidationCoordinator(() => 1);
+        using var multiProvider = new MultiProviderNntpClient([
+            CreateProvider(firstClient, ProviderType.Pooled, "first", 0),
+            CreateProvider(secondClient, ProviderType.Pooled, "second", 1),
+        ], new ProviderUsageTracker(), validationCoordinator: warmValidation);
+        var segments = Enumerable.Range(0, 320).Select(x => $"segment-{x}").ToArray();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+
+        await multiProvider.CheckAllSegmentsPipelinedAsync(
+            segments, depth: 8, fallbackConcurrency: 2,
+            progress: null, timeout.Token);
+
+        Assert.NotEmpty(firstClient.Batches);
+        Assert.NotEmpty(secondClient.Batches);
     }
 
     [Fact]
@@ -1301,11 +1324,13 @@ public class PipelinedFallbackTests
         INntpClient client, ProviderType type, string host, int priority, int maxConnections = 1,
         int? pipeliningDepth = null, int? healthPipeliningDepth = null,
         ProviderCircuitBreaker? circuitBreaker = null,
-        ConnectionLifetimeBudget? connectionBudget = null)
+        ConnectionLifetimeBudget? connectionBudget = null,
+        int minimumIdleConnections = 0)
     {
         var pool = new ConnectionPool<INntpClient>(
             maxConnections,
             _ => ValueTask.FromResult(client),
+            minimumIdleConnections: minimumIdleConnections,
             connectionBudget: connectionBudget,
             useRecoveryCapacity: type == ProviderType.BackupOnly);
         return new MultiConnectionNntpClient(

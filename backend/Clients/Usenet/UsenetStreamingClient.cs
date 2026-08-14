@@ -225,6 +225,8 @@ public class UsenetStreamingClient : WrappingNntpClient
             .GetAwaiter().GetResult();
 
         var connectionPoolStats = new ConnectionPoolStats(providerConfig, websocketManager);
+        var warmValidationCoordinator = new WarmValidationCoordinator(
+            configManager.GetWarmValidationConnectionBudget);
         var playbackReservations = AllocatePlaybackConnectionReserve(
             providerConfig.Providers,
             configManager.GetPlaybackReservedConnections());
@@ -236,7 +238,8 @@ public class UsenetStreamingClient : WrappingNntpClient
                 persistentIdleFloorOverride,
                 persistentWarmFloorOverride,
                 roleReadyFloorTargets,
-                warmConnectionTimings
+                warmConnectionTimings,
+                warmValidationCoordinator
             ))
             .ToList();
         var reservedConnections = playbackReservations.Sum();
@@ -252,7 +255,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         return new MultiProviderNntpClient(providerClients, usageTracker, metricsWriter, bytesTracker,
             cascadeEnabled: configManager.IsCascadeEnabled,
             warmValidationConnectionBudget: configManager.GetWarmValidationConnectionBudget,
-            connectionBudget: ConnectionBudget);
+            connectionBudget: ConnectionBudget,
+            validationCoordinator: warmValidationCoordinator);
     }
 
     private static MultiConnectionNntpClient CreateProviderClient
@@ -263,7 +267,8 @@ public class UsenetStreamingClient : WrappingNntpClient
         int? persistentIdleFloorOverride,
         int? persistentWarmFloorOverride,
         PersistentReadyFloorTargets roleReadyFloorTargets,
-        WarmConnectionTimings warmConnectionTimings
+        WarmConnectionTimings warmConnectionTimings,
+        WarmValidationCoordinator warmValidationCoordinator
     )
     {
         var roleReadyTarget = GetRoleReadyConnectionTarget(
@@ -290,6 +295,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             minimumIdleConnections: keepWarm,
             minimumWarmConnections: keepValidated,
             warmConnectionTimings: warmConnectionTimings,
+            warmValidationCoordinator: warmValidationCoordinator,
             useRecoveryCapacity: connectionDetails.Type == ProviderType.BackupOnly,
             playbackReservedConnections: playbackReservedConnections,
             providerHost: connectionDetails.Host,
@@ -522,6 +528,7 @@ public class UsenetStreamingClient : WrappingNntpClient
         int minimumIdleConnections,
         int minimumWarmConnections,
         WarmConnectionTimings warmConnectionTimings,
+        WarmValidationCoordinator warmValidationCoordinator,
         bool useRecoveryCapacity,
         int playbackReservedConnections,
         string providerHost,
@@ -556,6 +563,7 @@ public class UsenetStreamingClient : WrappingNntpClient
                         providerHost, warm, target);
             },
             connectionBudget: ConnectionBudget,
+            warmValidationCoordinator: warmValidationCoordinator,
             useRecoveryCapacity: useRecoveryCapacity,
             highPriorityReserve: playbackReservedConnections);
         connectionPool.OnConnectionPoolChanged += onConnectionPoolChanged;

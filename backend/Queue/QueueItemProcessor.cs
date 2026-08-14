@@ -230,10 +230,16 @@ public class QueueItemProcessor(
                 queueItem.Id, queueItem.JobName, "default",
                 DefaultHealthWarmupHandoffGrace.TotalMilliseconds);
         var connectionWarmer = shouldCheckHealth ? usenetClient as IQueueConnectionWarmer : null;
+        var healthConnectionDemand = configManager.IsHealthPipeliningEnabled()
+            ? Math.Min(
+                configManager.GetHealthCheckConnections(),
+                configManager.GetHealthPipeliningLanes())
+            : configManager.GetHealthCheckConnections();
         using var healthConnectionWarmupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task healthConnectionWarmupTask = connectionWarmer is not null
             ? PrewarmHealthConnectionsDuringPrepAsync(
-                connectionWarmer, queueItem, healthConnectionWarmupCts.Token)
+                connectionWarmer, healthConnectionDemand, queueItem,
+                healthConnectionWarmupCts.Token)
             : Task.CompletedTask;
         await using var healthWarmupLifetime = new HealthWarmupLifetime(
             healthConnectionWarmupCts,
@@ -386,9 +392,10 @@ public class QueueItemProcessor(
                 // scheduling mode's bounded handoff grace.
                 healthConnectionWarmupTask = Task.WhenAll(
                     PrewarmHealthConnectionsDuringPrepAsync(
-                        connectionWarmer, queueItem, healthConnectionWarmupCts.Token),
+                        connectionWarmer, healthConnectionDemand, queueItem, healthConnectionWarmupCts.Token),
                     PrewarmPrimaryHealthConnectionsAfterPrepAsync(
-                        connectionWarmer, healthPrimeSegmentIds, healthPrimeDepth,
+                        connectionWarmer, healthConnectionDemand, healthPrimeSegmentIds,
+                        healthPrimeDepth,
                         queueItem, healthConnectionWarmupCts.Token));
             }
             var healthWorkTask = RunHealthCheckAfterWarmupAsync(
@@ -476,6 +483,7 @@ public class QueueItemProcessor(
                 healthConnectionWarmupTask,
                 PrewarmPrimaryHealthConnectionsAfterPrepAsync(
                     connectionWarmer,
+                    healthConnectionDemand,
                     healthPrimeSegmentIds,
                     healthPrimeDepth,
                     queueItem,
@@ -796,6 +804,7 @@ public class QueueItemProcessor(
 
     private static async Task PrewarmHealthConnectionsDuringPrepAsync(
         IQueueConnectionWarmer connectionWarmer,
+        int connectionDemand,
         QueueItem queueItem,
         CancellationToken cancellationToken)
     {
@@ -804,7 +813,9 @@ public class QueueItemProcessor(
             queueItem.Id, queueItem.JobName);
         try
         {
-            await connectionWarmer.PrewarmHealthCheckAsync(cancellationToken).ConfigureAwait(false);
+            await connectionWarmer.PrewarmHealthCheckAsync(
+                    connectionDemand, cancellationToken)
+                .ConfigureAwait(false);
             Log.Information(
                 "queue-stage nzo={NzoId} job={JobName} stage=health-prewarm done ms={ElapsedMs}",
                 queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);
@@ -835,28 +846,13 @@ public class QueueItemProcessor(
             {
                 onGraceExpired?.Invoke();
                 operationCancellation.ThrowIfCancellationRequested();
-                try
-                {
-                    // Foreground health must never remain behind speculative setup.
-                    // Keep already-started handshakes running, though: the shared
-                    // budget admits them only through its bounded speculative quota
-                    // and gives real health acquisitions priority. Connections they
-                    // finish can therefore join this same health check while provider
-                    // qualification is still running.
-                    await runHealthCheck().ConfigureAwait(false);
-                }
-                finally
-                {
-                    // Do not leave speculative setup running after the foreground
-                    // operation has ended or failed. Cleanup remains bounded when a
-                    // provider is slow to observe cancellation.
-                    await CancelAndObserveWarmupAsync(
-                            warmupTask,
-                            warmupCancellation,
-                            "foreground health handoff",
-                            TimeSpan.Zero)
-                        .ConfigureAwait(false);
-                }
+                // Foreground health owns connection scheduling after the handoff.
+                // Cancellation prevents another speculative worker from starting;
+                // a provider that is already finishing setup is observed separately
+                // and may still publish a useful lane.
+                await warmupCancellation.CancelAsync().ConfigureAwait(false);
+                _ = ObserveLateWarmupCompletionAsync(warmupTask);
+                await runHealthCheck().ConfigureAwait(false);
                 return;
             }
         }
@@ -894,6 +890,7 @@ public class QueueItemProcessor(
 
     private static async Task PrewarmPrimaryHealthConnectionsAfterPrepAsync(
         IQueueConnectionWarmer connectionWarmer,
+        int connectionDemand,
         IReadOnlyList<string> primeSegmentIds,
         int primeDepth,
         QueueItem queueItem,
@@ -904,7 +901,9 @@ public class QueueItemProcessor(
             queueItem.Id, queueItem.JobName);
         try
         {
-            await connectionWarmer.PrewarmPrimaryHealthCheckAsync(cancellationToken).ConfigureAwait(false);
+            await connectionWarmer.PrewarmPrimaryHealthCheckAsync(
+                    connectionDemand, cancellationToken)
+                .ConfigureAwait(false);
             Log.Information(
                 "queue-stage nzo={NzoId} job={JobName} stage=primary-health-prewarm done ms={ElapsedMs}",
                 queueItem.Id, queueItem.JobName, timer.ElapsedMilliseconds);

@@ -96,14 +96,16 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient, IQueueCo
             ? warmer.PrewarmQueueAsync(targetConnections, cancellationToken)
             : Task.CompletedTask;
 
-    public Task PrewarmHealthCheckAsync(CancellationToken cancellationToken) =>
+    public Task PrewarmHealthCheckAsync(
+        int connectionDemand, CancellationToken cancellationToken) =>
         _usenetClient is IQueueConnectionWarmer warmer
-            ? warmer.PrewarmHealthCheckAsync(cancellationToken)
+            ? warmer.PrewarmHealthCheckAsync(connectionDemand, cancellationToken)
             : Task.CompletedTask;
 
-    public Task PrewarmPrimaryHealthCheckAsync(CancellationToken cancellationToken) =>
+    public Task PrewarmPrimaryHealthCheckAsync(
+        int connectionDemand, CancellationToken cancellationToken) =>
         _usenetClient is IQueueConnectionWarmer warmer
-            ? warmer.PrewarmPrimaryHealthCheckAsync(cancellationToken)
+            ? warmer.PrewarmPrimaryHealthCheckAsync(connectionDemand, cancellationToken)
             : Task.CompletedTask;
 
     public Task PrimeHealthCheckAsync(

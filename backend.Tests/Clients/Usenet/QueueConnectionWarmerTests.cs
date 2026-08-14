@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet;
+using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Connections;
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Config;
@@ -210,7 +211,7 @@ public class QueueConnectionWarmerTests
     }
 
     [Fact]
-    public async Task HealthPrewarmFillsNinetyPercentOfDedicatedHealthProvidersOnly()
+    public async Task HealthPrewarmUsesDedicatedShareOfGlobalLaneDemand()
     {
         using var pooled = CreateProvider(ProviderType.Pooled, "pooled", 6, priority: 0);
         using var healthOnly = CreateProvider(ProviderType.HealthChecksOnly, "farm", 4, priority: 1);
@@ -219,12 +220,46 @@ public class QueueConnectionWarmerTests
         using var client = new MultiProviderNntpClient(
             [pooled, healthOnly, backupAndStats, backupOnly], new ProviderUsageTracker());
 
-        await client.PrewarmHealthCheckAsync(CancellationToken.None);
+        await client.PrewarmHealthCheckAsync(7, CancellationToken.None);
 
         Assert.Equal(0, pooled.LiveConnections);
-        Assert.Equal(4, healthOnly.LiveConnections);
-        Assert.Equal(3, backupAndStats.LiveConnections);
+        Assert.Equal(2, healthOnly.LiveConnections);
+        Assert.Equal(2, backupAndStats.LiveConnections);
         Assert.Equal(0, backupOnly.LiveConnections);
+    }
+
+    [Fact]
+    public async Task HealthPrewarmReassignsDemandFromRuntimeReducedCapacity()
+    {
+        var attempts = 0;
+        var reducedPool = new ConnectionPool<INntpClient>(
+            6,
+            _ =>
+            {
+                if (Interlocked.Increment(ref attempts) > 2)
+                    throw new TestConnectionLimitException();
+                return ValueTask.FromResult<INntpClient>(new StubNntpClient());
+            },
+            connectionCapacityRejected: exception =>
+                exception is TestConnectionLimitException);
+        using var reduced = CreateProvider(
+            ProviderType.HealthChecksOnly, "reduced", reducedPool);
+        using var healthy = CreateProvider(
+            ProviderType.HealthChecksOnly, "healthy", 6, priority: 1);
+
+        var first = await reducedPool.GetConnectionLockAsync(SemaphorePriority.Low);
+        var second = await reducedPool.GetConnectionLockAsync(SemaphorePriority.Low);
+        await Assert.ThrowsAsync<TestConnectionLimitException>(
+            () => reducedPool.GetConnectionLockAsync(SemaphorePriority.Low));
+        first.Dispose();
+        second.Dispose();
+
+        using var client = new MultiProviderNntpClient(
+            [reduced, healthy], new ProviderUsageTracker());
+        await client.PrewarmHealthCheckAsync(6, CancellationToken.None);
+
+        Assert.Equal(2, reduced.LiveConnections);
+        Assert.Equal(4, healthy.LiveConnections);
     }
 
     private static UsenetProviderConfig.ConnectionDetails Provider(
@@ -247,7 +282,7 @@ public class QueueConnectionWarmerTests
         };
 
     [Fact]
-    public async Task PrimaryHealthPrewarmRefillsPooledProvidersOnly()
+    public async Task PrimaryHealthPrewarmUsesPrimaryShareOfGlobalLaneDemand()
     {
         using var pooled = CreateProvider(ProviderType.Pooled, "pooled", 10, priority: 0);
         using var backupAndStats = CreateProvider(ProviderType.BackupAndStats, "block", 10, priority: 1);
@@ -255,9 +290,9 @@ public class QueueConnectionWarmerTests
         using var client = new MultiProviderNntpClient(
             [pooled, backupAndStats, backupOnly], new ProviderUsageTracker());
 
-        await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
+        await client.PrewarmPrimaryHealthCheckAsync(9, CancellationToken.None);
 
-        Assert.Equal(9, pooled.LiveConnections);
+        Assert.Equal(5, pooled.LiveConnections);
         Assert.Equal(0, backupAndStats.LiveConnections);
         Assert.Equal(0, backupOnly.LiveConnections);
     }
@@ -285,9 +320,9 @@ public class QueueConnectionWarmerTests
         await pool.PrewarmAsync(6);
 
         if (providerType == ProviderType.Pooled)
-            await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
+            await client.PrewarmPrimaryHealthCheckAsync(6, CancellationToken.None);
         else
-            await client.PrewarmHealthCheckAsync(CancellationToken.None);
+            await client.PrewarmHealthCheckAsync(6, CancellationToken.None);
 
         Assert.Equal(0, Volatile.Read(ref validated));
         Assert.Equal(6, provider.LiveConnections);
@@ -314,7 +349,7 @@ public class QueueConnectionWarmerTests
         using var client = new MultiProviderNntpClient(
             [pooled, healthOnly, backupAndStats, backupOnly], new ProviderUsageTracker());
 
-        await client.PrewarmHealthCheckAsync(CancellationToken.None);
+        await client.PrewarmHealthCheckAsync(13, CancellationToken.None);
         await client.PrimeHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
         Assert.Equal(0, pooledPrimed);
@@ -322,7 +357,7 @@ public class QueueConnectionWarmerTests
         Assert.Equal(4, backupAndStatsPrimed);
         Assert.Equal(0, backupOnlyPrimed);
 
-        await client.PrewarmPrimaryHealthCheckAsync(CancellationToken.None);
+        await client.PrewarmPrimaryHealthCheckAsync(13, CancellationToken.None);
         await client.PrimePrimaryHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
         Assert.Equal(5, pooledPrimed);
@@ -345,7 +380,7 @@ public class QueueConnectionWarmerTests
         using var client = new MultiProviderNntpClient(
             [full, missing], new ProviderUsageTracker());
 
-        await client.PrewarmHealthCheckAsync(CancellationToken.None);
+        await client.PrewarmHealthCheckAsync(24, CancellationToken.None);
         await client.PrimeHealthCheckAsync(["one", "two"], 2, CancellationToken.None);
 
         Assert.Equal(new[] { 1, 1, 1, 1, 2 }, fullBatches.OrderBy(x => x));
@@ -353,14 +388,109 @@ public class QueueConnectionWarmerTests
     }
 
     [Fact]
-    public void WarmValidationBudgetIsDistributedProportionallyAndNeverExceedsTargets()
+    public void HealthBurstTargetsAreGloballyLaneBoundedAndRetainFallbacks()
     {
-        Assert.Equal([45, 23, 22],
-            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 90));
-        Assert.Equal([90, 45, 45],
-            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 512));
+        var allocations = MultiProviderNntpClient.AllocateHealthBurstTargets(
+            [100, 50, 25], 32);
+
+        Assert.Equal(32, allocations.Sum());
+        Assert.All(allocations, allocation => Assert.True(allocation > 0));
+        Assert.Equal([18, 9, 5], allocations);
         Assert.Equal([1, 0, 0],
-            MultiProviderNntpClient.AllocateWarmValidationBudget([90, 45, 45], 1));
+            MultiProviderNntpClient.AllocateHealthBurstTargets([100, 50, 25], 1));
+        Assert.Equal([2, 1, 1],
+            MultiProviderNntpClient.AllocateHealthBurstTargets([2, 1, 1], 99));
+    }
+
+    [Fact]
+    public async Task WarmValidationCoordinatorCapsWorkAcrossProviderPools()
+    {
+        var coordinator = new WarmValidationCoordinator(() => 1);
+        using var first = new ConnectionPool<INntpClient>(
+            2,
+            _ => ValueTask.FromResult<INntpClient>(new StubNntpClient()),
+            warmValidationCoordinator: coordinator);
+        using var second = new ConnectionPool<INntpClient>(
+            2,
+            _ => ValueTask.FromResult<INntpClient>(new StubNntpClient()),
+            warmValidationCoordinator: coordinator);
+        await first.PrewarmAsync(2);
+        await second.PrewarmAsync(2);
+
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var active = 0;
+        var peak = 0;
+        async ValueTask Prime(INntpClient _, CancellationToken cancellationToken)
+        {
+            var current = Interlocked.Increment(ref active);
+            UpdateMaximum(ref peak, current);
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            Interlocked.Decrement(ref active);
+        }
+
+        var validations = Task.WhenAll(
+            first.PrimeWarmConnectionsAsync(2, 2, Prime),
+            second.PrimeWarmConnectionsAsync(2, 2, Prime));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Task.Delay(50);
+
+        Assert.Equal(1, Volatile.Read(ref peak));
+        release.TrySetResult();
+        await validations.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task PoolWaitingForSocketDoesNotHoldWarmValidationPermit()
+    {
+        var coordinator = new WarmValidationCoordinator(() => 1);
+        using var busy = new ConnectionPool<INntpClient>(
+            1,
+            _ => ValueTask.FromResult<INntpClient>(new StubNntpClient()),
+            warmValidationCoordinator: coordinator);
+        using var ready = new ConnectionPool<INntpClient>(
+            1,
+            _ => ValueTask.FromResult<INntpClient>(new StubNntpClient()),
+            warmValidationCoordinator: coordinator);
+        await busy.PrewarmAsync(1);
+        await ready.PrewarmAsync(1);
+
+        var busyConnection = await busy.GetConnectionLockAsync(SemaphorePriority.Low);
+        var readyPrimerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var busyValidation = busy.PrimeWarmConnectionsAsync(
+            1, 1, (_, _) => ValueTask.CompletedTask);
+        var readyValidation = ready.PrimeWarmConnectionsAsync(
+            1, 1, (_, _) =>
+            {
+                readyPrimerStarted.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+
+        try
+        {
+            await readyPrimerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            busyConnection.Dispose();
+            await Task.WhenAll(busyValidation, readyValidation)
+                .WaitAsync(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    private static void UpdateMaximum(ref int maximum, int value)
+    {
+        var observed = Volatile.Read(ref maximum);
+        while (value > observed)
+        {
+            var previous = Interlocked.CompareExchange(ref maximum, value, observed);
+            if (previous == observed) return;
+            observed = previous;
+        }
     }
 
     private static MultiConnectionNntpClient CreateProvider(
@@ -452,4 +582,6 @@ public class QueueConnectionWarmerTests
         {
         }
     }
+
+    private sealed class TestConnectionLimitException : Exception;
 }
