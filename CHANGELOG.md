@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/needforseed1/nzbdavex/compare/v1.4.4...v1.5.0) (2026-08-14)
+
+### Improvements
+
+* Provider health preparation now coordinates connection warm-up across providers and sizes it to the configured health workload, avoiding overlapping warm-up work.
+
+### Changes
+
+* Warden and Watchtower have been removed, including persistent dead-release lists, shared source management, and proactive wanted-list resolution.
+* Existing Warden and Watchtower persistence is left untouched and ignored during upgrades rather than being deleted.
+* Search Profiles, Preflight, Watchdog fallback, provider failover, Arr and Prowlarr submission, WebDAV playback, and repairs remain available without the retired features.
+
 ## [1.4.4](https://github.com/needforseed1/nzbdavex/compare/v1.4.3...v1.4.4) (2026-08-14)
 
 ### Fixes
