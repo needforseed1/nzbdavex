@@ -26,7 +26,7 @@ public class CancellableStream(Stream innerStream, CancellationToken token) : Fa
     public override Task FlushAsync(CancellationToken cancellationToken)
     {
         CheckDisposed();
-        return _innerStream.FlushAsync(cancellationToken);
+        return _innerStream.FlushAsync(GetEffectiveToken(cancellationToken));
     }
 
     public override int Read(byte[] buffer, int offset, int count)
@@ -57,8 +57,15 @@ public class CancellableStream(Stream innerStream, CancellationToken token) : Fa
     public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         CheckDisposed();
-        return _innerStream.ReadAsync(buffer, cancellationToken);
+        return _innerStream.ReadAsync(buffer, GetEffectiveToken(cancellationToken));
     }
+
+    // Some third-party async readers call Stream.ReadAsync with
+    // CancellationToken.None even when their outer iterator was given a
+    // token. This wrapper is explicitly bound to `token`, so preserve that
+    // cancellation boundary whenever the stored token can be cancelled.
+    private CancellationToken GetEffectiveToken(CancellationToken cancellationToken) =>
+        token.CanBeCanceled ? token : cancellationToken;
 
     public override void SetLength(long value)
     {

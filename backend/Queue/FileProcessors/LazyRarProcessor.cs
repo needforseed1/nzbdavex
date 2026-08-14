@@ -158,6 +158,7 @@ public class LazyRarProcessor(
                 SegmentIds = partInfo.NzbFile.GetSegmentIds(),
                 SegmentIdByteRange = LongRange.FromStartAndSize(0, partSize),
                 EstimatedDataSize = estimate,
+                HeaderPrefix = partInfo.First16KB,
             });
             pendingSum += estimate;
         }

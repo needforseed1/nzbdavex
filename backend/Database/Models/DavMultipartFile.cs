@@ -76,5 +76,12 @@ public partial class DavMultipartFile
 
         [MemoryPackOrder(2)]
         public long EstimatedDataSize { get; set; }
+
+        // The queue already downloads this prefix while identifying files.
+        // Retaining it lets lazy resolution parse the continuation header
+        // without reopening and then draining an NNTP article. Older blobs
+        // deserialize it as null and transparently use the network fallback.
+        [MemoryPackOrder(3)]
+        public byte[]? HeaderPrefix { get; set; }
     }
 }

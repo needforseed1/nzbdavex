@@ -18,5 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../backend/NzbWebDAV.csproj" />
+    <ProjectReference Include="../vendor/SharpCompress/SharpCompress.csproj" />
   </ItemGroup>
 </Project>

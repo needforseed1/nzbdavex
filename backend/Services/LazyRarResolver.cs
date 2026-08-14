@@ -12,18 +12,18 @@ using SharpCompress.Common.Rar.Headers;
 namespace NzbWebDAV.Services;
 
 // Resolves PendingParts of a lazy multipart RAR archive on demand.
-// First reader to need part N pays the cost (~1 segment fetch + parse);
-// subsequent readers reuse the resolved FilePart. The whole resolved
-// archive is written back to the blob-store so restarts also reuse it.
-public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager configManager)
+// First reader to need part N parses its prep-cached header prefix (or fetches
+// the segment for older blobs); subsequent readers reuse the resolved
+// FilePart. The whole resolved archive is written back to the blob-store so
+// restarts also reuse it.
+public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager configManager) : IDisposable
 {
-    private const int MaxConcurrentPasswordedHeaderParses = 2;
+    private const int MaxConcurrentPasswordedHeaderParses = 1;
+    private const int MaxConcurrentPasswordedNetworkHeaderParses = 2;
 
-    // Coalesces concurrent resolution requests for the same volume.
-    // Keyed by the volume's first segment ID so two readers asking for the
-    // same trailing part share one parse, even if they hit different
-    // FileParts.Length snapshots (which the old (Guid,int) key broke).
-    private readonly ConcurrentDictionary<(Guid, string), Task<DavMultipartFile.FilePart>> _inFlight = new();
+    private readonly LazyRarResolutionCache _resolutionCache = new();
+    private readonly SemaphoreSlim _passwordedNetworkHeaderParses =
+        new(MaxConcurrentPasswordedNetworkHeaderParses);
 
     private readonly ConcurrentDictionary<Guid, Persistor> _persistors = new();
 
@@ -34,10 +34,9 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
     }
 
     // Resolve enough trailing volumes to cover targetByteOffset and return
-    // the updated Meta. All needed volumes run in parallel (capped by
-    // MaxDownloadConnections) — critical for the end-of-file metadata read
-    // a player issues on open, which otherwise serializes one volume at a
-    // time and stalls playback for seconds.
+    // the updated Meta. Needed volumes run in bounded parallel — critical for
+    // the end-of-file metadata read a player issues on open, which otherwise
+    // serializes one volume at a time and stalls playback for seconds.
     public async Task<DavMultipartFile.Meta> EnsureResolvedThroughAsync(
         DavMultipartFile mpf,
         long targetByteOffset,
@@ -143,24 +142,16 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         DavMultipartFile.PendingPart pending,
         CancellationToken callerCt)
     {
-        var firstSeg = pending.SegmentIds.Length > 0 ? pending.SegmentIds[0] : "";
-        var key = (mpf.Id, firstSeg);
+        var firstSeg = pending.SegmentIds.FirstOrDefault()
+            ?? throw new InvalidDataException("Lazy RAR pending volume has no segment IDs.");
 
         // CancellationToken.None for the shared work so one caller bailing
         // out doesn't kill resolution for others waiting on it.
-        var shared = _inFlight.GetOrAdd(key, k =>
-        {
-            var task = DoResolveAsync(mpf, pending, CancellationToken.None);
-            // Drop the entry once done so the dictionary doesn't grow
-            // unbounded; the result lives in FileParts after commit.
-            _ = task.ContinueWith(t => _inFlight.TryRemove(k, out _),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-            return task;
-        });
-
-        return shared.WaitAsync(callerCt);
+        return _resolutionCache.GetOrCreateAsync(
+            mpf.Id,
+            firstSeg,
+            () => DoResolveAsync(mpf, pending, CancellationToken.None),
+            callerCt);
     }
 
     private async Task<DavMultipartFile.FilePart> DoResolveAsync(
@@ -172,19 +163,46 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         var pathInArchive = meta.PathInArchive
             ?? throw new InvalidOperationException("Lazy RAR meta missing PathInArchive.");
 
-        await using var stream = usenetClient.GetFileStream(
-            pending.SegmentIds, pending.SegmentIdByteRange.Count, readAheadBytes: 0);
+        IRarHeader? match = null;
+        if (pending.HeaderPrefix is { Length: > 0 } prefix)
+        {
+            try
+            {
+                await using var prefixStream = new MemoryStream(prefix, writable: false);
+                match = await FindContinuationHeaderAsync(
+                    prefixStream, meta.ArchivePassword, pathInArchive, ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                // Prefix parsing is an optimization. Unusual oversized headers
+                // and old/corrupt cached prefixes remain supported by opening
+                // the authoritative volume stream below.
+                Log.Debug(e,
+                    "Cached lazy RAR header prefix was insufficient for {Id}; retrying from Usenet.",
+                    mpf.Id);
+            }
+        }
 
-        // Find-and-stop so SharpCompress never seeks past the matched header.
-        // The seek would force NzbFileStream to fire InterpolationSearch
-        // (~7 STAT calls), which is the main reason naïve full-walk
-        // resolution stalls playback at every volume boundary.
-        var match = await RarUtil.FindFirstFileHeaderAsync(
-            stream,
-            meta.ArchivePassword,
-            h => h.GetFileName() == pathInArchive,
-            ct).ConfigureAwait(false)
-            ?? throw new InvalidDataException(
+        if (match is null)
+        {
+            var gateNetworkParse = meta.ArchivePassword is not null;
+            if (gateNetworkParse)
+                await _passwordedNetworkHeaderParses.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await using var stream = usenetClient.GetFileStream(
+                    pending.SegmentIds, pending.SegmentIdByteRange.Count, readAheadBytes: 0);
+                match = await FindContinuationHeaderAsync(
+                    stream, meta.ArchivePassword, pathInArchive, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (gateNetworkParse) _passwordedNetworkHeaderParses.Release();
+            }
+        }
+
+        if (match is null)
+            throw new InvalidDataException(
                 $"Lazy RAR resolution: continuation header for '{pathInArchive}' not found in trailing volume.");
 
         var dataStart = match.GetDataStartPosition();
@@ -196,6 +214,17 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             FilePartByteRange = LongRange.FromStartAndSize(dataStart, dataSize),
         };
     }
+
+    private static Task<IRarHeader?> FindContinuationHeaderAsync(
+        Stream stream,
+        string? archivePassword,
+        string pathInArchive,
+        CancellationToken ct) =>
+        RarUtil.FindFirstFileHeaderAsync(
+            stream,
+            archivePassword,
+            header => header.GetFileName() == pathInArchive,
+            ct);
 
     // Atomically appends consecutive resolveds that match the head of
     // PendingParts. Race-safe: another reader's concurrent commit may have
@@ -291,5 +320,11 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         {
             p.Sem.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        _resolutionCache.Dispose();
+        _passwordedNetworkHeaderParses.Dispose();
     }
 }

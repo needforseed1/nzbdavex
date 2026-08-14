@@ -35,17 +35,14 @@ public static class RarUtil
     )
     {
         await using var cancellableStream = new CancellableStream(stream, ct);
-        return await Task.Run(() => FindFirstFileHeader(cancellableStream, password, predicate), ct)
-            .ConfigureAwait(false);
-    }
-
-    private static IRarHeader? FindFirstFileHeader(Stream stream, string? password, Func<IRarHeader, bool> predicate)
-    {
         try
         {
             var readerOptions = new ReaderOptions { Password = password };
             var headerFactory = new RarHeaderFactory(StreamingMode.Seekable, readerOptions);
-            foreach (var header in headerFactory.ReadHeaders(stream))
+            await foreach (var header in headerFactory
+                               .ReadHeadersAsync(cancellableStream)
+                               .WithCancellation(ct)
+                               .ConfigureAwait(false))
             {
                 if (header.HeaderType != HeaderType.File || header.IsDirectory()) continue;
                 if (header.GetCompressionMethod() != 0)
@@ -61,7 +58,7 @@ public static class RarUtil
         }
         catch (InvalidFormatException e)
         {
-            throw AddStreamPosition(e, stream);
+            throw AddStreamPosition(e, cancellableStream);
         }
     }
 
@@ -80,18 +77,15 @@ public static class RarUtil
     )
     {
         await using var cancellableStream = new CancellableStream(stream, ct);
-        return await Task.Run(() => ReadHeadersUntilFirstFile(cancellableStream, password), ct)
-            .ConfigureAwait(false);
-    }
-
-    private static List<IRarHeader> ReadHeadersUntilFirstFile(Stream stream, string? password)
-    {
         try
         {
             var readerOptions = new ReaderOptions { Password = password };
             var headerFactory = new RarHeaderFactory(StreamingMode.Seekable, readerOptions);
             var headers = new List<IRarHeader>();
-            foreach (var header in headerFactory.ReadHeaders(stream))
+            await foreach (var header in headerFactory
+                               .ReadHeadersAsync(cancellableStream)
+                               .WithCancellation(ct)
+                               .ConfigureAwait(false))
             {
                 headers.Add(header);
                 if (header.HeaderType != HeaderType.File || header.IsDirectory()) continue;
@@ -108,7 +102,7 @@ public static class RarUtil
         }
         catch (InvalidFormatException e)
         {
-            throw AddStreamPosition(e, stream);
+            throw AddStreamPosition(e, cancellableStream);
         }
     }
 

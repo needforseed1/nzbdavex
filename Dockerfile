@@ -19,17 +19,19 @@ RUN --mount=type=cache,target=/root/.npm \
 # -------- Stage 2: Build backend --------
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS backend-build
 
-WORKDIR /backend
+WORKDIR /src
 
 # Accept build-time architecture as ARG (e.g., x64 or arm64)
 ARG TARGETARCH
-COPY ./backend/NzbWebDAV.csproj ./
-RUN dotnet restore -r linux-musl-${TARGETARCH}
+COPY ./backend/NzbWebDAV.csproj ./backend/
+COPY ./vendor/SharpCompress/SharpCompress.csproj ./vendor/SharpCompress/
+RUN dotnet restore ./backend/NzbWebDAV.csproj -r linux-musl-${TARGETARCH}
 
-COPY ./backend ./
+COPY ./backend ./backend/
+COPY ./vendor/SharpCompress ./vendor/SharpCompress/
 
-RUN dotnet publish -c Release -r linux-musl-${TARGETARCH} \
-        --no-restore -o ./publish
+RUN dotnet publish ./backend/NzbWebDAV.csproj -c Release -r linux-musl-${TARGETARCH} \
+        --no-restore -o ./backend/publish
 
 # -------- Stage 3: Combined runtime image --------
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
@@ -50,7 +52,7 @@ COPY --from=frontend-build /frontend/dist-node/server.js ./frontend/dist-node/se
 COPY --from=frontend-build /frontend/build ./frontend/build
 
 # Copy backend
-COPY --from=backend-build /backend/publish ./backend
+COPY --from=backend-build /src/backend/publish ./backend
 
 # Entry and runtime setup
 COPY entrypoint.sh /entrypoint.sh
