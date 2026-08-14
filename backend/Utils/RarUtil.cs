@@ -2,6 +2,7 @@
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Streams;
 using SharpCompress.Common;
+using SharpCompress.Common.Rar;
 using SharpCompress.Common.Rar.Headers;
 using SharpCompress.IO;
 using SharpCompress.Readers;
@@ -26,11 +27,25 @@ public static class RarUtil
     // SharpCompress's `Position += compressedSize` seek, which on
     // NzbFileStream costs ~log2(segments) STAT calls per seek — turning a
     // sub-100ms parse into a 500ms+ pause at every volume boundary.
-    public static async Task<IRarHeader?> FindFirstFileHeaderAsync
+    public static Task<IRarHeader?> FindFirstFileHeaderAsync
     (
         Stream stream,
         string? password,
         Func<IRarHeader, bool> predicate,
+        CancellationToken ct
+    ) => FindFirstFileHeaderAsync(
+        stream,
+        password,
+        predicate,
+        rar5DerivedKeyCache: null,
+        ct);
+
+    internal static async Task<IRarHeader?> FindFirstFileHeaderAsync
+    (
+        Stream stream,
+        string? password,
+        Func<IRarHeader, bool> predicate,
+        Rar5DerivedKeyCache? rar5DerivedKeyCache,
         CancellationToken ct
     )
     {
@@ -38,7 +53,9 @@ public static class RarUtil
         try
         {
             var readerOptions = new ReaderOptions { Password = password };
-            var headerFactory = new RarHeaderFactory(StreamingMode.Seekable, readerOptions);
+            var headerFactory = rar5DerivedKeyCache is null
+                ? new RarHeaderFactory(StreamingMode.Seekable, readerOptions)
+                : new RarHeaderFactory(StreamingMode.Seekable, readerOptions, rar5DerivedKeyCache);
             await foreach (var header in headerFactory
                                .ReadHeadersAsync(cancellableStream)
                                .WithCancellation(ct)

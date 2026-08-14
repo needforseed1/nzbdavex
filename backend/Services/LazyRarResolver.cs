@@ -7,6 +7,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Utils;
 using Serilog;
+using SharpCompress.Common.Rar;
 using SharpCompress.Common.Rar.Headers;
 
 namespace NzbWebDAV.Services;
@@ -44,6 +45,13 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
     {
         var meta = mpf.Metadata;
         if (!meta.IsLazy) return meta;
+
+        // Header-encrypted RAR5 volumes in one set share their KDF parameters.
+        // Scope the derived material to this archive walk: this removes repeat
+        // PBKDF2 work without retaining passwords or keys in a process cache.
+        var rar5DerivedKeyCache = meta.ArchivePassword is null
+            ? null
+            : new Rar5DerivedKeyCache();
 
         while (true)
         {
@@ -85,7 +93,8 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
                 await semaphore.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    return await GetOrStartResolutionAsync(mpf, part, ct).ConfigureAwait(false);
+                    return await GetOrStartResolutionAsync(
+                        mpf, part, rar5DerivedKeyCache, ct).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -130,7 +139,11 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         var pending = meta.PendingParts ?? [];
         if (!meta.IsLazy || pending.Length == 0) return meta;
 
-        var resolved = await GetOrStartResolutionAsync(mpf, pending[0], ct).ConfigureAwait(false);
+        var rar5DerivedKeyCache = meta.ArchivePassword is null
+            ? null
+            : new Rar5DerivedKeyCache();
+        var resolved = await GetOrStartResolutionAsync(
+            mpf, pending[0], rar5DerivedKeyCache, ct).ConfigureAwait(false);
         return CommitResolvedBatch(mpf, [resolved]);
     }
 
@@ -140,6 +153,7 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
     private Task<DavMultipartFile.FilePart> GetOrStartResolutionAsync(
         DavMultipartFile mpf,
         DavMultipartFile.PendingPart pending,
+        Rar5DerivedKeyCache? rar5DerivedKeyCache,
         CancellationToken callerCt)
     {
         var firstSeg = pending.SegmentIds.FirstOrDefault()
@@ -150,13 +164,15 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         return _resolutionCache.GetOrCreateAsync(
             mpf.Id,
             firstSeg,
-            () => DoResolveAsync(mpf, pending, CancellationToken.None),
+            () => DoResolveAsync(
+                mpf, pending, rar5DerivedKeyCache, CancellationToken.None),
             callerCt);
     }
 
     private async Task<DavMultipartFile.FilePart> DoResolveAsync(
         DavMultipartFile mpf,
         DavMultipartFile.PendingPart pending,
+        Rar5DerivedKeyCache? rar5DerivedKeyCache,
         CancellationToken ct)
     {
         var meta = mpf.Metadata;
@@ -170,7 +186,11 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
             {
                 await using var prefixStream = new MemoryStream(prefix, writable: false);
                 match = await FindContinuationHeaderAsync(
-                    prefixStream, meta.ArchivePassword, pathInArchive, ct).ConfigureAwait(false);
+                    prefixStream,
+                    meta.ArchivePassword,
+                    pathInArchive,
+                    rar5DerivedKeyCache,
+                    ct).ConfigureAwait(false);
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
@@ -193,7 +213,11 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
                 await using var stream = usenetClient.GetFileStream(
                     pending.SegmentIds, pending.SegmentIdByteRange.Count, readAheadBytes: 0);
                 match = await FindContinuationHeaderAsync(
-                    stream, meta.ArchivePassword, pathInArchive, ct).ConfigureAwait(false);
+                    stream,
+                    meta.ArchivePassword,
+                    pathInArchive,
+                    rar5DerivedKeyCache,
+                    ct).ConfigureAwait(false);
             }
             finally
             {
@@ -219,11 +243,13 @@ public class LazyRarResolver(UsenetStreamingClient usenetClient, ConfigManager c
         Stream stream,
         string? archivePassword,
         string pathInArchive,
+        Rar5DerivedKeyCache? rar5DerivedKeyCache,
         CancellationToken ct) =>
         RarUtil.FindFirstFileHeaderAsync(
             stream,
             archivePassword,
             header => header.GetFileName() == pathInArchive,
+            rar5DerivedKeyCache,
             ct);
 
     // Atomically appends consecutive resolveds that match the head of

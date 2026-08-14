@@ -4,12 +4,102 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using SharpCompress.Common.Rar;
+using SharpCompress.Common.Rar.Headers;
+using SharpCompress.IO;
+using SharpCompress.Readers;
 using Xunit;
 
 namespace NzbWebDAV.Tests.ThirdParty;
 
 public class SharpCompressCryptKey5Tests
 {
+    // First encrypted main + file headers from SharpCompress's
+    // Rar5.encrypted_filesAndHeader.rar test archive. Password: test.
+    private const string EncryptedHeaderFixture =
+        "UmFyIRoHAQADasgHIQQAAAEPiORM0xChi/GBWFzwG2EkiQT3h2jj2Vi+02GHYLH/rnDEMnqxIAKYn9wmI8e0OK83ohIk0vO35BFQpYz+bHsB+oiaJiRlzLGZIOwI8SdUinKFF46hRN2fNmNCTNP9+lQMRqqOuRioEp9+rweJZQ0LC9HwAZtow8Svp/3NsXXtA97HclCf1AHQhtbqWpyVZ8mbKyDA1Pw3QLnkQq+bcWcTmdbht0Yr57RIwF8SgQUDtmpgHe5w8EQD4XyRsBY=";
+
+    [Fact]
+    public void HeaderEncryptedRar5DerivesSharedHeaderKeyOnce()
+    {
+        using var stream = new MemoryStream(Convert.FromBase64String(EncryptedHeaderFixture));
+        var factory = CreateHeaderFactory();
+
+        var foundFile = factory.ReadHeaders(stream).Any(header => header.HeaderType == HeaderType.File);
+
+        Assert.True(foundFile);
+        Assert.Equal(1, factory.Rar5KeyDerivationCount);
+    }
+
+    [Fact]
+    public async Task HeaderEncryptedRar5DerivesSharedHeaderKeyOnceAsync()
+    {
+        await using var stream = new MemoryStream(Convert.FromBase64String(EncryptedHeaderFixture));
+        var factory = CreateHeaderFactory();
+        var foundFile = false;
+
+        await foreach (var header in factory.ReadHeadersAsync(stream))
+        {
+            if (header.HeaderType != HeaderType.File) continue;
+            foundFile = true;
+            break;
+        }
+
+        Assert.True(foundFile);
+        Assert.Equal(1, factory.Rar5KeyDerivationCount);
+    }
+
+    [Fact]
+    public void DerivedKeyCacheReusesOnlyExactCryptoParameters()
+    {
+        var cache = new Rar5DerivedKeyCache();
+        var firstSalt = Enumerable.Range(0, 16).Select(i => (byte)i).ToArray();
+        var secondSalt = (byte[])firstSalt.Clone();
+        secondSalt[0]++;
+        var derivations = 0;
+
+        List<byte[]> Derive()
+        {
+            derivations++;
+            return [new byte[32], new byte[32], new byte[32]];
+        }
+
+        var first = cache.GetOrCreate("password", firstSalt, 15, Derive);
+        var repeated = cache.GetOrCreate("password", (byte[])firstSalt.Clone(), 15, Derive);
+        var changedSalt = cache.GetOrCreate("password", secondSalt, 15, Derive);
+        var changedCount = cache.GetOrCreate("password", secondSalt, 16, Derive);
+        var changedPassword = cache.GetOrCreate("other", secondSalt, 16, Derive);
+
+        Assert.Same(first, repeated);
+        Assert.NotSame(repeated, changedSalt);
+        Assert.NotSame(changedSalt, changedCount);
+        Assert.NotSame(changedCount, changedPassword);
+        Assert.Equal(4, derivations);
+        Assert.Equal(4, cache.DerivationCount);
+    }
+
+    [Fact]
+    public async Task ExplicitCacheReusesRar5HeaderKeyAcrossVolumeFactories()
+    {
+        var cache = new Rar5DerivedKeyCache();
+
+        for (var volume = 0; volume < 3; volume++)
+        {
+            await using var stream = new MemoryStream(
+                Convert.FromBase64String(EncryptedHeaderFixture));
+            var factory = new RarHeaderFactory(
+                StreamingMode.Seekable,
+                new ReaderOptions { Password = "test", LeaveStreamOpen = true },
+                cache);
+
+            await foreach (var header in factory.ReadHeadersAsync(stream))
+            {
+                if (header.HeaderType == HeaderType.File) break;
+            }
+        }
+
+        Assert.Equal(1, cache.DerivationCount);
+    }
+
     [Fact]
     public void OptimizedDerivationMatchesReference()
     {
@@ -102,4 +192,10 @@ public class SharpCompressCryptKey5Tests
         }
         return new string(chars);
     }
+
+    private static RarHeaderFactory CreateHeaderFactory() =>
+        new(
+            StreamingMode.Seekable,
+            new ReaderOptions { Password = "test", LeaveStreamOpen = true }
+        );
 }

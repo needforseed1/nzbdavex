@@ -15,13 +15,22 @@ internal class CryptKey5 : ICryptKey
 
     private string _password;
     private Rar5CryptoInfo _cryptoInfo;
+    private readonly Rar5DerivedKeyCache _derivedKeyCache;
     private byte[] _pswCheck = [];
     private byte[] _hashKey = [];
 
     public CryptKey5(string? password, Rar5CryptoInfo rar5CryptoInfo)
+        : this(password, rar5CryptoInfo, new Rar5DerivedKeyCache()) { }
+
+    internal CryptKey5(
+        string? password,
+        Rar5CryptoInfo rar5CryptoInfo,
+        Rar5DerivedKeyCache derivedKeyCache
+    )
     {
         _password = password ?? "";
         _cryptoInfo = rar5CryptoInfo;
+        _derivedKeyCache = derivedKeyCache;
     }
 
     public byte[] PswCheck => _pswCheck;
@@ -83,11 +92,16 @@ internal class CryptKey5 : ICryptKey
         var iterations = (1 << _cryptoInfo.LG2Count); // Adjust the number of iterations as needed
 
         var salt_rar5 = salt.Concat(new byte[] { 0, 0, 0, 1 });
-        var derivedKey = GenerateRarPBKDF2Key(
+        var derivedKey = _derivedKeyCache.GetOrCreate(
             _password,
-            salt_rar5.ToArray(),
-            iterations,
-            DERIVED_KEY_LENGTH
+            salt,
+            _cryptoInfo.LG2Count,
+            () => GenerateRarPBKDF2Key(
+                _password,
+                salt_rar5.ToArray(),
+                iterations,
+                DERIVED_KEY_LENGTH
+            )
         );
         _hashKey = derivedKey[1];
 
