@@ -85,12 +85,6 @@ public class QueueItemProcessor(
         return processorCount > 0;
     }
 
-    internal static bool ShouldRejectEncryptedMultipartRar(
-        bool rejectionEnabled,
-        LazyRarProcessor.Result? result) =>
-        rejectionEnabled
-        && result is { AesParams: not null, PendingParts.Length: > 0 };
-
     public async Task ProcessAsync()
     {
         // initialize
@@ -539,24 +533,17 @@ public class QueueItemProcessor(
         // parse failure — fall through to the per-part eager pipeline.
         LazyRarProcessor.Result? lazyRarResult = null;
         var rarFiles = fileInfos.Where(x => GetGroupName(x) == "rar").ToList();
+        var rarFormat = GetRarFormatLabel(rarFiles);
         long msRar;
         try
         {
             if (configManager.IsLazyRarParsingEnabled() && rarFiles.Count > 0)
             {
-                Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar start files={Files}",
-                    queueItem.Id, queueItem.JobName, rarFiles.Count);
+                Log.Information(
+                    "queue-stage nzo={NzoId} job={JobName} stage=lazy-rar start files={Files} format={RarFormat}",
+                    queueItem.Id, queueItem.JobName, rarFiles.Count, rarFormat);
                 var lazyProc = new LazyRarProcessor(rarFiles, usenetClient, configManager, archivePassword, ct);
                 lazyRarResult = await lazyProc.ProcessAsync().ConfigureAwait(false) as LazyRarProcessor.Result;
-                if (ShouldRejectEncryptedMultipartRar(
-                        configManager.IsEncryptedMultipartRarRejectionEnabled(),
-                        lazyRarResult))
-                {
-                    var volumeCount = lazyRarResult!.PendingParts.Length + 1;
-                    throw new InvalidDataException(
-                        $"Encrypted multipart RAR requires mapping all {volumeCount} archive volumes " +
-                        "before import and was rejected by the enabled slow-import setting.");
-                }
             }
         }
         finally
@@ -565,8 +552,9 @@ public class QueueItemProcessor(
             RecordPrepProgress("rar", msPar2, msRar, lazyRarMounted: lazyRarResult is not null);
         }
         if (rarFiles.Count > 0)
-            Log.Information("queue-stage nzo={NzoId} job={JobName} stage=lazy-rar done ms={ElapsedMs} mounted={Mounted}",
-                queueItem.Id, queueItem.JobName, msRar, lazyRarResult is not null);
+            Log.Information(
+                "queue-stage nzo={NzoId} job={JobName} stage=lazy-rar done ms={ElapsedMs} mounted={Mounted} format={RarFormat}",
+                queueItem.Id, queueItem.JobName, msRar, lazyRarResult is not null, rarFormat);
         stepTimer.Restart();
 
         // step 2b -- per-file processing for everything else (and for the
@@ -1036,6 +1024,23 @@ public class QueueItemProcessor(
         : x.IsRar || FilenameUtil.IsRarFile(x.FileName) ? "rar"
         : FilenameUtil.IsMultipartMkv(x.FileName) ? "multipart-mkv"
         : "other";
+
+    private static string GetRarFormatLabel(IEnumerable<GetFileInfosStep.FileInfo> rarFiles)
+    {
+        var formats = rarFiles
+            .Select(x => x.RarFormat)
+            .Where(x => x is not null)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        return formats.Length switch
+        {
+            0 => "unknown",
+            1 => formats[0]!,
+            _ => string.Join('+', formats),
+        };
+    }
 
     internal static int GetProcessorConcurrency(int maxQueueConnections) =>
         Math.Min(maxQueueConnections + 5, 128);

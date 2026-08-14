@@ -7,8 +7,7 @@ public static class SettingsRegistry
     private const string DefaultsJson = """
     {
       "general.base-url":"","api.key":"","api.categories":"","api.manual-category":"uncategorized",
-      "api.ensure-importable-video":"true","api.reject-encrypted-multipart-rar":"false",
-      "api.ensure-article-existence-categories":"","api.ignore-history-limit":"true",
+      "api.ensure-importable-video":"true","api.ensure-article-existence-categories":"","api.ignore-history-limit":"true",
       "api.download-file-blocklist":"*.nfo, *.par2, *.sfv, *sample.mkv","api.duplicate-nzb-behavior":"increment",
       "api.import-strategy":"symlinks","api.completed-downloads-dir":"/data/completed-downloads","api.user-agent":"","api.search-user-agent":"",
       "usenet.providers":"","usenet.max-download-connections":"15","usenet.playback-reserved-connections":"",

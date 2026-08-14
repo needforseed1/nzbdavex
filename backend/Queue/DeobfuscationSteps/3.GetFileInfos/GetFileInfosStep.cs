@@ -52,7 +52,8 @@ public static class GetFileInfosStep
         var subjectFileName = file.NzbFile.GetSubjectFileName();
         var headerFileName = file.Header?.FileName ?? "";
         var par2FileName = fileDesc?.FileName ?? "";
-        var isRar = file.HasRar4Magic() || file.HasRar5Magic();
+        var rarFormat = file.GetRarFormat();
+        var isRar = rarFormat is not null;
         var filename = SelectFilename(par2FileName, subjectFileName, headerFileName, isRar);
 
         return new FileInfo()
@@ -63,6 +64,7 @@ public static class GetFileInfosStep
             ReleaseDate = file.ReleaseDate,
             FileSize = (long?)fileDesc?.FileLength,
             IsRar = isRar,
+            RarFormat = rarFormat,
         };
     }
 
@@ -136,5 +138,6 @@ public static class GetFileInfosStep
         public required DateTimeOffset ReleaseDate { get; init; }
         public long? FileSize { get; init; }
         public bool IsRar { get; init; }
+        public string? RarFormat { get; init; }
     }
 }

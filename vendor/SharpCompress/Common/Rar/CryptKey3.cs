@@ -16,17 +16,42 @@ internal class CryptKey3 : ICryptKey
     const int AES_128 = 128;
 
     private readonly string _password;
+    private readonly Rar3DerivedKeyCache _derivedKeyCache;
 
-    public CryptKey3(string? password) => _password = password ?? string.Empty;
+    public CryptKey3(string? password)
+        : this(password, new Rar3DerivedKeyCache()) { }
+
+    internal CryptKey3(string? password, Rar3DerivedKeyCache derivedKeyCache)
+    {
+        _password = password ?? string.Empty;
+        _derivedKeyCache = derivedKeyCache;
+    }
 
     public ICryptoTransform Transformer(byte[] salt)
     {
+        var derivedKey = _derivedKeyCache.GetOrCreate(
+            _password,
+            salt,
+            () => DeriveKey(_password, salt)
+        );
+
+        var aes = Aes.Create();
+        aes.KeySize = AES_128;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.None;
+        aes.Key = derivedKey.Key;
+        aes.IV = derivedKey.InitV;
+        return aes.CreateDecryptor();
+    }
+
+    private static Rar3DerivedKeyMaterial DeriveKey(string password, byte[] salt)
+    {
         var aesIV = new byte[EncryptionConstV5.SIZE_INITV];
 
-        var rawLength = 2 * _password.Length;
+        var rawLength = 2 * password.Length;
         var rawPassword = new byte[rawLength + EncryptionConstV5.SIZE_SALT30];
-        var passwordBytes = Encoding.UTF8.GetBytes(_password);
-        for (var i = 0; i < _password.Length; i++)
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        for (var i = 0; i < password.Length; i++)
         {
             rawPassword[i * 2] = passwordBytes[i];
             rawPassword[(i * 2) + 1] = 0;
@@ -88,12 +113,6 @@ internal class CryptKey3 : ICryptKey
             }
         }
 
-        var aes = Aes.Create();
-        aes.KeySize = AES_128;
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.None;
-        aes.Key = aesKey;
-        aes.IV = aesIV;
-        return aes.CreateDecryptor();
+        return new Rar3DerivedKeyMaterial(aesKey, aesIV);
     }
 }

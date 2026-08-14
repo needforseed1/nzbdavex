@@ -66,15 +66,6 @@ public class ConfigManagerTests
     }
 
     [Fact]
-    public void EncryptedMultipartRarRejectionIsUserControlledAndDefaultsOff()
-    {
-        Assert.False(new ConfigManager().IsEncryptedMultipartRarRejectionEnabled());
-        Assert.True(WithValues(
-            ("api.reject-encrypted-multipart-rar", "true"))
-            .IsEncryptedMultipartRarRejectionEnabled());
-    }
-
-    [Fact]
     public void WarmValidationBudgetUsesProviderCapacityAndAllowsOverride()
     {
         Assert.Equal(360, ConfigManager.CalculateAvailableHealthWarmConnections(

@@ -79,7 +79,7 @@ public partial class RarHeaderFactory
             }
             else
             {
-                var key = new CryptKey3(Options.Password);
+                var key = new CryptKey3(Options.Password, _rar3DerivedKeyCache);
                 reader = await AsyncRarCryptoBinaryReader.Create(stream, key).ConfigureAwait(false);
             }
         }

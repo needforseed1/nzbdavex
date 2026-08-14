@@ -216,6 +216,10 @@ public static class FetchFirstSegmentsStep
         public bool HasRar4Magic() => HasMagic(Rar4Magic);
         public bool HasRar5Magic() => HasMagic(Rar5Magic);
 
+        // Pre-RAR5 archives use SharpCompress's RAR3 key-derivation path,
+        // which is the distinction we need when diagnosing encrypted imports.
+        public string? GetRarFormat() => HasRar5Magic() ? "rar5" : HasRar4Magic() ? "rar3" : null;
+
         private bool HasMagic(byte[] sequence)
         {
             return First16KB?.Length >= sequence.Length &&

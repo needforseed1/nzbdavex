@@ -37,6 +37,7 @@ public static class RarUtil
         stream,
         password,
         predicate,
+        rar3DerivedKeyCache: null,
         rar5DerivedKeyCache: null,
         ct);
 
@@ -45,6 +46,7 @@ public static class RarUtil
         Stream stream,
         string? password,
         Func<IRarHeader, bool> predicate,
+        Rar3DerivedKeyCache? rar3DerivedKeyCache,
         Rar5DerivedKeyCache? rar5DerivedKeyCache,
         CancellationToken ct
     )
@@ -53,9 +55,13 @@ public static class RarUtil
         try
         {
             var readerOptions = new ReaderOptions { Password = password };
-            var headerFactory = rar5DerivedKeyCache is null
+            var headerFactory = rar3DerivedKeyCache is null && rar5DerivedKeyCache is null
                 ? new RarHeaderFactory(StreamingMode.Seekable, readerOptions)
-                : new RarHeaderFactory(StreamingMode.Seekable, readerOptions, rar5DerivedKeyCache);
+                : new RarHeaderFactory(
+                    StreamingMode.Seekable,
+                    readerOptions,
+                    rar3DerivedKeyCache ?? new Rar3DerivedKeyCache(),
+                    rar5DerivedKeyCache ?? new Rar5DerivedKeyCache());
             await foreach (var header in headerFactory
                                .ReadHeadersAsync(cancellableStream)
                                .WithCancellation(ct)

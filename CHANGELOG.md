@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.4](https://github.com/needforseed1/nzbdavex/compare/v1.4.3...v1.4.4) (2026-08-14)
+
+### Fixes
+
+* Encrypted multipart RAR3 and RAR5 releases now import with substantially less CPU usage and delay when many archive volumes must be mapped.
+* Repeated and simultaneous reads of the same lazy-mounted archive now share resolved volume mappings, avoiding duplicate work during imports and playback.
+* Failed provider qualification now retains its sampled provider results in Watchdog statistics instead of showing providers as unrecorded.
+
+### Improvements
+
+* Archive-preparation logs now identify whether a release uses the RAR3 or RAR5 processing path.
+
 ## [1.4.3](https://github.com/needforseed1/nzbdavex/compare/v1.4.2...v1.4.3) (2026-08-13)
 
 ### Fixes

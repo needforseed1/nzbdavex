@@ -1,9 +1,28 @@
+using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Queue.DeobfuscationSteps._1.FetchFirstSegment;
 using NzbWebDAV.Queue.DeobfuscationSteps._3.GetFileInfos;
 
 namespace NzbWebDAV.Tests.Queue;
 
 public class GetFileInfosStepTests
 {
+    [Theory]
+    [InlineData(new byte[] { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 }, "rar3")]
+    [InlineData(new byte[] { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00 }, "rar5")]
+    public void RarMagicReportsKeyDerivationFormat(byte[] prefix, string expected)
+    {
+        var file = new FetchFirstSegmentsStep.NzbFileWithFirstSegment
+        {
+            NzbFile = new NzbFile { Subject = "archive.part001.rar" },
+            Header = null,
+            First16KB = prefix,
+            MissingFirstSegment = false,
+            ReleaseDate = DateTimeOffset.UnixEpoch,
+        };
+
+        Assert.Equal(expected, file.GetRarFormat());
+    }
+
     [Fact]
     public void RarMagicPrefersUsableHeaderVolumeNameOverMkvSubject()
     {

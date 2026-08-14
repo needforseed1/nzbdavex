@@ -13,21 +13,36 @@ public partial class RarHeaderFactory
     private bool _isRar5;
 
     private Rar5CryptoInfo? _cryptInfo;
+    private readonly Rar3DerivedKeyCache _rar3DerivedKeyCache;
     private readonly Rar5DerivedKeyCache _rar5DerivedKeyCache;
 
     internal int Rar5KeyDerivationCount => _rar5DerivedKeyCache.DerivationCount;
 
     public RarHeaderFactory(StreamingMode mode, ReaderOptions options)
-        : this(mode, options, new Rar5DerivedKeyCache()) { }
+        : this(mode, options, new Rar3DerivedKeyCache(), new Rar5DerivedKeyCache()) { }
 
     internal RarHeaderFactory(
         StreamingMode mode,
         ReaderOptions options,
         Rar5DerivedKeyCache rar5DerivedKeyCache
+    ) : this(mode, options, new Rar3DerivedKeyCache(), rar5DerivedKeyCache) { }
+
+    internal RarHeaderFactory(
+        StreamingMode mode,
+        ReaderOptions options,
+        Rar3DerivedKeyCache rar3DerivedKeyCache
+    ) : this(mode, options, rar3DerivedKeyCache, new Rar5DerivedKeyCache()) { }
+
+    internal RarHeaderFactory(
+        StreamingMode mode,
+        ReaderOptions options,
+        Rar3DerivedKeyCache rar3DerivedKeyCache,
+        Rar5DerivedKeyCache rar5DerivedKeyCache
     )
     {
         StreamingMode = mode;
         Options = options;
+        _rar3DerivedKeyCache = rar3DerivedKeyCache;
         _rar5DerivedKeyCache = rar5DerivedKeyCache;
     }
 
@@ -83,7 +98,7 @@ public partial class RarHeaderFactory
             }
             else
             {
-                var key = new CryptKey3(Options.Password);
+                var key = new CryptKey3(Options.Password, _rar3DerivedKeyCache);
                 reader = RarCryptoBinaryReader.Create(stream, key);
             }
         }
