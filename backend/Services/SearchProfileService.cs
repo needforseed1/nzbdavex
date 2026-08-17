@@ -357,6 +357,8 @@ public class SearchProfileService(
             || (reqSeason is null && reqEpisode is null)
             || FilenameMatcher.EpisodeCompatible(x.Item.Title, reqSeason, reqEpisode);
 
+        deduped = deduped.Where(EpisodeOk).ToList();
+
         if (fallbackMode != ProfileConfig.FallbackMode.Off && deduped.Count < fallbackThreshold)
         {
             var fallbackVariants = await BuildFallbackQueriesAsync(type, queryParams, clientQuery, fallbackMode, ct)

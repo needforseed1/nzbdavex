@@ -1294,7 +1294,7 @@ public class ProfilePlayController(
         {
             if (v.Name.Contains("sample", StringComparison.OrdinalIgnoreCase)) continue;
             if (FilenameMatcher.ParseEpisode(v.Name) is not { } tag) continue;
-            if (tag.Season != season) continue;
+            if (tag.Season is { } taggedSeason && taggedSeason != season) continue;
             if (tag.Episode is not { } start) continue;
             var end = tag.EpisodeEnd ?? start;
             if (episode < start || episode > end) continue;
