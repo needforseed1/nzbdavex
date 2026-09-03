@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.1](https://github.com/needforseed1/nzbdavex/compare/v1.5.0...v1.5.1) (2026-09-03)
+
+### Improvements
+
+* Failed Watchdog attempts can now find locally saved NZBs from Queue or History and add the selected release back to Queue. Watchdog results can also be searched by title, indexer, or failure reason.
+* Incoming NZB backups now have a configurable retention limit, applied across all categories while preserving the newest backups.
+
+### Fixes
+
+* Usenet providers now recover automatically after connection-limit responses or losing every connection instead of remaining unavailable until restart.
+* Library cleanup, health checks, and STRM conversion now fail safely when link discovery is interrupted or incomplete, and relative symlinks are recognized correctly.
+* Accepted settings now repair stale in-memory configuration even when the same value was already stored in the database.
+
 ## [1.5.0](https://github.com/needforseed1/nzbdavex/compare/v1.4.4...v1.5.0) (2026-08-14)
 
 ### Improvements
