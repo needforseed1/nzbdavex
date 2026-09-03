@@ -62,6 +62,7 @@ test("shows only explicitly captured failure phases", () => {
 
 function entry(overrides: Partial<WatchdogEntry>): WatchdogEntry {
     return {
+        id: 1,
         clickId: "click",
         attemptedAtUnix: 1,
         contentType: "movie",

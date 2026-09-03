@@ -14,6 +14,8 @@ declare const styles: {
   readonly "liveDot": string;
   readonly "liveDotOn": string;
   readonly "filterBar": string;
+  readonly "searchBox": string;
+  readonly "srOnly": string;
   readonly "filterChip": string;
   readonly "filterChipActive": string;
   readonly "filterChipCount": string;
@@ -48,8 +50,19 @@ declare const styles: {
   readonly "winnerDetails": string;
   readonly "detailsEmpty": string;
   readonly "failureReasonBox": string;
+  readonly "failureReasonLine": string;
   readonly "failureReasonRaw": string;
   readonly "failureReasonHeader": string;
+  readonly "retryPanel": string;
+  readonly "retryHeader": string;
+  readonly "retryButton": string;
+  readonly "retryCancel": string;
+  readonly "retryChoices": string;
+  readonly "retryChoice": string;
+  readonly "retryActions": string;
+  readonly "retryUnavailable": string;
+  readonly "retryStatus": string;
+  readonly "retryError": string;
   readonly "detailsSection": string;
   readonly "detailsSectionHeader": string;
   readonly "detailsSectionTitle": string;

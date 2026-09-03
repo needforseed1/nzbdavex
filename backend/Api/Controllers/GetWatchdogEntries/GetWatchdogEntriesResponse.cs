@@ -10,6 +10,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
 
     public class EntryDto
     {
+        [JsonPropertyName("id")] public required long Id { get; init; }
         [JsonPropertyName("clickId")] public required string ClickId { get; init; }
         [JsonPropertyName("attemptedAtUnix")] public required long AttemptedAtUnix { get; init; }
         [JsonPropertyName("contentType")] public required string ContentType { get; init; }
@@ -31,6 +32,7 @@ public class GetWatchdogEntriesResponse : BaseApiResponse
         [JsonPropertyName("isWinner")] public required bool IsWinner { get; init; }
         [JsonPropertyName("providerHost")] public string? ProviderHost { get; init; }
         [JsonPropertyName("providerNickname")] public string? ProviderNickname { get; init; }
+        [JsonPropertyName("retryQueueItemId")] public Guid? RetryQueueItemId { get; init; }
     }
 
     public class PrepStatsDto

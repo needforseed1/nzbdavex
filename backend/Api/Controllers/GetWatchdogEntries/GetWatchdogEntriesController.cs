@@ -1,7 +1,9 @@
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Config;
+using NzbWebDAV.Database;
 using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Api.Controllers.GetWatchdogEntries;
@@ -10,7 +12,8 @@ namespace NzbWebDAV.Api.Controllers.GetWatchdogEntries;
 [Route("api/get-watchdog-entries")]
 public partial class GetWatchdogEntriesController(
     WatchdogLog watchdogLog,
-    ConfigManager configManager
+    ConfigManager configManager,
+    DavDatabaseClient dbClient
 ) : BaseApiController
 {
     [GeneratedRegex(@"\s*\(\d+%\)\s*$")] private static partial Regex PercentSuffixRegex();
@@ -33,8 +36,22 @@ public partial class GetWatchdogEntriesController(
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         var recent = await watchdogLog.GetRecentAsync(limit, HttpContext.RequestAborted).ConfigureAwait(false);
+        var retrySources = await dbClient.Ctx.QueueItems.AsNoTracking()
+            .Where(x => x.SubmissionSource != null && x.SubmissionSource.StartsWith(WatchdogNzbRetryService.SubmissionSourcePrefix))
+            .Select(x => new { x.Id, x.SubmissionSource })
+            .Concat(dbClient.Ctx.HistoryItems.AsNoTracking()
+                .Where(x => x.SubmissionSource != null && x.SubmissionSource.StartsWith(WatchdogNzbRetryService.SubmissionSourcePrefix))
+                .Select(x => new { x.Id, x.SubmissionSource }))
+            .ToListAsync(HttpContext.RequestAborted).ConfigureAwait(false);
+        var retriesByEvent = retrySources
+            .Select(x => new { x.Id, Parsed = WatchdogNzbRetryService.TryParseRetryEventId(x.SubmissionSource, out var eventId), EventId = eventId })
+            .Where(x => x.Parsed)
+            .GroupBy(x => x.EventId)
+            .ToDictionary(x => x.Key, x => (Guid?)x.OrderByDescending(y => y.Id).First().Id);
+
         var dtos = recent.Select(a => new GetWatchdogEntriesResponse.EntryDto
         {
+            Id = a.Id,
             ClickId = a.ClickId.ToString(),
             AttemptedAtUnix = a.AttemptedAt.ToUnixTimeSeconds(),
             ContentType = a.ContentType,
@@ -54,6 +71,7 @@ public partial class GetWatchdogEntriesController(
             IsWinner = a.IsWinner,
             ProviderHost = a.ProviderHost,
             ProviderNickname = ResolveNickname(a.ProviderHost, nicknamesByHost),
+            RetryQueueItemId = retriesByEvent.GetValueOrDefault(a.Id),
         }).ToList();
 
         return Ok(new GetWatchdogEntriesResponse

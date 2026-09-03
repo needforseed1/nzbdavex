@@ -290,6 +290,33 @@ class BackendClient {
         return data.entries ?? [];
     }
 
+    public async resolveWatchdogRetry(eventId: number): Promise<WatchdogRetryMatch[]> {
+        const form = new FormData();
+        form.append("eventId", String(eventId));
+        const response = await fetch(BACKEND_URL + "/api/resolve-watchdog-retry", {
+            method: "POST",
+            headers: { "x-api-key": FRONTEND_BACKEND_API_KEY },
+            body: form,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error ?? `Could not resolve saved NZB (${response.status})`);
+        return data.matches ?? [];
+    }
+
+    public async retryWatchdogNzb(eventId: number, blobId: string): Promise<WatchdogRetryResult> {
+        const form = new FormData();
+        form.append("eventId", String(eventId));
+        form.append("blobId", blobId);
+        const response = await fetch(BACKEND_URL + "/api/retry-watchdog-nzb", {
+            method: "POST",
+            headers: { "x-api-key": FRONTEND_BACKEND_API_KEY },
+            body: form,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error ?? `Could not retry saved NZB (${response.status})`);
+        return data;
+    }
+
     public async clearWatchdogEntries(): Promise<number> {
         const url = BACKEND_URL + `/api/clear-watchdog-entries`;
         const apiKey = FRONTEND_BACKEND_API_KEY;
@@ -468,6 +495,7 @@ export type WatchdogOutcome =
     | "ExcludedByPattern";
 
 export type WatchdogEntry = {
+    id: number,
     clickId: string,
     attemptedAtUnix: number,
     contentType: string,
@@ -487,6 +515,24 @@ export type WatchdogEntry = {
     isWinner: boolean,
     providerHost?: string | null,
     providerNickname?: string | null,
+    retryQueueItemId?: string | null,
+}
+
+export type WatchdogRetryMatch = {
+    blobId: string,
+    confidence: "exact" | "strong" | "plausible",
+    sourceStatus: string,
+    title: string,
+    indexer?: string | null,
+    category: string,
+    size: number,
+    createdAtUnix: number,
+}
+
+export type WatchdogRetryResult = {
+    status: boolean,
+    queueItemId: string,
+    existing: boolean,
 }
 
 export type WatchdogPrepStats = {

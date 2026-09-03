@@ -8,6 +8,7 @@ namespace NzbWebDAV.Api.Controllers;
 public abstract class BaseApiController : ControllerBase
 {
     protected virtual bool RequiresAuthentication => true;
+    protected virtual IReadOnlySet<string>? AllowedMethods => null;
     protected abstract Task<IActionResult> HandleRequest();
 
     [HttpGet]
@@ -16,6 +17,16 @@ public abstract class BaseApiController : ControllerBase
     {
         try
         {
+            if (AllowedMethods is { } allowed && !allowed.Contains(HttpContext.Request.Method))
+            {
+                Response.Headers.Allow = string.Join(", ", allowed);
+                return StatusCode(StatusCodes.Status405MethodNotAllowed, new BaseApiResponse
+                {
+                    Status = false,
+                    Error = "Method not allowed",
+                });
+            }
+
             if (RequiresAuthentication)
             {
                 var apiKey = HttpContext.GetRequestApiKey();

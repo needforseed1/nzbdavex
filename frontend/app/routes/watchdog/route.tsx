@@ -8,6 +8,7 @@ import {
     type WatchdogHealthStats,
     type WatchdogOutcome,
     type WatchdogPrepStats,
+    type WatchdogRetryMatch,
 } from "~/clients/backend-client.server";
 import {
     ProviderSummary,
@@ -19,6 +20,7 @@ import {
     selectFailedDetailsAttempt,
 } from "./watchdog-failure";
 import { selectHealthSummaryTiming, selectTotalSummaryTiming } from "./watchdog-timing";
+import { matchesWatchdogSearch } from "./watchdog-search";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -41,6 +43,7 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
     const [attempts, setAttempts] = useState<WatchdogEntry[]>(loaderData.entries);
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [filter, setFilter] = useState<FilterKey>("all");
+    const [search, setSearch] = useState("");
     const [refreshing, setRefreshing] = useState(false);
     const [clearing, setClearing] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -94,7 +97,9 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
     }, [autoRefresh, refresh]);
 
     const groups = useMemo(() => groupByClick(attempts), [attempts]);
-    const filteredGroups = useMemo(() => groups.filter(g => matchesFilter(g, filter)), [groups, filter]);
+    const filteredGroups = useMemo(
+        () => groups.filter(g => matchesFilter(g, filter) && matchesWatchdogSearch(g.attempts, search)),
+        [groups, filter, search]);
     const stats = useMemo(() => computeStats(groups), [groups]);
 
     return (
@@ -152,6 +157,16 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                 </div>
 
                 <div className={styles.filterBar}>
+                    <label className={styles.searchBox}>
+                        <span className={styles.srOnly}>Search Watchdog events</span>
+                        <input
+                            type="search"
+                            value={search}
+                            onChange={event => setSearch(event.target.value)}
+                            placeholder="Search title, indexer, or failure…"
+                            aria-label="Search Watchdog events"
+                        />
+                    </label>
                     <FilterChip active={filter === "all"} onClick={() => setFilter("all")} count={groups.length}>All</FilterChip>
                     <FilterChip active={filter === "live"} onClick={() => setFilter("live")} count={stats.inFlight}>Live</FilterChip>
                     <FilterChip active={filter === "resolved"} onClick={() => setFilter("resolved")} count={stats.resolved}>Resolved</FilterChip>
@@ -166,18 +181,18 @@ export default function Watchdog({ loaderData }: Route.ComponentProps) {
                 <div className={styles.emptyState}>
                     {groups.length === 0
                         ? "No watchdog entries recorded yet. Click Play in your client to see live activity here."
-                        : "No clicks match this filter."}
+                        : "No clicks match this filter and search."}
                 </div>
             ) : (
                 <div className={styles.clickList}>
-                    {filteredGroups.map(g => <ClickCard key={g.clickId} group={g} />)}
+                    {filteredGroups.map(g => <ClickCard key={g.clickId} group={g} onRefresh={() => refresh(true)} />)}
                 </div>
             )}
         </div>
     );
 }
 
-function ClickCard({ group }: { group: ClickGroup }) {
+function ClickCard({ group, onRefresh }: { group: ClickGroup, onRefresh: () => Promise<void> }) {
     const [detailsOpen, setDetailsOpen] = useState(false);
     const status: "win" | "loss" | "inflight" =
         group.hasWinner ? "win" : group.allResolved ? "loss" : "inflight";
@@ -265,13 +280,18 @@ function ClickCard({ group }: { group: ClickGroup }) {
                         </span>
                     </span>
                 </button>
-                {showingFailure && detailsAttempt.failReason && (
+                {showingFailure && (
                     <section className={styles.failureReasonBox}>
                         <div className={styles.failureReasonHeader}>
                             <span>Failure</span>
                             {failurePhase && <span>{failurePhase}</span>}
                         </div>
-                        <span className={styles.failureReasonRaw}>{detailsAttempt.failReason}</span>
+                        <div className={styles.failureReasonLine}>
+                            {detailsAttempt.failReason &&
+                                <span className={styles.failureReasonRaw}>{detailsAttempt.failReason}</span>
+                            }
+                            <WatchdogRetryAction attempt={detailsAttempt} onRefresh={onRefresh} />
+                        </div>
                     </section>
                 )}
                 {detailsOpen && (
@@ -366,6 +386,111 @@ function ClickCard({ group }: { group: ClickGroup }) {
                 </div>
             </div>
             )}
+        </div>
+    );
+}
+
+function WatchdogRetryAction({ attempt, onRefresh }: {
+    attempt: WatchdogEntry,
+    onRefresh: () => Promise<void>,
+}) {
+    const [matches, setMatches] = useState<WatchdogRetryMatch[] | null>(null);
+    const [selected, setSelected] = useState<string>("");
+    const [state, setState] = useState<"idle" | "resolving" | "retrying" | "success" | "error">("idle");
+    const [message, setMessage] = useState<string | null>(null);
+
+    const enqueueRetry = async (match: WatchdogRetryMatch) => {
+        setState("retrying");
+        setMessage(null);
+        try {
+            const form = new FormData();
+            form.append("intent", "retry");
+            form.append("eventId", String(attempt.id));
+            form.append("blobId", match.blobId);
+            const response = await fetch("/settings/watchdog-attempts", { method: "POST", body: form });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data?.error ?? `Retry failed (${response.status})`);
+            setState("success");
+            setMessage(data.retry?.existing ? "Retry was already queued." : "Saved NZB added to Queue.");
+            await onRefresh();
+        } catch (error: any) {
+            setState("error");
+            setMessage(error?.message ?? String(error));
+        }
+    };
+
+    const resolve = async () => {
+        setState("resolving");
+        setMessage(null);
+        try {
+            const form = new FormData();
+            form.append("intent", "resolve-retry");
+            form.append("eventId", String(attempt.id));
+            const response = await fetch("/settings/watchdog-attempts", { method: "POST", body: form });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data?.error ?? `Could not check saved NZBs (${response.status})`);
+            const next: WatchdogRetryMatch[] = data.matches ?? [];
+            if (next.length === 1 && next[0].confidence === "exact") {
+                await enqueueRetry(next[0]);
+                return;
+            }
+            setMatches(next);
+            if (next.length === 1) setSelected(next[0].blobId);
+            setState("idle");
+        } catch (error: any) {
+            setState("error");
+            setMessage(error?.message ?? String(error));
+        }
+    };
+
+    const retrySelected = async () => {
+        const match = matches?.find(item => item.blobId === selected);
+        if (match) await enqueueRetry(match);
+    };
+
+    if (attempt.retryQueueItemId) {
+        return <div className={styles.retryStatus} role="status">Retry queued · {attempt.retryQueueItemId}</div>;
+    }
+
+    return (
+        <div className={styles.retryPanel} aria-label={`Retry ${attempt.candidateTitle}`}>
+            {matches == null && (
+                <button type="button" className={styles.retryButton} onClick={resolve} disabled={state === "resolving"}>
+                    {state === "resolving" ? "Checking…" : "Retry"}
+                </button>
+            )}
+            {matches?.length === 0 && (
+                <div className={styles.retryUnavailable}>Unavailable — never saved or already cleaned up.</div>
+            )}
+            {matches && matches.length > 0 && (
+                <div className={styles.retryChoices}>
+                    {matches.map(match => (
+                        <label key={match.blobId} className={styles.retryChoice}>
+                            <input
+                                type="radio"
+                                name={`retry-${attempt.id}`}
+                                value={match.blobId}
+                                checked={selected === match.blobId}
+                                onChange={() => setSelected(match.blobId)}
+                            />
+                            <span>
+                                <strong>{match.title}</strong>
+                                <small>{match.sourceStatus} · {match.indexer || "unknown indexer"} · {formatAge(match.createdAtUnix)} · {match.confidence}</small>
+                            </span>
+                        </label>
+                    ))}
+                    <div className={styles.retryActions}>
+                        <button type="button" className={styles.retryButton} onClick={retrySelected}
+                            disabled={!selected || state === "retrying"}>
+                            {state === "retrying" ? "Adding…" : "Confirm retry"}
+                        </button>
+                        <button type="button" className={styles.retryCancel} onClick={() => { setMatches(null); setSelected(""); setMessage(null); }}>
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+            {message && <div className={state === "error" ? styles.retryError : styles.retryStatus} role="status">{message}</div>}
         </div>
     );
 }

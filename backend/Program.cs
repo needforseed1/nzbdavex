@@ -138,6 +138,7 @@ class Program
             .AddSingleton<CandidateNegativeCache>()
             .AddSingleton<PlaybackFastVerifier>()
             .AddSingleton<WatchdogLog>()
+            .AddScoped<WatchdogNzbRetryService>()
             .AddSingleton<PreflightCache>()
             .AddSingleton<PreflightSessionRegistry>()
             .AddSingleton<PreflightOrchestrator>()
