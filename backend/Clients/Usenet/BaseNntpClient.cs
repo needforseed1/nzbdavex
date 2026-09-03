@@ -46,7 +46,8 @@ public class BaseNntpClient : NntpClient
             if (!response.Success)
             {
                 var message = $"Could not login to usenet host: {response.ResponseMessage}";
-                if (response.ResponseMessage?.Contains("connection limit", StringComparison.OrdinalIgnoreCase) == true)
+                if (response.ResponseMessage?.Contains("connection limit", StringComparison.OrdinalIgnoreCase) == true ||
+                    response.ResponseMessage?.Contains("too many connection", StringComparison.OrdinalIgnoreCase) == true)
                     throw new UsenetConnectionLimitException(message);
                 throw new CouldNotLoginToUsenetException(message);
             }

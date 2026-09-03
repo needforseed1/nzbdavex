@@ -1359,25 +1359,140 @@ public class ConnectionPoolTests
     }
 
     [Fact]
-    public async Task ProviderLimitWithNoAcceptedConnectionsFailsAllWaiters()
+    public async Task ProviderLimitWithNoAcceptedConnectionsSurfacesRejectionButStaysRecoverable()
     {
+        var accept = false;
         await using var pool = new ConnectionPool<TrackedConnection>(
             8,
-            _ => throw new TestConnectionLimitException(),
+            _ => accept
+                ? ValueTask.FromResult(new TrackedConnection(1, () => { }))
+                : throw new TestConnectionLimitException(),
             connectionCapacityRejected: e => e is TestConnectionLimitException);
 
         var acquisitions = Enumerable.Range(0, 8)
             .Select(_ => pool.GetConnectionLockAsync(SemaphorePriority.Low))
             .ToArray();
 
+        // Every waiter still surfaces the provider's rejection...
         await Task.WhenAll(acquisitions.Select(async acquisition =>
             await Assert.ThrowsAnyAsync<Exception>(() => acquisition)))
             .WaitAsync(TimeSpan.FromSeconds(1));
 
-        Assert.True(pool.CapacityUnavailable);
-        Assert.Equal(0, pool.AvailableConnections);
-        await Assert.ThrowsAnyAsync<Exception>(
-            () => pool.GetConnectionLockAsync(SemaphorePriority.Low)).WaitAsync(TimeSpan.FromSeconds(1));
+        // ...but the pool must never latch into a terminal, self-disabling
+        // state: a transient connection-limit rejection is not a permanent
+        // outage. Capacity is floored at 1 so the pool stays alive and can
+        // recover on its own once the provider accepts connections again.
+        Assert.False(pool.CapacityUnavailable);
+        Assert.True(pool.AvailableConnections >= 1);
+
+        accept = true;
+        using var recovered = await pool.GetConnectionLockAsync(SemaphorePriority.Low)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, pool.LiveConnections);
+    }
+
+    [Fact]
+    public async Task ColdActivatedPoolUsesSpeculativeRecoveryWhileForegroundWaits()
+    {
+        var budget = new ConnectionLifetimeBudget(3, 2);
+        var foregroundFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseForegroundFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var speculativeFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSpeculativeFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var coldFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var foregroundPool = new ConnectionPool<TrackedConnection>(
+            1,
+            async ct =>
+            {
+                foregroundFactoryStarted.TrySetResult();
+                await releaseForegroundFactory.Task.WaitAsync(ct);
+                return new TrackedConnection(1, () => { });
+            },
+            connectionBudget: budget);
+        var queuedForegroundPool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ => ValueTask.FromResult(new TrackedConnection(3, () => { })),
+            connectionBudget: budget);
+        var speculativePool = new ConnectionPool<TrackedConnection>(
+            1,
+            async ct =>
+            {
+                speculativeFactoryStarted.TrySetResult();
+                await releaseSpeculativeFactory.Task.WaitAsync(ct);
+                throw new InvalidOperationException("Release the speculative reservation.");
+            },
+            connectionBudget: budget);
+        var coldPool = new ConnectionPool<TrackedConnection>(
+            1,
+            _ =>
+            {
+                coldFactoryStarted.TrySetResult();
+                return ValueTask.FromResult(new TrackedConnection(2, () => { }));
+            },
+            idleTimeout: TimeSpan.FromSeconds(1),
+            minimumIdleConnections: 1,
+            minimumWarmConnections: 1,
+            warmConnectionRefreshInterval: TimeSpan.FromSeconds(1),
+            connectionBudget: budget);
+
+        Task<ConnectionLock<TrackedConnection>>? foregroundAcquisition = null;
+        Task<ConnectionLock<TrackedConnection>>? queuedForegroundAcquisition = null;
+        try
+        {
+            // Occupy the sole foreground handshake lane, then queue a second
+            // foreground caller behind it. The separate demand prewarm holds
+            // the sole speculative lane until we release it below.
+            foregroundAcquisition = foregroundPool.GetConnectionLockAsync(SemaphorePriority.Low);
+            await foregroundFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            queuedForegroundAcquisition = queuedForegroundPool.GetConnectionLockAsync(
+                SemaphorePriority.Low);
+            await WaitUntilAsync(
+                () => budget.ForegroundWaiters == 1,
+                TimeSpan.FromSeconds(1));
+
+            var speculativePrewarm = speculativePool.PrewarmForDemandAsync(1);
+            await speculativeFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(1, budget.ActiveSpeculativeCreations);
+
+            coldPool.ActivateIdlePrewarming();
+            // The first maintenance pass begins after 500ms. Before this fix it
+            // returned immediately because the queued foreground caller existed;
+            // the next retry could not occur for another 500ms.
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+            Assert.False(coldFactoryStarted.Task.IsCompleted);
+
+            releaseSpeculativeFactory.TrySetResult();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => speculativePrewarm);
+
+            await coldFactoryStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+            await WaitUntilAsync(
+                () => coldPool.WarmConnections == 1,
+                TimeSpan.FromSeconds(1));
+
+            Assert.False(foregroundAcquisition.IsCompleted);
+            Assert.False(queuedForegroundAcquisition.IsCompleted);
+            Assert.Equal(1, budget.ForegroundWaiters);
+            Assert.Equal(1, coldPool.LiveConnections);
+        }
+        finally
+        {
+            // Cancel the queued foreground waiter before releasing the lane it
+            // is waiting for; otherwise teardown can legitimately let it win.
+            await queuedForegroundPool.DisposeAsync();
+            await foregroundPool.DisposeAsync();
+            await speculativePool.DisposeAsync();
+            await coldPool.DisposeAsync();
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => foregroundAcquisition!);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queuedForegroundAcquisition!);
+        Assert.Equal(0, budget.ActiveCreations);
+        Assert.Equal(0, budget.ReservedConnections);
     }
 
     [Fact]
@@ -1520,6 +1635,17 @@ public class ConnectionPoolTests
         await disposing.WaitAsync(TimeSpan.FromSeconds(1));
         await competingPool.PrewarmAsync(1).WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal(1, competingPool.LiveConnections);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!predicate())
+        {
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("The expected test condition was not reached in time.");
+            await Task.Delay(10);
+        }
     }
 
     private static void UpdateMaximum(ref int maximum, int value)

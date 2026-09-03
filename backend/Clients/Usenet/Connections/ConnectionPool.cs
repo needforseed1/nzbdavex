@@ -486,16 +486,21 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             reducedTo = _live + _inFlightCreations;
             if (reducedTo >= _effectiveMaxConnections) return;
-            _effectiveMaxConnections = reducedTo;
-            if (reducedTo == 0)
+            if (reducedTo <= 0)
             {
-                _capacityUnavailableException = exception;
-                Volatile.Write(ref _capacityUnavailable, 1);
-                _gate.Dispose();
-                _capacityCts.Cancel();
+                // A connection-capacity rejection (provider "too many
+                // connections") is transient contention, not a permanent
+                // outage. Never drive the pool to a terminal, self-disabling
+                // state: floor capacity at 1 so the pool stays alive and
+                // RaiseEffectiveCapacityToLive() can walk it back up to
+                // _maxConnections as soon as a handshake succeeds again.
+                // The old behaviour latched capacity to 0 here, disposing the
+                // gate and cancelling _capacityCts -- which has no runtime
+                // reset and wedged the provider until a process restart.
+                reducedTo = 1;
             }
-            else
-                _gate.UpdateMaxAllowed(reducedTo);
+            _effectiveMaxConnections = reducedTo;
+            _gate.UpdateMaxAllowed(reducedTo);
         }
 
         _onConnectionCapacityReduced?.Invoke(reducedTo, exception);
@@ -1405,8 +1410,19 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                         var warmFloor = GetWarmFloorConnections();
                         var startedBelowFloor = IdleConnections < warmFloor;
                         if (startedBelowFloor)
-                            await PrewarmAsync(warmFloor, _sweepCts.Token)
+                        {
+                            // A provider that has lost every socket cannot recover if
+                            // ordinary maintenance always yields to foreground work on
+                            // other pools. Let only this cold ready-floor recovery wait
+                            // for the budget's bounded speculative handshake quota; it
+                            // still cannot consume a foreground creation lane.
+                            var recoverColdReadyFloor = LiveConnections == 0 && warmFloor > 0;
+                            await PrewarmAsync(
+                                    warmFloor,
+                                    demandPrewarm: recoverColdReadyFloor,
+                                    cancellationToken: _sweepCts.Token)
                                 .ConfigureAwait(false);
+                        }
 
                         var warmFloorReady = WarmConnections >= warmFloor;
                         var now = DateTimeOffset.UtcNow;
