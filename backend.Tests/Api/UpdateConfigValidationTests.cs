@@ -7,6 +7,31 @@ namespace NzbWebDAV.Tests.Api;
 public class UpdateConfigValidationTests
 {
     [Fact]
+    public void RuntimeConfigReconcilesAcceptedValuesEvenWhenDatabaseValueWasUnchanged()
+    {
+        var config = new NzbWebDAV.Config.ConfigManager();
+        config.UpdateValues([
+            new ConfigItem
+            {
+                ConfigName = "plex.base-url",
+                ConfigValue = "https://old-plex.example",
+            },
+        ]);
+        var acceptedRequest = new List<ConfigItem>
+        {
+            new()
+            {
+                ConfigName = "plex.base-url",
+                ConfigValue = "http://new-plex.example:32400",
+            },
+        };
+
+        UpdateConfigController.ReconcileRuntimeConfig(config, acceptedRequest);
+
+        Assert.Equal("http://new-plex.example:32400", config.GetPlexBaseUrl());
+    }
+
+    [Fact]
     public void QueueConnectionLimitAcceptsAutomaticButRejectsInvalidText()
     {
         ConfigUpdateValidator.Validate([

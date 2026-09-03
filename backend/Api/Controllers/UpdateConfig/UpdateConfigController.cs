@@ -45,12 +45,19 @@ public class UpdateConfigController(DavDatabaseClient dbClient, ConfigManager co
         // 4. Save changes in one call
         await dbClient.Ctx.SaveChangesAsync(HttpContext.RequestAborted).ConfigureAwait(false);
 
-        // 5. Update the ConfigManager
-        configManager.UpdateValues(itemsToUpdate.Concat(itemsToInsert).ToList());
+        // 5. Reconcile the in-memory config from the accepted request, even when
+        // the database already held the requested value. This repairs any
+        // runtime/persistence divergence without requiring an application restart.
+        ReconcileRuntimeConfig(configManager, request.ConfigItems);
 
         // return
         return new UpdateConfigResponse { Status = true };
     }
+
+    internal static void ReconcileRuntimeConfig(
+        ConfigManager configManager,
+        List<ConfigItem> acceptedItems) =>
+        configManager.UpdateValues(acceptedItems);
 
     protected override async Task<IActionResult> HandleRequest()
     {
