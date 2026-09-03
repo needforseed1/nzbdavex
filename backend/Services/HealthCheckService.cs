@@ -339,7 +339,12 @@ public class HealthCheckService : BackgroundService
 
             // if the unhealthy item is unlinked/orphaned,
             // then we can simply delete it.
-            var symlinkOrStrmPath = OrganizedLinksUtil.GetLink(davItem, _configManager);
+            var linkLookup = await OrganizedLinksUtil
+                .GetLinkAsync(davItem, _configManager, ct)
+                .ConfigureAwait(false);
+            if (!linkLookup.IsComplete)
+                throw new IOException($"Library link discovery failed: {linkLookup.ErrorMessage}");
+            var symlinkOrStrmPath = linkLookup.LinkPath;
             if (symlinkOrStrmPath == null)
             {
                 dbClient.Ctx.Items.Remove(davItem);

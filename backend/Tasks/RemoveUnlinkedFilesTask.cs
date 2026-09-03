@@ -16,18 +16,21 @@ public class RemoveUnlinkedFilesTask(
 ) : BaseTask
 {
     private static List<string> _allRemovedPaths = [];
+    private readonly object _reportLock = new();
+    private Task _reportQueue = Task.CompletedTask;
 
     private record UnlinkedItemInfo(string Id, int Type, string Path);
 
     protected override async Task ExecuteInternal()
     {
+        _allRemovedPaths = [];
         try
         {
             await RemoveUnlinkedFiles().ConfigureAwait(false);
         }
         catch (Exception e)
         {
-            Report($"Failed: {e.Message}");
+            await Report($"Failed: {e.Message}").ConfigureAwait(false);
             Log.Error(e, "Failed to remove unlinked files.");
         }
     }
@@ -35,36 +38,48 @@ public class RemoveUnlinkedFilesTask(
     private async Task RemoveUnlinkedFiles()
     {
         // get linked file paths
-        Report("Scanning all linked files...");
+        await Report("Scanning all linked files...").ConfigureAwait(false);
         var startTime = DateTime.Now;
         var linkedIdCount = await WriteLinkedIdsToTable();
         if (linkedIdCount < 5)
         {
-            Report($"Aborted: " +
-                   $"There are less than five linked files found in your library. " +
-                   $"Cancelling operation to prevent accidental bulk deletion.");
+            await Report($"Aborted: " +
+                         $"There are less than five unique linked files found in your library. " +
+                         $"Cancelling operation to prevent accidental bulk deletion.").ConfigureAwait(false);
             return;
         }
 
-        Report("Searching for unlinked webdav items...");
+        await Report("Searching for unlinked webdav items...").ConfigureAwait(false);
         var unlinkedItems = await CountUnlinkedItems(startTime);
-        Report($"Found {unlinkedItems} webdav items to remove.");
+        await Report($"Found {unlinkedItems} webdav items to remove.").ConfigureAwait(false);
 
         if (isDryRun)
         {
             await DryRunIdentifyUnlinkedFiles(startTime);
-            Report($"Done. Identified {_allRemovedPaths.Count} unlinked files.");
+            await Report($"Done. Identified {_allRemovedPaths.Count} unlinked files.").ConfigureAwait(false);
         }
         else
         {
             await RemoveUnlinkedItems(startTime, unlinkedItems);
             await RemoveEmptyDirectories(startTime);
-            Report($"Done. Removed {_allRemovedPaths.Count} unlinked files.");
+            await Report($"Done. Removed {_allRemovedPaths.Count} unlinked files.").ConfigureAwait(false);
         }
     }
 
     private async Task<int> WriteLinkedIdsToTable()
     {
+        using var debounce = DebounceUtil.CreateCancellableDebounce(TimeSpan.FromMilliseconds(500));
+        var scan = await LibraryLinkScanner.ScanAsync(
+            configManager,
+            count => debounce.Invoke(() => _ = Report($"Scanning all linked files...\nFound {count}...")),
+            CancellationToken).ConfigureAwait(false);
+        debounce.CancelPending();
+        if (!scan.IsComplete)
+            throw new IOException($"Library link discovery failed: {scan.ErrorMessage}");
+
+        await Report($"Scanning all linked files...\nFound {scan.RawLinkCount} links " +
+                     $"to {scan.UniqueDavItemIds.Count} unique files.").ConfigureAwait(false);
+
         await using var dbContext = new DavDatabaseContext();
 
         // Create a new table "TMP_LINKED_FILES", dropping old one if it already exists.
@@ -75,19 +90,17 @@ public class RemoveUnlinkedFilesTask(
             CREATE TABLE TMP_LINKED_FILES (Id TEXT NOT NULL);
             """);
 
-        var count = 0;
-        var batches = GetLinkedIds().ToBatches(100);
+        var batches = scan.UniqueDavItemIds.ToBatches(100);
         foreach (var batch in batches)
         {
             var values = string.Join(",", batch.Select(id => $"('{id.ToString().ToUpper()}')"));
             await dbContext.Database.ExecuteSqlRawAsync(
                 $"INSERT INTO TMP_LINKED_FILES (Id) VALUES {values}");
-            count += batch.Count;
         }
 
         // Remove duplicates and add primary key index.
         // Create a new table with unique constraint, copy distinct values, then swap.
-        Report($"Indexing {count} linked files...");
+        await Report($"Indexing {scan.UniqueDavItemIds.Count} unique linked files...").ConfigureAwait(false);
         await dbContext.Database.ExecuteSqlRawAsync(
             """
             CREATE TABLE TMP_LINKED_FILES_UNIQUE (Id TEXT NOT NULL PRIMARY KEY);
@@ -96,25 +109,7 @@ public class RemoveUnlinkedFilesTask(
             ALTER TABLE TMP_LINKED_FILES_UNIQUE RENAME TO TMP_LINKED_FILES;
             """);
 
-        return count;
-    }
-
-    private IEnumerable<Guid> GetLinkedIds()
-    {
-        var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(500));
-        var linkedIds = OrganizedLinksUtil
-            .GetLibraryDavItemLinks(configManager)
-            .Select(x => x.DavItemId);
-
-        var count = 0;
-        foreach (var linkedId in linkedIds)
-        {
-            count++;
-            debounce(() => Report($"Scanning all linked files...\nFound {count}..."));
-            yield return linkedId;
-        }
-
-        Report($"Scanning all linked files...\nFound {count}...");
+        return scan.UniqueDavItemIds.Count;
     }
 
     private async Task<int> CountUnlinkedItems(DateTime createdBefore)
@@ -140,7 +135,7 @@ public class RemoveUnlinkedFilesTask(
 
     private async Task RemoveUnlinkedItems(DateTime createdBefore, int totalCount)
     {
-        Report("Removing unlinked items...");
+        await Report("Removing unlinked items...").ConfigureAwait(false);
         _allRemovedPaths.Clear();
         await using var dbContext = new DavDatabaseContext();
         var removed = 0;
@@ -180,15 +175,15 @@ public class RemoveUnlinkedFilesTask(
             _allRemovedPaths.AddRange(itemsToDelete.Select(x => x.Path));
             removed += itemsToDelete.Count;
 
-            Report($"Removing unlinked items...\nRemoved {removed}/{totalCount}...");
+            await Report($"Removing unlinked items...\nRemoved {removed}/{totalCount}...").ConfigureAwait(false);
         }
 
-        Report($"Removing unlinked items...\nRemoved {removed} of {removed}...");
+        await Report($"Removing unlinked items...\nRemoved {removed} of {removed}...").ConfigureAwait(false);
     }
 
     private async Task RemoveEmptyDirectories(DateTime createdBefore)
     {
-        Report($"Removing empty directories...");
+        await Report($"Removing empty directories...").ConfigureAwait(false);
         await using var dbContext = new DavDatabaseContext();
         var removed = 0;
 
@@ -224,7 +219,7 @@ public class RemoveUnlinkedFilesTask(
             }).ToList());
 
             removed += emptyDirs.Count;
-            Report($"Removing empty directories...\nRemoved {removed}...");
+            await Report($"Removing empty directories...\nRemoved {removed}...").ConfigureAwait(false);
         }
     }
 
@@ -245,10 +240,29 @@ public class RemoveUnlinkedFilesTask(
         _allRemovedPaths = unlinkedFiles.Select(x => x.Path).ToList();
     }
 
-    private void Report(string message)
+    private Task Report(string message)
     {
         var dryRun = isDryRun ? "Dry Run - " : string.Empty;
-        _ = websocketManager.SendMessage(WebsocketTopic.CleanupTaskProgress, $"{dryRun}{message}");
+        lock (_reportLock)
+        {
+            var previous = _reportQueue;
+            _reportQueue = SendAfter(previous, $"{dryRun}{message}");
+            return _reportQueue;
+        }
+    }
+
+    private async Task SendAfter(Task previous, string message)
+    {
+        try
+        {
+            await previous.ConfigureAwait(false);
+        }
+        catch
+        {
+            // A failed progress update must not prevent later terminal state delivery.
+        }
+
+        await websocketManager.SendMessage(WebsocketTopic.CleanupTaskProgress, message).ConfigureAwait(false);
     }
 
     public static string GetAuditReport()

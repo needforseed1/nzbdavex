@@ -33,27 +33,31 @@ public class StrmToSymlinksTask(
     private async Task ConvertAllStrmFilesToSymlinks(CancellationToken token)
     {
         var completedCount = 0;
-        var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
-        var batches = OrganizedLinksUtil.GetLibraryDavItemLinks(configManager)
+        using var debounce = DebounceUtil.CreateCancellableDebounce(TimeSpan.FromMilliseconds(200));
+        ReportProgress("Scanning library for strm files...", completedCount);
+        var scan = await LibraryLinkScanner.ScanAsync(configManager, cancellationToken: token).ConfigureAwait(false);
+        if (!scan.IsComplete)
+            throw new IOException($"Library link discovery failed: {scan.ErrorMessage}");
+        var batches = scan.Links
             .Where(x => x.SymlinkOrStrmInfo is SymlinkAndStrmUtil.StrmInfo)
             .ToBatches(batchSize: 100);
 
-        ReportProgress("Scanning library for strm files...", completedCount);
         foreach (var batch in batches)
             await ConvertBatchOfStrmFilesToSymlinks(batch, OnItemCompleted, token).ConfigureAwait(false);
+        debounce.CancelPending();
         ReportProgress("Done!", completedCount);
         return;
 
         void OnItemCompleted()
         {
             completedCount++;
-            debounce(() => ReportProgress("Scanning library for strm files...", completedCount));
+            debounce.Invoke(() => ReportProgress("Scanning library for strm files...", completedCount));
         }
     }
 
     private async Task ConvertBatchOfStrmFilesToSymlinks
     (
-        List<OrganizedLinksUtil.DavItemLink> batch,
+        List<LibraryLinkScanner.DavItemLink> batch,
         Action onItemCompleted,
         CancellationToken token
     )
@@ -90,7 +94,7 @@ public class StrmToSymlinksTask(
         }
     }
 
-    private string? GetExtension(OrganizedLinksUtil.DavItemLink link)
+    private string? GetExtension(LibraryLinkScanner.DavItemLink link)
     {
         if (link.SymlinkOrStrmInfo is not SymlinkAndStrmUtil.StrmInfo strmInfo) return null;
         var queryParams = HttpUtility.ParseQueryString(new Uri(strmInfo.TargetUrl).Query);
