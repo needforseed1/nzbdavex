@@ -32,7 +32,8 @@ public static class SettingsRegistry
       "variants.eviction-active-grace-seconds":"60","preflight.mode":"off","preflight.max-attempts":"20",
       "preflight.verify-sample-count":"3","preflight.ttl-seconds":"120","preflight.indexer-max-wait-seconds":"5",
       "repair.enable":"false","db.is-startup-vacuum-enabled":"false","maintenance.remove-orphaned-schedule-enabled":"false",
-      "maintenance.remove-orphaned-schedule-time":"0","api.nzb-backup-enabled":"false","api.nzb-backup-location":""
+      "maintenance.remove-orphaned-schedule-time":"0","api.nzb-backup-enabled":"false","api.nzb-backup-location":"",
+      "api.nzb-backup-retention-count":"50"
     }
     """;
 
@@ -81,6 +82,7 @@ public static class SettingsRegistry
         ["preflight.ttl-seconds"] = (10, 1800),
         ["preflight.indexer-max-wait-seconds"] = (0, 120),
         ["maintenance.remove-orphaned-schedule-time"] = (0, 1439),
+        ["api.nzb-backup-retention-count"] = (1, int.MaxValue),
     };
 
     internal static readonly IReadOnlyDictionary<string, string[]> Choices =

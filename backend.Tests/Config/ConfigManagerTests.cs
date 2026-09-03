@@ -9,6 +9,16 @@ namespace NzbWebDAV.Tests.Config;
 public class ConfigManagerTests
 {
     [Fact]
+    public void NzbBackupRetentionDefaultsToFiftyAndClampsToAtLeastOne()
+    {
+        Assert.Equal(50, new ConfigManager().GetNzbBackupRetentionCount());
+        Assert.Equal(1, WithValues(
+            ("api.nzb-backup-retention-count", "0")).GetNzbBackupRetentionCount());
+        Assert.Equal(75, WithValues(
+            ("api.nzb-backup-retention-count", "75")).GetNzbBackupRetentionCount());
+    }
+
+    [Fact]
     public void InvalidScalarValuesFallBackWithoutThrowing()
     {
         var config = WithValues(

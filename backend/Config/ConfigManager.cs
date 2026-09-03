@@ -730,6 +730,11 @@ public class ConfigManager
         return StringUtil.EmptyToNull(GetConfigValue("api.nzb-backup-location"))?.Trim();
     }
 
+    public int GetNzbBackupRetentionCount()
+    {
+        return GetInteger("api.nzb-backup-retention-count", 50, 1, int.MaxValue);
+    }
+
     public bool IsRemoveOrphanedFilesScheduleEnabled()
     {
         return GetBoolean("maintenance.remove-orphaned-schedule-enabled", false);

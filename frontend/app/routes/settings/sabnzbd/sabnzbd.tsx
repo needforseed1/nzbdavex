@@ -221,9 +221,24 @@ export function SabnzbdSettings({ config, setNewConfig }: SabnzbdSettingsProps) 
                     disabled={config["api.nzb-backup-enabled"] !== "true"}
                     isInvalid={!isValidNzbBackupLocation(config)}
                     onChange={e => setNewConfig({ ...config, "api.nzb-backup-location": e.target.value })} />
+                <Form.Label htmlFor="nzb-backup-retention-count-input" style={{ marginTop: '15px' }}>
+                    Maximum NZB backups
+                </Form.Label>
+                <Form.Control
+                    className={styles.input}
+                    type="number"
+                    min="1"
+                    step="1"
+                    id="nzb-backup-retention-count-input"
+                    aria-describedby="nzb-backup-location-help"
+                    value={config["api.nzb-backup-retention-count"]}
+                    disabled={config["api.nzb-backup-enabled"] !== "true"}
+                    isInvalid={!isValidNzbBackupRetentionCount(config)}
+                    onChange={e => setNewConfig({ ...config, "api.nzb-backup-retention-count": e.target.value })} />
                 <Form.Text id="nzb-backup-location-help" muted>
                     When enabled, a copy of each incoming NZB will be saved to this directory, organized by category.
-                    The directory will be created if it doesn't already exist.
+                    The directory will be created if it doesn't already exist. The retention limit keeps the newest
+                    NZB backups across all categories combined.
                 </Form.Text>
             </Form.Group>
         </div>
@@ -290,7 +305,8 @@ export function isSabnzbdSettingsValid(newConfig: Record<string, string>) {
     return isValidCategories(newConfig["api.categories"] ?? "")
         && isValidManualCategory(newConfig["api.manual-category"] ?? "")
         && isValidImportConfiguration(newConfig)
-        && isValidNzbBackupLocation(newConfig);
+        && isValidNzbBackupLocation(newConfig)
+        && isValidNzbBackupRetentionCount(newConfig);
 }
 
 export function generateNewApiKey(): string {
@@ -331,6 +347,12 @@ function isAbsoluteHttpUrl(value: string): boolean {
 function isValidNzbBackupLocation(config: Record<string, string>) {
     return config["api.nzb-backup-enabled"] !== "true"
         || !!config["api.nzb-backup-location"]?.trim();
+}
+
+function isValidNzbBackupRetentionCount(config: Record<string, string>) {
+    if (config["api.nzb-backup-enabled"] !== "true") return true;
+    const value = Number(config["api.nzb-backup-retention-count"]);
+    return Number.isSafeInteger(value) && value >= 1;
 }
 
 function isAlphaNumericWithDashes(input: string): boolean {

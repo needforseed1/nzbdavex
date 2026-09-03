@@ -8,6 +8,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
@@ -51,7 +52,13 @@ public class AddFileController(
                 var backupLocation = configManager.GetNzbBackupLocation();
                 if (backupLocation != null)
                 {
-                    await BackupNzbAsync(id, request.FileName, request.Category, backupLocation);
+                    await BackupNzbAsync(
+                        id,
+                        request.FileName,
+                        request.Category,
+                        backupLocation,
+                        configManager.GetNzbBackupRetentionCount(),
+                        request.CancellationToken);
                 }
             }
 
@@ -124,35 +131,26 @@ public class AddFileController(
         return Ok(await AddFileAsync(request).ConfigureAwait(false));
     }
 
-    private static async Task BackupNzbAsync(Guid id, string fileName, string category, string backupLocation)
+    private static async Task BackupNzbAsync(
+        Guid id,
+        string fileName,
+        string category,
+        string backupLocation,
+        int retentionCount,
+        CancellationToken cancellationToken)
     {
         try
         {
-            if (!Directory.Exists(backupLocation))
-                Directory.CreateDirectory(backupLocation);
-
-            var backupRoot = Path.GetFullPath(backupLocation);
-            var destDir = Path.GetFullPath(Path.Combine(backupRoot, category));
-            if (!IsWithinRoot(backupRoot, destDir))
-                throw new InvalidOperationException("Category escapes the configured NZB backup directory.");
-            if (!Directory.Exists(destDir))
-                Directory.CreateDirectory(destDir);
-
-            var baseName = Path.GetFileNameWithoutExtension(fileName);
-            var ext = Path.GetExtension(fileName);
-            if (string.IsNullOrEmpty(ext)) ext = ".nzb";
-
-            var destPath = Path.Combine(destDir, $"{baseName}{ext}");
-            var counter = 2;
-            while (System.IO.File.Exists(destPath))
-            {
-                destPath = Path.Combine(destDir, $"{baseName} ({counter}){ext}");
-                counter++;
-            }
-
-            await using var src = BlobStore.ReadBlob(id);
-            await using var dst = System.IO.File.Create(destPath);
-            await src.CopyToAsync(dst);
+            await using var source = BlobStore.ReadBlob(id)
+                ?? throw new FileNotFoundException("The NZB blob could not be read for backup.");
+            await NzbBackupStore.SaveAsync(
+                    source,
+                    fileName,
+                    category,
+                    backupLocation,
+                    retentionCount,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception e)
         {
@@ -172,16 +170,6 @@ public class AddFileController(
             throw new BadHttpRequestException(
                 "Invalid category. Use one safe name without path separators.");
         }
-    }
-
-    private static bool IsWithinRoot(string root, string candidate)
-    {
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        var rootPrefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
-        return string.Equals(root, candidate, comparison)
-            || candidate.StartsWith(rootPrefix, comparison);
     }
 
     private static long ComputeTotalSegmentBytes(Stream stream)

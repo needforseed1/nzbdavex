@@ -12,8 +12,10 @@ public class SettingsRegistryTests
             "usenet.pipelining.health.provider-qualification.enabled"]);
         Assert.Equal("", SettingsRegistry.Defaults["usenet.playback-reserved-connections"]);
         Assert.Equal("32", SettingsRegistry.Defaults["usenet.read-ahead-mb"]);
+        Assert.Equal("50", SettingsRegistry.Defaults["api.nzb-backup-retention-count"]);
         Assert.Equal((0, int.MaxValue), SettingsRegistry.Ranges["usenet.playback-reserved-connections"]);
         Assert.Equal((1, 1024), SettingsRegistry.Ranges["usenet.read-ahead-mb"]);
+        Assert.Equal((1, int.MaxValue), SettingsRegistry.Ranges["api.nzb-backup-retention-count"]);
         Assert.True(SettingsRegistry.TryGetValidationDefault("usenet.article-buffer-size", out _));
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.depth"]);
         Assert.Equal((1, 64), SettingsRegistry.Ranges["usenet.pipelining.health.depth"]);
